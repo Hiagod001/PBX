@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>UAI PBX Ramal</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section id="loginView" class="panel">
+        <p class="eyebrow">Softphone PBX</p>
+        <h1>Acesso do ramal</h1>
+        <form id="loginForm" class="stack">
+          <label>
+            Ramal
+            <input id="extensionInput" inputmode="numeric" autocomplete="username" placeholder="505" required />
+          </label>
+          <label>
+            Senha
+            <input id="passwordInput" type="password" autocomplete="current-password" required />
+          </label>
+          <button id="loginBtn" class="primary-btn" type="submit">Entrar no ramal</button>
+        </form>
+        <button id="loginTestRingBtn" class="secondary-btn" type="button">Testar som de toque</button>
+        <p id="loginMessage" class="message"></p>
+      </section>
+
+      <section id="phoneView" class="phone hidden">
+        <div class="status-card">
+          <span class="status-badge">Online</span>
+          <strong id="extensionLabel">Ramal</strong>
+        </div>
+
+        <section id="activeCallPanel" class="active-call-panel hidden">
+          <span id="activeCallKind">Chamada de saida</span>
+          <strong id="activeCallNumber">-</strong>
+          <div class="active-call-grid">
+            <small>Status</small>
+            <b id="activeCallStatus">Conectando</b>
+            <small>Tempo</small>
+            <b id="activeCallDuration">0s</b>
+            <small>Ramal</small>
+            <b id="activeCallExtension">-</b>
+            <small>Protocolo</small>
+            <b id="activeCallProtocol">-</b>
+          </div>
+          <div class="active-call-actions">
+            <button id="activeAnswerBtn" class="call-btn answer-btn hidden" type="button">Atender</button>
+            <button id="activeSpeakerBtn" class="mini-btn" type="button">Som</button>
+            <button id="activeMuteBtn" class="mini-btn" type="button">Mic</button>
+            <button id="activeHangupBtn" class="call-btn" type="button">Encerrar</button>
+          </div>
+        </section>
+
+        <input id="numberInput" class="number-input dial-ui" inputmode="tel" placeholder="Numero" />
+
+        <div class="dialpad dial-ui">
+          <button type="button" data-digit="1">1</button>
+          <button type="button" data-digit="2">2</button>
+          <button type="button" data-digit="3">3</button>
+          <button type="button" data-digit="4">4</button>
+          <button type="button" data-digit="5">5</button>
+          <button type="button" data-digit="6">6</button>
+          <button type="button" data-digit="7">7</button>
+          <button type="button" data-digit="8">8</button>
+          <button type="button" data-digit="9">9</button>
+          <button type="button" data-digit="*">*</button>
+          <button type="button" data-digit="0">0</button>
+          <button type="button" data-digit="#">#</button>
+        </div>
+
+        <div class="actions dial-ui">
+          <button id="callBtn" class="call-btn" type="button">Ligar</button>
+          <button id="clearBtn" class="secondary-btn" type="button">Limpar</button>
+        </div>
+
+        <div class="tool-row">
+          <button id="pauseBtn" class="mini-btn" type="button">Pausa</button>
+          <button id="transferBtn" class="mini-btn" type="button">Transf.</button>
+          <button id="historyBtn" class="mini-btn" type="button">Reg.</button>
+        </div>
+
+        <section id="transferPanel" class="subpanel hidden">
+          <label>
+            Transferir para
+            <input id="transferTargetInput" inputmode="numeric" placeholder="Ramal ou fila" />
+          </label>
+          <button id="confirmTransferBtn" class="secondary-btn" type="button">Confirmar transferencia</button>
+        </section>
+
+        <section id="pauseReasonPanel" class="subpanel hidden">
+          <strong>Motivo da pausa</strong>
+          <div class="reason-grid">
+            <button class="mini-btn" type="button" data-pause-reason="Cafezinho">Cafezinho</button>
+            <button class="mini-btn" type="button" data-pause-reason="Almoço">Almoco</button>
+            <button class="mini-btn" type="button" data-pause-reason="Treinamento">Treinamento</button>
+            <button class="mini-btn" type="button" data-pause-reason="Atendimento presencial">Presencial</button>
+          </div>
+          <button id="cancelPauseReasonBtn" class="secondary-btn" type="button">Cancelar</button>
+        </section>
+
+        <section class="audio-panel">
+          <audio id="remoteAudio" autoplay></audio>
+          <label>
+            Volume da ligacao
+            <input id="volumeSlider" type="range" min="0" max="100" value="85" />
+          </label>
+          <label>
+            Microfone
+            <input id="micSlider" type="range" min="0" max="100" value="85" />
+          </label>
+          <div class="tool-row">
+            <button id="muteSpeakerBtn" class="mini-btn" type="button">Som</button>
+            <button id="muteMicBtn" class="mini-btn" type="button">Mic</button>
+            <button id="settingsBtn" class="mini-btn" type="button" title="Configuracoes de audio">&#9881;</button>
+          </div>
+
+          <section id="settingsPanel" class="settings-panel hidden" aria-label="Configuracoes">
+            <div class="settings-head">
+              <strong>Audio</strong>
+              <button id="closeSettingsBtn" class="mini-btn" type="button">Fechar</button>
+            </div>
+            <label>
+              Toque da chamada
+              <select id="ringDeviceSelect"></select>
+            </label>
+            <label>
+              Audio da chamada
+              <select id="callDeviceSelect"></select>
+            </label>
+            <label>
+              Microfone
+              <select id="micDeviceSelect"></select>
+            </label>
+            <div class="settings-actions">
+              <button id="testRingBtn" class="mini-btn" type="button">Testar toque</button>
+              <button id="testRingbackBtn" class="mini-btn" type="button">Testar chamando</button>
+            </div>
+            <button id="refreshDevicesBtn" class="secondary-btn" type="button">Atualizar dispositivos</button>
+            <button id="logoutBtn" class="secondary-btn hidden" type="button">Sair do ramal</button>
+          </section>
+        </section>
+
+        <section id="historyPanel" class="history-panel hidden">
+          <div class="history-head">
+            <strong>Registros</strong>
+            <button id="refreshHistoryBtn" class="mini-btn" type="button">Atualizar</button>
+          </div>
+          <div id="historyList" class="history-list"></div>
+        </section>
+
+        <p id="callMessage" class="message ok">Ramal autenticado.</p>
+      </section>
+
+      <section id="pauseOverlay" class="pause-overlay hidden" aria-label="Ramal em pausa">
+        <div class="pause-card">
+          <span>Ramal em pausa</span>
+          <strong id="pauseOverlayReason">Cafezinho</strong>
+          <small id="pauseOverlayTime">0s</small>
+          <button id="resumeOverlayBtn" class="primary-btn" type="button">Voltar da pausa</button>
+        </div>
+      </section>
+    </main>
+    <script src="../assets/vendor/sip.js"></script>
+    <script src="renderer.js"></script>
+  </body>
+</html>

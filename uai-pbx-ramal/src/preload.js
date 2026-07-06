@@ -1,0 +1,18 @@
+const { contextBridge, ipcRenderer } = require("electron");
+
+contextBridge.exposeInMainWorld("pbxAPI", {
+  server: () => ipcRenderer.invoke("app:server"),
+  assetUrl: (name) => ipcRenderer.invoke("app:asset-url", name),
+  startTone: (name) => ipcRenderer.invoke("app:tone-start", name),
+  stopTone: (name) => ipcRenderer.invoke("app:tone-stop", name),
+  login: (credentials) => ipcRenderer.invoke("extension:login", credentials),
+  logout: () => ipcRenderer.invoke("extension:logout"),
+  portal: () => ipcRenderer.invoke("extension:portal"),
+  protocol: (payload) => ipcRenderer.invoke("extension:protocol", payload),
+  call: (payload) => ipcRenderer.invoke("extension:call", payload),
+  incomingCall: (payload) => ipcRenderer.invoke("app:incoming-call", payload),
+  status: () => ipcRenderer.invoke("extension:status"),
+  pause: (payload) => ipcRenderer.invoke("extension:pause", payload),
+  hangup: (payload) => ipcRenderer.invoke("extension:hangup", payload),
+  transfer: (payload) => ipcRenderer.invoke("extension:transfer", payload)
+});

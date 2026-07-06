@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PBX SIP Admin</title>
+    <link rel="stylesheet" href="/styles.css?v=20260706-page-routes" />
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
+    <script src="/vendor/sip.js?v=20260528-local" defer></script>
+  </head>
+  <body>
+    <main id="loginView" class="login-shell">
+      <section class="login-panel">
+        <div class="login-heading">
+          <button id="adminLoginModeBtn" class="login-mode-btn active" type="button" title="Console administrativo" aria-label="Console administrativo">
+            <svg class="login-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 4.4-2.8 8.5-7 10-4.2-1.5-7-5.6-7-10V6l7-3z"/><path d="M9 12l2 2 4-5"/></svg>
+          </button>
+          <button id="extensionLoginModeBtn" class="login-mode-btn" type="button" title="Acessar ramal" aria-label="Acessar ramal">
+            <svg class="login-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 2 .7 2.8a2 2 0 0 1-.4 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7A2 2 0 0 1 22 16.9z"/></svg>
+          </button>
+        </div>
+        <form id="loginForm" class="form-stack">
+          <div>
+            <p class="eyebrow">PBX SIP Admin</p>
+            <h1>Console administrativo</h1>
+          </div>
+          <label>
+            Usuario
+            <input name="username" autocomplete="username" value="admin" required />
+          </label>
+          <label>
+            Senha
+            <input name="password" type="password" autocomplete="current-password" value="admin123" required />
+          </label>
+          <button class="primary-btn" type="submit">
+            <svg class="login-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/></svg>
+            Entrar
+          </button>
+          <p id="loginMessage" class="message"></p>
+        </form>
+        <form id="extensionLoginForm" class="form-stack hidden">
+          <div>
+            <p class="eyebrow">Softphone PBX</p>
+            <h1>Acesso do ramal</h1>
+          </div>
+          <label>
+            Ramal
+            <input name="extension" inputmode="numeric" autocomplete="username" placeholder="201" required />
+          </label>
+          <label>
+            Senha
+            <input name="password" type="password" autocomplete="current-password" required />
+          </label>
+          <button class="primary-btn" type="submit">
+            <svg class="login-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 2 .7 2.8a2 2 0 0 1-.4 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7A2 2 0 0 1 22 16.9z"/><path d="M14 2c2.1.5 3.8 2.2 4.2 4.3"/><path d="M14 6c.8.3 1.4.9 1.7 1.7"/></svg>
+            Entrar no ramal
+          </button>
+          <p id="extensionLoginMessage" class="message"></p>
+        </form>
+      </section>
+    </main>
+
+    <main id="extensionView" class="extension-shell hidden">
+      <audio id="remoteAudio" autoplay></audio>
+      <section class="extension-topbar">
+        <div>
+          <p class="eyebrow">Softphone PBX</p>
+          <h2 id="extensionTitle">Ramal</h2>
+        </div>
+        <div class="top-actions">
+          <button id="queuePauseBtn" class="secondary-btn" type="button" title="Pausar fila">
+            <i data-lucide="coffee"></i>
+            <span>Pausa</span>
+          </button>
+          <button id="extensionNotificationBtn" class="secondary-btn" type="button" title="Ativar notificacoes de chamada" aria-label="Ativar notificacoes de chamada">
+            <i data-lucide="bell"></i>
+            <span>Ativar avisos</span>
+          </button>
+          <button id="extensionThemeToggleBtn" class="secondary-btn theme-toggle-btn" type="button" title="Usar modo escuro" aria-label="Usar modo escuro">
+            <i data-lucide="moon"></i>
+            <span>Escuro</span>
+          </button>
+          <button id="extensionRefreshBtn" class="secondary-btn" type="button" title="Atualizar monitor">
+            <i data-lucide="rotate-cw"></i>
+            <span>Atualizar</span>
+          </button>
+          <button id="extensionLogoutBtn" class="ghost-btn" type="button" title="Sair do ramal">
+            <i data-lucide="log-out"></i>
+            <span>Sair</span>
+          </button>
+        </div>
+      </section>
+
+      <section id="extensionPortal" class="extension-portal"></section>
+    </main>
+
+    <main id="appView" class="app-shell hidden">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">P</span>
+          <div>
+            <strong>PBX SIP</strong>
+            <small>Admin</small>
+          </div>
+          <button id="sidebarToggleBtn" class="icon-btn sidebar-toggle-btn" type="button" title="Recolher menu" aria-label="Recolher menu">
+            <i data-lucide="panel-left-close"></i>
+          </button>
+        </div>
+        <nav id="navTabs" class="nav-tabs">
+          <span class="nav-group">Operacao</span>
+          <button data-tab="overview" data-label="Resumo operacional" class="active" title="Resumo operacional"><i data-lucide="layout-dashboard"></i><span>Resumo</span></button>
+          <button data-tab="reports" data-label="Relatorios PBX" title="Relatorios PBX"><i data-lucide="bar-chart-3"></i><span>Relatorios</span></button>
+          <button data-tab="status" data-label="Monitoramento" title="Monitoramento"><i data-lucide="activity"></i><span>Monitor</span></button>
+          <span class="nav-group">Telefonia</span>
+          <button data-tab="trunk" data-label="Tronco SIP" title="Tronco SIP"><i data-lucide="radio-tower"></i><span>Tronco</span></button>
+          <button data-tab="extensions" data-label="Ramais" title="Ramais"><i data-lucide="phone"></i><span>Ramais</span></button>
+          <button data-tab="routing" data-label="Rotas e permissoes" title="Rotas e permissoes"><i data-lucide="split"></i><span>Rotas</span></button>
+          <button data-tab="ivr" data-label="Construtor URA" title="Construtor URA"><i data-lucide="workflow"></i><span>URA</span></button>
+          <button data-tab="dialer" data-label="Discador" title="Discador"><i data-lucide="phone-outgoing"></i><span>Discador</span></button>
+          <button data-tab="audios" data-label="Audios URA" title="Audios URA"><i data-lucide="file-audio"></i><span>Audios</span></button>
+          <button data-tab="queues" data-label="Filas e grupos" title="Filas e grupos"><i data-lucide="users"></i><span>Filas</span></button>
+          <span class="nav-group">Sistema</span>
+          <button data-tab="logs" data-label="Logs tecnicos" title="Logs tecnicos"><i data-lucide="terminal"></i><span>Logs</span></button>
+          <button data-tab="security" data-label="Seguranca" title="Seguranca"><i data-lucide="shield-check"></i><span>Seguranca</span></button>
+          <button data-tab="audit" data-label="Auditoria" title="Auditoria"><i data-lucide="history"></i><span>Auditoria</span></button>
+          <button data-tab="users" data-label="Usuarios" title="Usuarios"><i data-lucide="user-cog"></i><span>Usuarios</span></button>
+        </nav>
+        <button id="logoutBtn" class="ghost-btn" title="Sair"><i data-lucide="log-out"></i><span>Sair</span></button>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Console PBX</p>
+            <h2 id="pageTitle">Resumo</h2>
+          </div>
+          <div class="top-actions">
+            <button id="themeToggleBtn" class="secondary-btn" type="button" title="Usar modo escuro" aria-label="Usar modo escuro">
+              <i data-lucide="moon"></i>
+              <span>Escuro</span>
+            </button>
+            <button id="saveBtn" class="primary-btn"><i data-lucide="save"></i>Salvar e aplicar</button>
+          </div>
+        </header>
+
+        <p id="statusMessage" class="status-line"></p>
+
+        <section id="passwordWarning" class="warning hidden">
+          <div>
+            <strong>Troque a senha inicial</strong>
+            <span>A senha padrao deve ser substituida antes de colocar em producao.</span>
+          </div>
+          <form id="passwordForm" class="inline-form" autocomplete="off">
+            <input class="masked-secret" name="currentPassword" type="text" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore placeholder="Senha atual" required />
+            <input class="masked-secret" name="newPassword" type="text" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore placeholder="Nova senha forte" required />
+            <button class="primary-btn" type="submit"><i data-lucide="key-round"></i>Trocar</button>
+          </form>
+        </section>
+
+        <div id="tab-overview" class="tab-page active"></div>
+        <div id="tab-status" class="tab-page"></div>
+        <div id="tab-trunk" class="tab-page"></div>
+        <div id="tab-extensions" class="tab-page"></div>
+        <div id="tab-routing" class="tab-page"></div>
+        <div id="tab-ivr" class="tab-page"></div>
+        <div id="tab-dialer" class="tab-page"></div>
+        <div id="tab-audios" class="tab-page"></div>
+        <div id="tab-queues" class="tab-page"></div>
+        <div id="tab-security" class="tab-page"></div>
+        <div id="tab-logs" class="tab-page"></div>
+        <div id="tab-reports" class="tab-page"></div>
+        <div id="tab-audit" class="tab-page"></div>
+        <div id="tab-users" class="tab-page"></div>
+      </section>
+    </main>
+
+    <script src="/app.js?v=20260706-page-routes"></script>
+  </body>
+</html>
