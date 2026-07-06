@@ -17,6 +17,7 @@ remote_pbx/*.sqlite
 remote_pbx/*.sqlite3
 remote_pbx/.env
 remote_pbx/.env.*
+!remote_pbx/.env.example
 
 uai-pbx-ramal/node_modules/
 uai-pbx-ramal/dist/
@@ -27,3 +28,4 @@ uai-pbx-ramal/desktop-*.png
 uai-pbx-ramal/*.log
 uai-pbx-ramal/.env
 uai-pbx-ramal/.env.*
+!uai-pbx-ramal/.env.example
