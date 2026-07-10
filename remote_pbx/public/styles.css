@@ -471,9 +471,11 @@ textarea {
 }
 
 .command-monitor-header > div:first-child {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 12px;
+  white-space: nowrap;
 }
 
 .command-monitor-header h3 {
@@ -498,11 +500,12 @@ textarea {
 
 .command-monitor-tools {
   min-width: 0;
+  flex: 1 1 auto;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 7px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .command-search,
@@ -519,11 +522,14 @@ textarea {
 }
 
 .command-search {
-  width: min(220px, 28vw);
+  width: min(200px, 24vw);
+  flex: 0 1 200px;
 }
 
 .command-filter-field {
-  max-width: 180px;
+  min-width: 0;
+  max-width: 160px;
+  flex: 0 1 160px;
 }
 
 .command-search svg,
@@ -783,6 +789,7 @@ html[data-theme="dark"] .command-queue-card .compact-agent-pause {
   .command-monitor-tools {
     width: 100%;
     justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .command-search {

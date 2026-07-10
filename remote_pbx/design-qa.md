@@ -44,6 +44,7 @@ The top bar, KPI labels, monitor toolbar, queue header, table columns, status le
 1. Initial pass found KPI labels truncating and the pause KPI inheriting the generic warning background.
 2. Labels were changed to stable two-line wrapping and the pause tone was isolated as `caution`.
 3. The revised 1440 x 1024 capture confirmed readable labels, a neutral KPI surface, stable alignment, and no page overflow.
+4. Production-density data exposed a wrapped monitor toolbar; the title was made non-shrinking and filter widths were tightened so the toolbar stays on one row at 1440 x 1024.
 
 ## Final Result
 
