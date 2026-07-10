@@ -203,9 +203,11 @@ async function importRow(row) {
 
 async function main() {
   const explicitPath = process.argv[2] || process.env.ASTERISK_CDR_CSV;
-  const cdrCandidates = explicitPath
-    ? [explicitPath]
-    : ["/var/log/asterisk/cdr-custom/Master.csv", "/var/log/asterisk/cdr-csv/Master.csv"];
+  const cdrCandidates = [...new Set([
+    explicitPath,
+    "/var/log/asterisk/cdr-custom/Master.csv",
+    "/var/log/asterisk/cdr-csv/Master.csv"
+  ].filter(Boolean))];
   if (!(await ensureDatabase())) throw new Error("Configure DATABASE_URL ou PGHOST/PGDATABASE para importar CDR.");
   const currentCount = Number((await query("SELECT COUNT(*)::int AS count FROM pbx_cdr"))?.rows?.[0]?.count || 0);
   const importState = currentCount > 0 ? await fs.readJson(importStatePath).catch(() => ({})) : {};
