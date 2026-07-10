@@ -238,6 +238,8 @@ const menuPermissions = {
   users: "users"
 };
 
+const adminOnlyTabs = new Set(["trunk", "extensions", "routing", "ivr", "dialer", "audios", "queues", "logs", "security", "audit", "users"]);
+
 const tabRoutes = {
   overview: "/resume",
   reports: "/reports",
@@ -1588,6 +1590,7 @@ function renderShell() {
 function canAccessTab(tab) {
   if (!state.user) return true;
   if ((state.user.role || "") === "admin" || state.user.username === "admin") return true;
+  if (adminOnlyTabs.has(tab)) return false;
   const key = menuPermissions[tab];
   return !key || state.user.permissions?.menus?.[key] === true;
 }
@@ -2771,7 +2774,8 @@ async function unpauseExtensionQueue() {
 
 function updateTopbarActions() {
   const editableTabs = ["trunk", "extensions", "routing", "ivr", "queues", "security"];
-  $("#saveBtn")?.classList.toggle("hidden", !editableTabs.includes(state.activeTab));
+  const isAdmin = state.user?.role === "admin" || state.user?.username === "admin";
+  $("#saveBtn")?.classList.toggle("hidden", !isAdmin || !editableTabs.includes(state.activeTab));
 }
 
 async function loadConfig() {

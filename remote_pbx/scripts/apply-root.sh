@@ -6,25 +6,55 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-PROJECT_DIR="/opt/pbx-sip-admin"
+PROJECT_DIR="${PBX_PROJECT_DIR:-${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"
+PROJECT_DIR="$(realpath -e "$PROJECT_DIR")"
 GENERATED_DIR="$PROJECT_DIR/generated/asterisk"
 IVR_AUDIO_DIR="$PROJECT_DIR/data/ivr-audio"
 APP_USER="${PBX_APP_USER:-$(stat -c %U "$PROJECT_DIR" 2>/dev/null || echo agenda)}"
+BACKUP_BASE="${PBX_ASTERISK_BACKUP_DIR:-/var/backups/uai-pbx/asterisk}"
+BACKUP_DIR="$BACKUP_BASE/$(date +%Y%m%d-%H%M%S)"
+CONFIG_FILES=(
+  "pjsip.conf"
+  "extensions.conf"
+  "queues.conf"
+  "voicemail.conf"
+  "cdr.conf"
+  "cdr_custom.conf"
+  "rtp.conf"
+  "http.conf"
+  "modules.conf"
+)
 ASTERISK_SOUND_DIRS=(
   "/var/lib/asterisk/sounds/custom"
   "/usr/share/asterisk/sounds/custom"
   "/usr/share/asterisk/sounds/en/custom"
 )
 
-install -m 0644 "$GENERATED_DIR/pjsip.conf" /etc/asterisk/pjsip.conf
-install -m 0644 "$GENERATED_DIR/extensions.conf" /etc/asterisk/extensions.conf
-install -m 0644 "$GENERATED_DIR/queues.conf" /etc/asterisk/queues.conf
-install -m 0644 "$GENERATED_DIR/voicemail.conf" /etc/asterisk/voicemail.conf
-install -m 0644 "$GENERATED_DIR/cdr.conf" /etc/asterisk/cdr.conf
-install -m 0644 "$GENERATED_DIR/cdr_custom.conf" /etc/asterisk/cdr_custom.conf
-install -m 0644 "$GENERATED_DIR/rtp.conf" /etc/asterisk/rtp.conf
-install -m 0644 "$GENERATED_DIR/http.conf" /etc/asterisk/http.conf
-install -m 0644 "$GENERATED_DIR/modules.conf" /etc/asterisk/modules.conf
+for config_file in "${CONFIG_FILES[@]}"; do
+  if [ ! -s "$GENERATED_DIR/$config_file" ]; then
+    echo "Configuracao gerada ausente ou vazia: $config_file" >&2
+    exit 2
+  fi
+done
+
+mkdir -p "$BACKUP_DIR"
+for config_file in "${CONFIG_FILES[@]}"; do
+  [ -f "/etc/asterisk/$config_file" ] && cp -a "/etc/asterisk/$config_file" "$BACKUP_DIR/$config_file"
+done
+[ -f /etc/fail2ban/jail.d/asterisk.local ] && cp -a /etc/fail2ban/jail.d/asterisk.local "$BACKUP_DIR/fail2ban-asterisk.local"
+
+restore_previous_config() {
+  echo "Restaurando configuracao anterior do Asterisk..." >&2
+  for config_file in "${CONFIG_FILES[@]}"; do
+    [ -f "$BACKUP_DIR/$config_file" ] && install -m 0644 "$BACKUP_DIR/$config_file" "/etc/asterisk/$config_file"
+  done
+  [ -f "$BACKUP_DIR/fail2ban-asterisk.local" ] && install -m 0644 "$BACKUP_DIR/fail2ban-asterisk.local" /etc/fail2ban/jail.d/asterisk.local
+  /usr/sbin/asterisk -rx "core reload" >/dev/null 2>&1 || true
+}
+
+for config_file in "${CONFIG_FILES[@]}"; do
+  install -m 0644 "$GENERATED_DIR/$config_file" "/etc/asterisk/$config_file"
+done
 install -m 0644 "$GENERATED_DIR/fail2ban-asterisk.local" /etc/fail2ban/jail.d/asterisk.local
 
 mkdir -p /var/spool/asterisk/monitor /var/log/asterisk/cdr-custom "${ASTERISK_SOUND_DIRS[@]}"
@@ -52,10 +82,29 @@ else
   chmod o+rx /var/spool/asterisk/monitor
 fi
 
-systemctl restart fail2ban || true
-systemctl restart asterisk
-asterisk -rx "dialplan reload" || true
-asterisk -rx "module reload app_queue.so" || true
-asterisk -rx "voicemail reload" || true
+reload_output="$(/usr/sbin/asterisk -rx "core reload" 2>&1)" || {
+  echo "$reload_output" >&2
+  restore_previous_config
+  exit 3
+}
+if printf '%s' "$reload_output" | grep -Eqi '(^|[^a-z])(error|failed|invalid|unable)([^a-z]|$)'; then
+  echo "$reload_output" >&2
+  restore_previous_config
+  exit 3
+fi
 
-echo "Configuracoes aplicadas ao Asterisk."
+/usr/sbin/asterisk -rx "module reload app_queue.so" >/dev/null 2>&1 || true
+/usr/sbin/asterisk -rx "voicemail reload" >/dev/null 2>&1 || true
+if [ "${PBX_RESTART_ASTERISK_ON_APPLY:-false}" = "true" ]; then
+  systemctl restart asterisk
+fi
+if ! /usr/sbin/asterisk -rx "core show version" >/dev/null 2>&1; then
+  restore_previous_config
+  systemctl restart asterisk || true
+  exit 4
+fi
+
+fail2ban-client reload >/dev/null 2>&1 || true
+find "$BACKUP_BASE" -mindepth 1 -maxdepth 1 -type d -mtime +30 -exec rm -rf -- {} + 2>/dev/null || true
+
+echo "Configuracoes aplicadas ao Asterisk sem reinicio. Backup: $BACKUP_DIR"

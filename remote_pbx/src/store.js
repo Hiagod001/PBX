@@ -1,6 +1,7 @@
 const fs = require("fs-extra");
 const path = require("path");
 const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 const db = require("./db");
 
 const rootDir = path.join(__dirname, "..");
@@ -312,11 +313,20 @@ async function ensureStore() {
   await fs.ensureDir(ivrAudioDir);
 
   if (!(await fs.pathExists(configPath))) {
-    await fs.writeJson(configPath, defaultConfig, { spaces: 2 });
+    const initialConfig = JSON.parse(JSON.stringify(defaultConfig));
+    initialConfig.extensions = initialConfig.extensions.map((extension) => ({
+      ...extension,
+      secret: `Ext-${extension.number}-${crypto.randomBytes(8).toString("hex")}`
+    }));
+    await fs.writeJson(configPath, initialConfig, { spaces: 2 });
   }
 
   if (!(await fs.pathExists(usersPath))) {
-    const passwordHash = await bcrypt.hash("admin123", 12);
+    const initialPassword = String(process.env.PBX_INITIAL_ADMIN_PASSWORD || "");
+    if (process.env.NODE_ENV === "production" && !initialPassword) {
+      throw new Error("Defina PBX_INITIAL_ADMIN_PASSWORD para criar o primeiro administrador.");
+    }
+    const passwordHash = await bcrypt.hash(initialPassword || "admin123", 12);
     await fs.writeJson(
       usersPath,
       {

@@ -1,7 +1,10 @@
 require("dotenv").config();
 
 const fs = require("fs-extra");
+const path = require("path");
 const { ensureDatabase, query } = require("../src/db");
+
+const importStatePath = path.join(__dirname, "..", "data", "cdr-import-state.json");
 
 function parseCsvLine(line) {
   const values = [];
@@ -204,6 +207,8 @@ async function main() {
     ? [explicitPath]
     : ["/var/log/asterisk/cdr-custom/Master.csv", "/var/log/asterisk/cdr-csv/Master.csv"];
   if (!(await ensureDatabase())) throw new Error("Configure DATABASE_URL ou PGHOST/PGDATABASE para importar CDR.");
+  const currentCount = Number((await query("SELECT COUNT(*)::int AS count FROM pbx_cdr"))?.rows?.[0]?.count || 0);
+  const importState = currentCount > 0 ? await fs.readJson(importStatePath).catch(() => ({})) : {};
   const cdrPaths = [];
   for (const candidate of cdrCandidates) {
     if (await fs.pathExists(candidate)) cdrPaths.push(candidate);
@@ -212,18 +217,45 @@ async function main() {
 
   let imported = 0;
   for (const cdrPath of cdrPaths) {
-    const lines = (await fs.readFile(cdrPath, "utf8")).split(/\r?\n/).filter(Boolean);
+    const resolvedPath = await fs.realpath(cdrPath);
+    const stats = await fs.stat(resolvedPath);
+    const previous = importState[resolvedPath] || {};
+    const canResume = Number(previous.inode) === Number(stats.ino) && Number(previous.offset) <= stats.size;
+    const offset = canResume ? Number(previous.offset) : 0;
+    const length = Math.max(0, stats.size - offset);
+    const handle = await fs.open(resolvedPath, "r");
+    const buffer = Buffer.alloc(length);
+    try {
+      if (length) await handle.read(buffer, 0, length, offset);
+    } finally {
+      await handle.close();
+    }
+    const lastNewline = buffer.lastIndexOf(0x0a);
+    const completeBuffer = lastNewline >= 0 ? buffer.subarray(0, lastNewline + 1) : Buffer.alloc(0);
+    const lines = completeBuffer.toString("utf8").split(/\r?\n/).filter(Boolean);
     for (const line of lines) {
       const row = rowFromColumns(parseCsvLine(line));
       if (!row.calldate || !hasLikelyCdrDate(row.calldate)) continue;
       await importRow(row);
       imported += 1;
     }
+    importState[resolvedPath] = {
+      inode: Number(stats.ino),
+      offset: offset + completeBuffer.length,
+      size: stats.size,
+      updatedAt: new Date().toISOString()
+    };
+    await fs.ensureDir(path.dirname(importStatePath));
+    await fs.writeJson(importStatePath, importState, { spaces: 2 });
   }
   console.log(`CDR importado para pbx_cdr: ${imported} linhas.`);
 }
 
-main().catch((error) => {
-  console.error(error.message);
-  process.exit(1);
-}).then(() => process.exit(0));
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { hasLikelyCdrDate, parseCsvLine, rowFromColumns };

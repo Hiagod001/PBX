@@ -1,6 +1,7 @@
 const fs = require("fs-extra");
 const path = require("path");
 const { generatedDir } = require("./store");
+const { validateConfig } = require("./validation");
 
 const WEB_SIP_REGISTER_EXPIRES_SECONDS = 8 * 60 * 60;
 
@@ -663,6 +664,12 @@ function renderExtensions(config) {
   });
   renderDialerContext(lines);
 
+  lines.push("", "[queue-state]");
+  config.extensions.forEach((extension) => {
+    const number = clean(extension.number);
+    if (number) lines.push(`exten => ${number},hint,PJSIP/${number}&PJSIP/${browserEndpoint(number)}`);
+  });
+
   lines.push("", "[queue-member]");
   lines.push("exten => _X!,1,NoOp(Membro de fila ${EXTEN} chamado por ${CALLERID(num)})");
   lines.push(' same => n,GotoIf($["${CALLERID(num)}"="${EXTEN}"]?self)');
@@ -722,7 +729,10 @@ function renderQueues(config) {
         `maxlen=0`,
         `wrapuptime=5`,
         `memberdelay=0`,
-        ...(queue.members || []).map((member) => `member => Local/${clean(member)}@queue-member/n,1,${clean(member)}`)
+        ...(queue.members || []).map((member) => {
+          const number = clean(member);
+          return `member => Local/${number}@queue-member/n,1,${number},hint:${number}@queue-state`;
+        })
       ])
     )
     .join("\n");
@@ -930,6 +940,7 @@ function renderModules() {
 }
 
 async function generateAsteriskConfigs(config, targetDir = generatedDir) {
+  validateConfig(config);
   await fs.ensureDir(targetDir);
   const files = {
     "pjsip.conf": renderPjsip(config),
@@ -955,5 +966,7 @@ async function generateAsteriskConfigs(config, targetDir = generatedDir) {
 }
 
 module.exports = {
-  generateAsteriskConfigs
+  generateAsteriskConfigs,
+  renderExtensions,
+  renderQueues
 };

@@ -7,9 +7,11 @@
     "start": "node server.js",
     "dev": "NODE_ENV=development node server.js",
     "db:migrate": "node scripts/migrate-db.js",
+    "db:backup": "node scripts/backup-db.js --force",
     "cdr:import": "node scripts/import-cdr.js",
     "generate": "node scripts/generate-configs.js",
-    "check": "node --check server.js && node --check src/store.js && node --check src/db.js && node --check src/asterisk.js && node --check scripts/generate-configs.js && node --check scripts/migrate-db.js && node --check scripts/import-cdr.js && node --check public/app.js"
+    "test": "node --test tests/*.test.js",
+    "check": "node --check server.js && node --check src/store.js && node --check src/db.js && node --check src/asterisk.js && node --check src/validation.js && node --check scripts/generate-configs.js && node --check scripts/migrate-db.js && node --check scripts/import-cdr.js && node --check scripts/backup-db.js && node --check scripts/rotate-pbx-logs.js && node --check public/app.js"
   },
   "keywords": [
     "pbx",
@@ -22,15 +24,17 @@
   "license": "MIT",
   "dependencies": {
     "bcryptjs": "^2.4.3",
+    "connect-pg-simple": "^10.0.0",
     "dotenv": "^16.4.7",
-    "express": "^4.21.2",
+    "express": "^4.22.2",
+    "express-async-errors": "^3.1.1",
     "express-rate-limit": "^7.5.0",
-    "express-session": "^1.18.1",
+    "express-session": "^1.19.0",
     "fs-extra": "^11.2.0",
-    "helmet": "^8.0.0",
-    "morgan": "^1.10.0",
-    "multer": "^2.1.1",
-    "pg": "^8.21.0"
+    "helmet": "^8.2.0",
+    "morgan": "^1.11.0",
+    "multer": "^2.2.0",
+    "pg": "^8.22.0"
   },
   "devDependencies": {
     "esbuild": "^0.25.12",

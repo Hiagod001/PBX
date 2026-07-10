@@ -1,16 +1,19 @@
 require("dotenv").config();
+require("express-async-errors");
 
 const fs = require("fs-extra");
 const path = require("path");
 const bcrypt = require("bcryptjs");
 const express = require("express");
 const session = require("express-session");
+const PgSession = require("connect-pg-simple")(session);
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const morgan = require("morgan");
 const multer = require("multer");
 const { exec, execFile } = require("child_process");
 const { promisify } = require("util");
+const crypto = require("crypto");
 
 const {
   ensureStore,
@@ -27,6 +30,7 @@ const {
   getReportCdrRows
 } = require("./src/store");
 const { generateAsteriskConfigs } = require("./src/asterisk");
+const { validateConfig } = require("./src/validation");
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -46,6 +50,111 @@ const dialerOutgoingDir = path.join(__dirname, "data", "dialer-outgoing");
 const pauseReasons = new Set(["Cafezinho", "Almoço", "Treinamento", "Atendimento presencial"]);
 let protocolCounterLock = Promise.resolve();
 let dialerStoreLock = Promise.resolve();
+let cdrImportRunning = false;
+let databaseBackupRunning = false;
+let logRotationRunning = false;
+
+function databaseConnectionString() {
+  return process.env.PBX_DATABASE_URL || process.env.DATABASE_URL || process.env.PG_CONNECTION_STRING || "";
+}
+
+function sessionStore() {
+  const conString = databaseConnectionString();
+  if (!conString) {
+    console.warn("[session] PostgreSQL nao configurado; sessoes serao mantidas somente em memoria.");
+    return undefined;
+  }
+  return new PgSession({
+    conString,
+    tableName: "pbx_sessions",
+    createTableIfMissing: true,
+    pruneSessionInterval: 15 * 60
+  });
+}
+
+function sessionSecret() {
+  const configured = String(process.env.SESSION_SECRET || "");
+  if (configured.length >= 32) return configured;
+  if (process.env.NODE_ENV === "production") throw new Error("SESSION_SECRET precisa ter pelo menos 32 caracteres em producao.");
+  console.warn("[session] Use SESSION_SECRET com pelo menos 32 caracteres fora do ambiente local.");
+  return configured || "dev-secret-change-me";
+}
+
+function requestIsLoopback(req) {
+  const address = String(req.socket?.remoteAddress || "").replace(/^::ffff:/, "");
+  return address === "127.0.0.1" || address === "::1";
+}
+
+function enforceHttps(req, res, next) {
+  if (String(process.env.PBX_REQUIRE_HTTPS || "").toLowerCase() !== "true" || req.secure || requestIsLoopback(req)) return next();
+  const publicUrl = String(process.env.PBX_PUBLIC_URL || "").replace(/\/$/, "");
+  if ((req.method === "GET" || req.method === "HEAD") && publicUrl.startsWith("https://")) {
+    return res.redirect(308, `${publicUrl}${req.originalUrl}`);
+  }
+  return res.status(426).json({ error: "Use a conexao HTTPS oficial do PBX" });
+}
+
+async function runMaintenanceScript(scriptName, timeout) {
+  const scriptPath = path.join(__dirname, "scripts", scriptName);
+  const { stdout, stderr } = await execFileAsync(process.execPath, [scriptPath], {
+    cwd: __dirname,
+    timeout,
+    maxBuffer: 1024 * 1024
+  });
+  return `${stdout || ""}${stderr || ""}`.trim();
+}
+
+function startMaintenanceJobs() {
+  const cdrInterval = Number(process.env.PBX_CDR_IMPORT_INTERVAL_MS || 60000);
+  if (cdrInterval > 0) {
+    const importCdr = async () => {
+      if (cdrImportRunning) return;
+      cdrImportRunning = true;
+      try {
+        const output = await runMaintenanceScript("import-cdr.js", 5 * 60 * 1000);
+        if (output && !/: 0 linhas\.?$/i.test(output)) console.log(`[cdr] ${output}`);
+      } catch (error) {
+        console.error(`[cdr] Falha na importacao incremental: ${error.message}`);
+      } finally {
+        cdrImportRunning = false;
+      }
+    };
+    setTimeout(importCdr, 5000).unref();
+    setInterval(importCdr, Math.max(cdrInterval, 15000)).unref();
+  }
+
+  if (databaseConnectionString() && Number(process.env.PBX_BACKUP_INTERVAL_HOURS || 24) > 0) {
+    const backupDatabase = async () => {
+      if (databaseBackupRunning) return;
+      databaseBackupRunning = true;
+      try {
+        const output = await runMaintenanceScript("backup-db.js", 20 * 60 * 1000);
+        if (output) console.log(`[backup] ${output}`);
+      } catch (error) {
+        console.error(`[backup] Falha no backup do PostgreSQL: ${error.message}`);
+      } finally {
+        databaseBackupRunning = false;
+      }
+    };
+    setTimeout(backupDatabase, 30000).unref();
+    setInterval(backupDatabase, 60 * 60 * 1000).unref();
+  }
+
+  const rotateLogs = async () => {
+    if (logRotationRunning) return;
+    logRotationRunning = true;
+    try {
+      const output = await runMaintenanceScript("rotate-pbx-logs.js", 10 * 60 * 1000);
+      if (output) console.log(`[logs] ${output}`);
+    } catch (error) {
+      console.error(`[logs] Falha na rotacao dos logs do PBX: ${error.message}`);
+    } finally {
+      logRotationRunning = false;
+    }
+  };
+  setTimeout(rotateLogs, 60000).unref();
+  setInterval(rotateLogs, 6 * 60 * 60 * 1000).unref();
+}
 
 function protocolYear(date = new Date()) {
   return new Intl.DateTimeFormat("en-CA", {
@@ -283,6 +392,24 @@ function requireAuth(req, res, next) {
   return res.status(401).json({ error: "Nao autenticado" });
 }
 
+function userRole(req) {
+  return String(req.session?.user?.role || "user").toLowerCase();
+}
+
+function requireAdmin(req, res, next) {
+  if (userRole(req) === "admin") return next();
+  return res.status(403).json({ error: "Acao restrita a administradores" });
+}
+
+function requireSupervisor(req, res, next) {
+  if (["admin", "supervisor"].includes(userRole(req))) return next();
+  return res.status(403).json({ error: "Acao restrita a supervisores" });
+}
+
+function regenerateSession(req) {
+  return new Promise((resolve, reject) => req.session.regenerate((error) => (error ? reject(error) : resolve())));
+}
+
 function requireExtensionAuth(req, res, next) {
   if (req.session && req.session.extension) return next();
   return res.status(401).json({ error: "Ramal nao autenticado" });
@@ -308,6 +435,28 @@ function publicExtension(extension) {
     extensionType: extension.extensionType || "Padrao",
     permissions: extension.permissions || []
   };
+}
+
+function configForUser(config, req) {
+  if (userRole(req) === "admin") return config;
+  const redacted = JSON.parse(JSON.stringify(config || {}));
+  if (redacted.trunk) redacted.trunk.sipPassword = "";
+  (redacted.trunks || []).forEach((trunk) => {
+    trunk.sipPassword = "";
+  });
+  (redacted.extensions || []).forEach((extension) => {
+    extension.secret = "";
+  });
+  if (redacted.voicemail) redacted.voicemail.defaultPin = "";
+  return redacted;
+}
+
+function configRevision(config) {
+  return crypto.createHash("sha256").update(JSON.stringify(config || {})).digest("hex").slice(0, 16);
+}
+
+function withConfigRevision(config, sourceConfig = config) {
+  return { ...(config || {}), _revision: configRevision(sourceConfig) };
 }
 
 function browserSipSettings(req, extension) {
@@ -2587,9 +2736,18 @@ function auditDiff(before, after, keys = []) {
     .filter((key) => JSON.stringify(before?.[key] ?? null) !== JSON.stringify(after?.[key] ?? null))
     .map((key) => ({
       field: key,
-      before: before?.[key] ?? null,
-      after: after?.[key] ?? null
+      before: sanitizeAuditValue(before?.[key] ?? null),
+      after: sanitizeAuditValue(after?.[key] ?? null)
     }));
+}
+
+function sanitizeAuditValue(value, key = "") {
+  if (/(password|secret|token|authorization|defaultpin)/i.test(key)) return "[redacted]";
+  if (Array.isArray(value)) return value.map((item) => sanitizeAuditValue(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [childKey, sanitizeAuditValue(childValue, childKey)]));
+  }
+  return value;
 }
 
 async function writeSystemAuditEvent(req, action, payload = {}) {
@@ -2600,9 +2758,9 @@ async function writeSystemAuditEvent(req, action, payload = {}) {
     summary: payload.summary || "",
     details: payload.details || "",
     sections: payload.sections || [],
-    before: payload.before ?? null,
-    after: payload.after ?? null,
-    changes: payload.changes || [],
+    before: sanitizeAuditValue(payload.before ?? null),
+    after: sanitizeAuditValue(payload.after ?? null),
+    changes: sanitizeAuditValue(payload.changes || []),
     target: payload.target || "",
     channel: payload.channel || "",
     file: payload.file || "",
@@ -2858,20 +3016,24 @@ async function readOutboundDiagnostics(config, extensionNumber, rawNumber) {
 }
 
 app.set("trust proxy", 1);
+app.use(enforceHttps);
 app.use(helmet({ contentSecurityPolicy: false }));
-app.use(morgan("dev"));
+app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev", {
+  skip: (req) => req.path === "/api/pbx-status" || req.path === "/api/extensions/status"
+}));
 app.use(express.json({ limit: "1mb" }));
 app.use(
   session({
     name: "pbx.sid",
-    secret: process.env.SESSION_SECRET || "dev-secret-change-me",
+    secret: sessionSecret(),
+    store: sessionStore(),
     resave: false,
     saveUninitialized: false,
     rolling: true,
     cookie: {
       httpOnly: true,
       sameSite: "lax",
-      secure: false,
+      secure: "auto",
       maxAge: 1000 * 60 * 60 * 8
     }
   })
@@ -2908,6 +3070,7 @@ app.post("/api/login", async (req, res) => {
     return res.status(401).json({ error: "Usuario ou senha invalidos" });
   }
 
+  await regenerateSession(req);
   req.session.user = publicUser(user);
   return res.json({ user: req.session.user });
 });
@@ -2932,6 +3095,7 @@ app.post("/api/extensions/login", async (req, res) => {
     return res.status(401).json({ error: "Ramal ou senha invalidos" });
   }
 
+  await regenerateSession(req);
   req.session.extension = publicExtension(matched);
   return res.json({ extension: req.session.extension });
 });
@@ -3079,14 +3243,12 @@ app.post("/api/change-password", requireAuth, async (req, res) => {
   res.json({ user: req.session.user });
 });
 
-app.get("/api/users", requireAuth, async (req, res) => {
-  if ((req.session.user?.role || "admin") !== "admin") return res.status(403).json({ error: "Sem permissao para usuarios" });
+app.get("/api/users", requireAuth, requireAdmin, async (req, res) => {
   const users = await getUsers();
   res.json({ users: (users.users || []).map(publicUser) });
 });
 
-app.put("/api/users", requireAuth, async (req, res) => {
-  if ((req.session.user?.role || "admin") !== "admin") return res.status(403).json({ error: "Sem permissao para usuarios" });
+app.put("/api/users", requireAuth, requireAdmin, async (req, res) => {
   const current = await getUsers();
   const incoming = Array.isArray(req.body?.users) ? req.body.users : [];
   const currentByUsername = new Map((current.users || []).map((user) => [user.username, user]));
@@ -3108,8 +3270,18 @@ app.put("/api/users", requireAuth, async (req, res) => {
       createdAt: existing.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
-    if (String(item.password || "").trim()) next.passwordHash = await bcrypt.hash(String(item.password), 12);
-    if (!next.passwordHash) next.passwordHash = await bcrypt.hash("123@Mudar", 12);
+    const providedPassword = String(item.password || "").trim();
+    if (providedPassword && !isStrongPassword(providedPassword)) {
+      const error = new Error(`A senha do usuario ${username} precisa ter 8 caracteres, maiuscula, minuscula e numero`);
+      error.status = 400;
+      throw error;
+    }
+    if (providedPassword) next.passwordHash = await bcrypt.hash(providedPassword, 12);
+    if (!next.passwordHash) {
+      const error = new Error(`Informe uma senha inicial para o usuario ${username}`);
+      error.status = 400;
+      throw error;
+    }
     nextUsers.push(next);
   }
 
@@ -3131,25 +3303,31 @@ app.put("/api/users", requireAuth, async (req, res) => {
   res.json({ users: nextUsers.map(publicUser) });
 });
 
-app.get("/api/audit", requireAuth, async (req, res) => {
-  if ((req.session.user?.role || "admin") !== "admin") return res.status(403).json({ error: "Sem permissao para auditoria" });
+app.get("/api/audit", requireAuth, requireAdmin, async (req, res) => {
   const audit = await readAuditLog();
-  res.json({ events: (audit.events || []).slice(-500).reverse() });
+  res.json({ events: sanitizeAuditValue((audit.events || []).slice(-500).reverse()) });
 });
 
-app.get("/api/config", requireAuth, async (_req, res) => {
-  res.json(await getConfig());
+app.get("/api/config", requireAuth, async (req, res) => {
+  const config = await getConfig();
+  res.json(withConfigRevision(configForUser(config, req), config));
 });
 
-app.get("/api/monitor/sip", requireAuth, async (req, res) => {
-  if ((req.session.user?.role || "admin") !== "admin") return res.status(403).json({ error: "Sem permissao para escuta" });
+app.get("/api/monitor/sip", requireAuth, requireAdmin, async (req, res) => {
   res.json({ sip: monitorSipSettings(req) });
 });
 
-app.put("/api/config", requireAuth, async (req, res) => {
+app.put("/api/config", requireAuth, requireAdmin, async (req, res) => {
   const previous = await getConfig();
-  const saved = await saveConfig(req.body || {});
-  const sections = Object.keys(req.body || {}).filter((key) => JSON.stringify(previous?.[key]) !== JSON.stringify(saved?.[key]));
+  const incoming = { ...(req.body || {}) };
+  const expectedRevision = String(incoming._revision || "");
+  delete incoming._revision;
+  if (expectedRevision && expectedRevision !== configRevision(previous)) {
+    return res.status(409).json({ error: "A configuracao mudou em outra sessao. Recarregue a pagina antes de salvar novamente." });
+  }
+  validateConfig(incoming);
+  const saved = await saveConfig(incoming);
+  const sections = Object.keys(incoming).filter((key) => JSON.stringify(previous?.[key]) !== JSON.stringify(saved?.[key]));
   await writeSystemAuditEvent(req, "config-update", {
     label: "Atualizou configuracao",
     summary: sections.length ? `Secoes alteradas: ${sections.join(", ")}` : "Nenhuma alteracao detectada",
@@ -3159,10 +3337,10 @@ app.put("/api/config", requireAuth, async (req, res) => {
     changes: auditDiff(previous, saved, sections)
   });
   const files = await generateAsteriskConfigs(saved);
-  res.json({ config: saved, generatedFiles: files });
+  res.json({ config: withConfigRevision(saved), generatedFiles: files });
 });
 
-app.post("/api/apply", requireAuth, async (_req, res) => {
+app.post("/api/apply", requireAuth, requireAdmin, async (_req, res) => {
   const config = await getConfig();
   const generatedFiles = await generateAsteriskConfigs(config);
   const result = { generatedFiles, copied: false, reloaded: false, output: "" };
@@ -3273,12 +3451,17 @@ app.get("/api/pbx/reports/pauses", requireAuth, async (req, res) => {
   res.json({ ...result, filters });
 });
 
-app.post("/api/pbx/monitor/action", requireAuth, async (req, res) => {
+app.post("/api/pbx/monitor/action", requireAuth, requireSupervisor, async (req, res) => {
   const config = await getConfig();
   const action = String(req.body?.action || "");
   const channel = String(req.body?.channel || "").trim();
   const target = String(req.body?.target || "").trim();
   const listener = String(req.body?.listener || "").replace(/[^\d]/g, "");
+
+  if (["spy", "spy-browser", "hangup-monitor-spy"].includes(action)) {
+    const scope = userReportScope(req, config);
+    if (!scope.canListen) return res.status(403).json({ error: "Sem permissao para escuta de chamadas" });
+  }
 
   try {
     if (action === "transfer-waiting") {
@@ -3470,36 +3653,36 @@ app.get("/api/pbx-status", requireAuth, async (_req, res) => {
   res.json(await readPbxStatus(config));
 });
 
-app.get("/api/registration-logs", requireAuth, async (_req, res) => {
+app.get("/api/registration-logs", requireAuth, requireAdmin, async (_req, res) => {
   res.json({ logs: await readRegistrationLogs() });
 });
 
-app.get("/api/outbound-diagnostics", requireAuth, async (req, res) => {
+app.get("/api/outbound-diagnostics", requireAuth, requireAdmin, async (req, res) => {
   const config = await getConfig();
   const extensionNumber = String(req.query.ext || config.extensions?.[0]?.number || "201");
   const rawNumber = String(req.query.number || "");
   res.json(await readOutboundDiagnostics(config, extensionNumber, rawNumber));
 });
 
-app.get("/api/generated/:file", requireAuth, async (req, res) => {
+app.get("/api/generated/:file", requireAuth, requireAdmin, async (req, res) => {
   const file = path.basename(req.params.file);
   const filePath = path.join(generatedDir, file);
   if (!(await fs.pathExists(filePath))) return res.status(404).json({ error: "Arquivo nao encontrado" });
   res.type("text/plain").send(await fs.readFile(filePath, "utf8"));
 });
 
-app.get("/api/ivr-audios", requireAuth, async (_req, res) => {
+app.get("/api/ivr-audios", requireAuth, requireAdmin, async (_req, res) => {
   res.json({ audios: await listIvrAudios() });
 });
 
-app.get("/api/ivr-audios/file/:file", requireAuth, async (req, res) => {
+app.get("/api/ivr-audios/file/:file", requireAuth, requireAdmin, async (req, res) => {
   const file = path.basename(req.params.file);
   const filePath = path.join(ivrAudioDir, file);
   if (!(await fs.pathExists(filePath))) return res.status(404).json({ error: "Audio nao encontrado" });
   res.sendFile(filePath);
 });
 
-app.delete("/api/ivr-audios/:file", requireAuth, async (req, res) => {
+app.delete("/api/ivr-audios/:file", requireAuth, requireAdmin, async (req, res) => {
   const file = path.basename(req.params.file || "");
   const extension = path.extname(file).toLowerCase();
   if (!file || !playbackAudioExtensions.has(extension)) return res.status(400).json({ error: "Audio invalido." });
@@ -3530,7 +3713,7 @@ app.delete("/api/ivr-audios/:file", requireAuth, async (req, res) => {
     file,
     playback,
     clearedReferences,
-    config: saved,
+    config: withConfigRevision(saved),
     audios: await listIvrAudios(),
     message: clearedReferences
       ? "Audio excluido e referencias removidas. Clique em Salvar e aplicar para atualizar o Asterisk."
@@ -3538,7 +3721,7 @@ app.delete("/api/ivr-audios/:file", requireAuth, async (req, res) => {
   });
 });
 
-app.post("/api/ivr-audios", requireAuth, upload.single("audio"), async (req, res) => {
+app.post("/api/ivr-audios", requireAuth, requireAdmin, upload.single("audio"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Envie um arquivo de audio." });
   const extension = path.extname(req.file.filename || "").toLowerCase();
   if (!playbackAudioExtensions.has(extension)) {
@@ -3558,7 +3741,7 @@ app.post("/api/ivr-audios", requireAuth, upload.single("audio"), async (req, res
   });
 });
 
-app.get("/api/dialer/campaigns", requireAuth, async (_req, res) => {
+app.get("/api/dialer/campaigns", requireAuth, requireAdmin, async (_req, res) => {
   const config = await getConfig();
   const campaigns = await readDialerCampaigns();
   res.json({
@@ -3569,7 +3752,7 @@ app.get("/api/dialer/campaigns", requireAuth, async (_req, res) => {
   });
 });
 
-app.post("/api/dialer/campaigns", requireAuth, async (req, res) => {
+app.post("/api/dialer/campaigns", requireAuth, requireAdmin, async (req, res) => {
   const config = await getConfig();
   const audios = await listIvrAudios();
   const id = safeDialerText(req.body?.id || "", 50);
@@ -3589,7 +3772,7 @@ app.post("/api/dialer/campaigns", requireAuth, async (req, res) => {
   res.json({ campaign: publicDialerCampaign(savedCampaign), campaigns: (await readDialerCampaigns()).map(publicDialerCampaign) });
 });
 
-app.post("/api/dialer/campaigns/:id/start", requireAuth, async (req, res) => {
+app.post("/api/dialer/campaigns/:id/start", requireAuth, requireAdmin, async (req, res) => {
   const config = await getConfig();
   const audios = await listIvrAudios();
   let campaign = null;
@@ -3607,7 +3790,7 @@ app.post("/api/dialer/campaigns/:id/start", requireAuth, async (req, res) => {
   res.json({ campaign: publicDialerCampaign(campaign), campaigns: (await readDialerCampaigns()).map(publicDialerCampaign) });
 });
 
-app.post("/api/dialer/campaigns/:id/pause", requireAuth, async (req, res) => {
+app.post("/api/dialer/campaigns/:id/pause", requireAuth, requireAdmin, async (req, res) => {
   let campaign = null;
   await updateDialerCampaigns(async (campaigns) =>
     campaigns.map((item) => {
@@ -3620,7 +3803,7 @@ app.post("/api/dialer/campaigns/:id/pause", requireAuth, async (req, res) => {
   res.json({ campaign: publicDialerCampaign(campaign), campaigns: (await readDialerCampaigns()).map(publicDialerCampaign) });
 });
 
-app.post("/api/dialer/campaigns/:id/reset", requireAuth, async (req, res) => {
+app.post("/api/dialer/campaigns/:id/reset", requireAuth, requireAdmin, async (req, res) => {
   let campaign = null;
   await updateDialerCampaigns(async (campaigns) =>
     campaigns.map((item) => {
@@ -3639,7 +3822,7 @@ app.post("/api/dialer/campaigns/:id/reset", requireAuth, async (req, res) => {
   res.json({ campaign: publicDialerCampaign(campaign), campaigns: (await readDialerCampaigns()).map(publicDialerCampaign) });
 });
 
-app.delete("/api/dialer/campaigns/:id", requireAuth, async (req, res) => {
+app.delete("/api/dialer/campaigns/:id", requireAuth, requireAdmin, async (req, res) => {
   let removed = null;
   await updateDialerCampaigns(async (campaigns) => {
     removed = campaigns.find((item) => item.id === req.params.id) || null;
@@ -3653,17 +3836,44 @@ app.get("*", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-ensureStore()
-  .then(async () => {
-    const config = await getConfig();
-    await generateAsteriskConfigs(config);
-    await syncStoredQueuePauses();
-    startDialerEngine();
-    app.listen(port, host, () => {
-      console.log(`PBX SIP Admin rodando em http://${host}:${port}`);
-    });
-  })
-  .catch((error) => {
+app.use((error, req, res, _next) => {
+  console.error(`[http] ${req.method} ${req.originalUrl}:`, error);
+  if (res.headersSent) return;
+  const status = Number(error.status || error.statusCode) || 500;
+  res.status(status).json({
+    error: status >= 500 ? "Falha interna ao processar a solicitacao" : error.message,
+    ...(process.env.NODE_ENV === "development" ? { detail: error.message } : {})
+  });
+});
+
+async function startServer() {
+  await ensureStore();
+  const config = await getConfig();
+  await generateAsteriskConfigs(config);
+  await syncStoredQueuePauses();
+  startDialerEngine();
+  startMaintenanceJobs();
+  return app.listen(port, host, () => {
+    console.log(`PBX SIP Admin rodando em http://${host}:${port}`);
+  });
+}
+
+if (require.main === module) {
+  startServer().catch((error) => {
     console.error("Falha ao iniciar PBX SIP Admin:", error);
     process.exit(1);
   });
+}
+
+module.exports = {
+  app,
+  startServer,
+  _test: {
+    configForUser,
+    configRevision,
+    requireAdmin,
+    requireSupervisor,
+    sanitizeAuditValue,
+    userRole
+  }
+};
