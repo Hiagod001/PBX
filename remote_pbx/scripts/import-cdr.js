@@ -1,6 +1,7 @@
 require("dotenv").config();
 
 const fs = require("fs-extra");
+const nativeFs = require("fs/promises");
 const path = require("path");
 const { ensureDatabase, query } = require("../src/db");
 
@@ -225,7 +226,7 @@ async function main() {
     const canResume = Number(previous.inode) === Number(stats.ino) && Number(previous.offset) <= stats.size;
     const offset = canResume ? Number(previous.offset) : 0;
     const length = Math.max(0, stats.size - offset);
-    const handle = await fs.open(resolvedPath, "r");
+    const handle = await nativeFs.open(resolvedPath, "r");
     const buffer = Buffer.alloc(length);
     try {
       if (length) await handle.read(buffer, 0, length, offset);
