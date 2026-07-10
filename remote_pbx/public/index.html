@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>PBX SIP Admin</title>
-    <link rel="stylesheet" href="/styles.css?v=20260706-page-routes" />
+    <title>UAI PBX | Central de Operacoes</title>
+    <link rel="stylesheet" href="/styles.css?v=20260710-command-center" />
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
     <script src="/vendor/sip.js?v=20260528-local" defer></script>
   </head>
@@ -97,47 +97,58 @@
     <main id="appView" class="app-shell hidden">
       <aside class="sidebar">
         <div class="brand">
-          <span class="brand-mark">P</span>
-          <div>
-            <strong>PBX SIP</strong>
-            <small>Admin</small>
-          </div>
-          <button id="sidebarToggleBtn" class="icon-btn sidebar-toggle-btn" type="button" title="Recolher menu" aria-label="Recolher menu">
-            <i data-lucide="panel-left-close"></i>
-          </button>
+          <img class="brand-mark" src="/assets/icon.png" alt="" />
+          <strong>UAI PBX</strong>
         </div>
         <nav id="navTabs" class="nav-tabs">
-          <span class="nav-group">Operacao</span>
-          <button data-tab="overview" data-label="Resumo operacional" class="active" title="Resumo operacional"><i data-lucide="layout-dashboard"></i><span>Resumo</span></button>
-          <button data-tab="reports" data-label="Relatorios PBX" title="Relatorios PBX"><i data-lucide="bar-chart-3"></i><span>Relatorios</span></button>
-          <button data-tab="status" data-label="Monitoramento" title="Monitoramento"><i data-lucide="activity"></i><span>Monitor</span></button>
-          <span class="nav-group">Telefonia</span>
-          <button data-tab="trunk" data-label="Tronco SIP" title="Tronco SIP"><i data-lucide="radio-tower"></i><span>Tronco</span></button>
+          <button data-tab="overview" data-label="Visao Geral" class="active" title="Visao Geral"><i data-lucide="house"></i><span>Visao Geral</span></button>
+          <button data-tab="status" data-label="Monitor de Filas" title="Monitor de Filas"><i data-lucide="monitor-dot"></i><span>Monitor de Filas</span></button>
           <button data-tab="extensions" data-label="Ramais" title="Ramais"><i data-lucide="phone"></i><span>Ramais</span></button>
-          <button data-tab="routing" data-label="Rotas e permissoes" title="Rotas e permissoes"><i data-lucide="split"></i><span>Rotas</span></button>
-          <button data-tab="ivr" data-label="Construtor URA" title="Construtor URA"><i data-lucide="workflow"></i><span>URA</span></button>
-          <button data-tab="dialer" data-label="Discador" title="Discador"><i data-lucide="phone-outgoing"></i><span>Discador</span></button>
-          <button data-tab="audios" data-label="Audios URA" title="Audios URA"><i data-lucide="file-audio"></i><span>Audios</span></button>
-          <button data-tab="queues" data-label="Filas e grupos" title="Filas e grupos"><i data-lucide="users"></i><span>Filas</span></button>
-          <span class="nav-group">Sistema</span>
-          <button data-tab="logs" data-label="Logs tecnicos" title="Logs tecnicos"><i data-lucide="terminal"></i><span>Logs</span></button>
+          <button data-tab="dialer" data-label="Chamadas" title="Chamadas"><i data-lucide="phone-call"></i><span>Chamadas</span></button>
+          <button data-tab="audios" data-label="Gravacoes" title="Gravacoes"><i data-lucide="mic-2"></i><span>Gravacoes</span></button>
+          <button data-tab="reports" data-label="Relatorios" title="Relatorios"><i data-lucide="file-chart-column"></i><span>Relatorios</span></button>
+          <button data-tab="queues" data-label="Filas e paineis" title="Filas e paineis"><i data-lucide="layout-panel-top"></i><span>Filas e paineis</span></button>
+          <span class="nav-group">Telefonia</span>
+          <button data-tab="trunk" data-label="Troncos SIP" title="Troncos SIP"><i data-lucide="radio-tower"></i><span>Troncos</span></button>
+          <button data-tab="routing" data-label="Rotas e regras" title="Rotas e regras"><i data-lucide="route"></i><span>Rotas e regras</span></button>
+          <button data-tab="ivr" data-label="URAs" title="URAs"><i data-lucide="workflow"></i><span>URAs</span></button>
+          <span class="nav-group">Administracao</span>
           <button data-tab="security" data-label="Seguranca" title="Seguranca"><i data-lucide="shield-check"></i><span>Seguranca</span></button>
+          <button data-tab="logs" data-label="Sistema" title="Sistema"><i data-lucide="settings-2"></i><span>Sistema</span></button>
           <button data-tab="audit" data-label="Auditoria" title="Auditoria"><i data-lucide="history"></i><span>Auditoria</span></button>
           <button data-tab="users" data-label="Usuarios" title="Usuarios"><i data-lucide="user-cog"></i><span>Usuarios</span></button>
         </nav>
-        <button id="logoutBtn" class="ghost-btn" title="Sair"><i data-lucide="log-out"></i><span>Sair</span></button>
+        <div class="sidebar-footer">
+          <button id="sidebarToggleBtn" class="sidebar-collapse-btn" type="button" title="Recolher menu" aria-label="Recolher menu">
+            <i data-lucide="circle-chevron-left"></i><span>Recolher menu</span>
+          </button>
+          <div class="sidebar-operator">
+            <span id="sidebarUserInitial" class="operator-avatar">AU</span>
+            <div>
+              <strong id="sidebarUserName">Administrador</strong>
+              <small id="sidebarUserRole">Administrador</small>
+              <span><i></i> Online</span>
+            </div>
+            <button id="logoutBtn" class="icon-btn sidebar-logout" type="button" title="Sair" aria-label="Sair"><i data-lucide="log-out"></i></button>
+          </div>
+        </div>
       </aside>
 
       <section class="workspace">
         <header class="topbar">
-          <div>
-            <p class="eyebrow">Console PBX</p>
-            <h2 id="pageTitle">Resumo</h2>
+          <div class="topbar-heading">
+            <button id="sidebarHeaderToggleBtn" class="icon-btn topbar-menu-btn" type="button" title="Abrir ou recolher menu" aria-label="Abrir ou recolher menu"><i data-lucide="menu"></i></button>
+            <div>
+              <h2 id="pageTitle">Central de Operacoes</h2>
+              <p id="pageSubtitle">Console operacional do UAI PBX</p>
+            </div>
           </div>
           <div class="top-actions">
-            <button id="themeToggleBtn" class="secondary-btn" type="button" title="Usar modo escuro" aria-label="Usar modo escuro">
+            <span id="topbarSystemStatus" class="topbar-status"><i></i><span>Sistema online</span></span>
+            <span class="topbar-meta"><i data-lucide="calendar-days"></i><time id="topbarDate"></time></span>
+            <span class="topbar-meta"><i data-lucide="clock-3"></i><time id="topbarClock"></time></span>
+            <button id="themeToggleBtn" class="icon-btn" type="button" title="Usar modo escuro" aria-label="Usar modo escuro">
               <i data-lucide="moon"></i>
-              <span>Escuro</span>
             </button>
             <button id="saveBtn" class="primary-btn"><i data-lucide="save"></i>Salvar e aplicar</button>
           </div>
@@ -174,6 +185,6 @@
       </section>
     </main>
 
-    <script src="/app.js?v=20260706-page-routes"></script>
+    <script src="/app.js?v=20260710-command-center"></script>
   </body>
 </html>

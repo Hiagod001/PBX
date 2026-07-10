@@ -141,6 +141,7 @@ const state = {
     date: todayKey(),
     queue: "",
     extension: "",
+    search: "",
     calls: [],
     dashboard: {}
   },
@@ -205,8 +206,8 @@ const pages = {
 };
 
 const titleByTab = {
-  overview: "Resumo",
-  status: "Monitoramento",
+  overview: "Central de Operacoes",
+  status: "Monitor de Filas",
   trunk: "Tronco SIP",
   extensions: "Ramais SIP",
   routing: "Rotas e permissoes",
@@ -219,6 +220,23 @@ const titleByTab = {
   reports: "Relatorios PBX",
   audit: "Auditoria",
   users: "Usuarios"
+};
+
+const subtitleByTab = {
+  overview: "Console operacional do UAI PBX",
+  status: "Acompanhamento em tempo real de filas e agentes",
+  trunk: "Conectividade SIP e entradas da operadora",
+  extensions: "Cadastro, presenca e recursos dos ramais",
+  routing: "Regras de entrada, saida e permissoes",
+  ivr: "Fluxos de atendimento automatico",
+  dialer: "Campanhas e chamadas de saida",
+  audios: "Biblioteca de audios do atendimento",
+  queues: "Equipes, estrategias e distribuicao de chamadas",
+  security: "Protecao e politicas do ambiente",
+  logs: "Diagnosticos e saude tecnica do PBX",
+  reports: "Indicadores e historico operacional",
+  audit: "Rastreabilidade das alteracoes",
+  users: "Acessos e permissoes administrativas"
 };
 
 const menuPermissions = {
@@ -335,7 +353,9 @@ function applyTheme(theme = state.theme) {
 
   $all("#themeToggleBtn, #extensionThemeToggleBtn").forEach((button) => {
     const dark = state.theme === "dark";
-    button.innerHTML = `<i data-lucide="${dark ? "sun" : "moon"}"></i><span>${dark ? "Claro" : "Escuro"}</span>`;
+    button.innerHTML = button.id === "themeToggleBtn"
+      ? `<i data-lucide="${dark ? "sun" : "moon"}"></i>`
+      : `<i data-lucide="${dark ? "sun" : "moon"}"></i><span>${dark ? "Claro" : "Escuro"}</span>`;
     button.title = dark ? "Usar modo claro" : "Usar modo escuro";
     button.setAttribute("aria-label", button.title);
   });
@@ -1559,12 +1579,43 @@ function routePresetFor(extension) {
 function applySidebarState() {
   const appView = $("#appView");
   const toggle = $("#sidebarToggleBtn");
+  const headerToggle = $("#sidebarHeaderToggleBtn");
   const collapsed = Boolean(state.sidebarCollapsed);
   appView?.classList.toggle("sidebar-collapsed", collapsed);
-  if (!toggle) return;
-  toggle.title = collapsed ? "Abrir menu" : "Recolher menu";
-  toggle.setAttribute("aria-label", collapsed ? "Abrir menu" : "Recolher menu");
-  toggle.innerHTML = `<i data-lucide="${collapsed ? "panel-left-open" : "panel-left-close"}"></i>`;
+  const label = collapsed ? "Abrir menu" : "Recolher menu";
+  if (toggle) {
+    toggle.title = label;
+    toggle.setAttribute("aria-label", label);
+    toggle.innerHTML = `<i data-lucide="${collapsed ? "circle-chevron-right" : "circle-chevron-left"}"></i><span>${label}</span>`;
+  }
+  if (headerToggle) {
+    headerToggle.title = label;
+    headerToggle.setAttribute("aria-label", label);
+  }
+}
+
+function updateOperationalClock() {
+  const now = new Date();
+  const date = $("#topbarDate");
+  const clock = $("#topbarClock");
+  if (date) date.textContent = now.toLocaleDateString("pt-BR");
+  if (clock) clock.textContent = now.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function updateOperatorIdentity() {
+  if (!state.user) return;
+  const username = String(state.user.name || state.user.username || "Administrador");
+  const role = state.user.role === "admin" || state.user.username === "admin" ? "Administrador" : state.user.role || "Operador";
+  const initials = username
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase() || "AU";
+  if ($("#sidebarUserInitial")) $("#sidebarUserInitial").textContent = initials;
+  if ($("#sidebarUserName")) $("#sidebarUserName").textContent = username;
+  if ($("#sidebarUserRole")) $("#sidebarUserRole").textContent = role;
 }
 
 function renderShell() {
@@ -1573,6 +1624,8 @@ function renderShell() {
   $("#extensionView")?.classList.toggle("hidden", !state.extensionSession);
   $("#passwordWarning").classList.toggle("hidden", !state.user?.mustChangePassword);
   applySidebarState();
+  updateOperationalClock();
+  updateOperatorIdentity();
   if (state.user) {
     $all("[data-tab]").forEach((button) => {
       button.classList.toggle("hidden", !canAccessTab(button.dataset.tab));
@@ -1617,6 +1670,8 @@ function syncActiveTabUi() {
   $all("[data-tab]").forEach((button) => button.classList.toggle("active", button.dataset.tab === state.activeTab));
   const title = $("#pageTitle");
   if (title) title.textContent = titleByTab[state.activeTab] || titleByTab.overview;
+  const subtitle = $("#pageSubtitle");
+  if (subtitle) subtitle.textContent = subtitleByTab[state.activeTab] || subtitleByTab.overview;
   updateTopbarActions();
 }
 
@@ -3025,7 +3080,7 @@ function renderCompactMonitor(queues = [], waitingCalls = [], totals = {}, lastR
         <div class="mini-monitor-list waiting-call-list">${waitingRows || `<p class="hint">Nenhuma chamada aguardando atendimento.</p>`}</div>
       </section>
     </div>
-    ${renderMonitorCompactSettings(queues)}
+    ${state.activeTab === "status" ? renderMonitorCompactSettings(queues) : ""}
     ${renderMonitorSpyModal()}
   `;
 }
@@ -3357,7 +3412,7 @@ function renderStatus() {
         <div class="mini-monitor-list waiting-call-list">${waitingRows || `<p class="hint">Nenhuma chamada aguardando atendimento.</p>`}</div>
       </section>
     </div>
-    ${renderMonitorCompactSettings(queues)}
+    ${state.activeTab === "status" ? renderMonitorCompactSettings(queues) : ""}
     ${renderMonitorSpyModal()}
   `;
   restoreCompactSettingsViewport(compactSettingsViewport);
@@ -3367,31 +3422,87 @@ function renderFlow() {
   renderIvr();
 }
 
+function commandCenterQueueCards(queues = [], extensionFilter = "", searchValue = "") {
+  const fields = state.monitorCompact.fields || {};
+  const statuses = state.monitorCompact.statuses || {};
+  const search = String(searchValue || "").trim().toLowerCase();
+  const columnCount = 1 + ["calls", "duration", "number", "pause", "idle", "online"].filter((key) => fields[key] !== false).length;
+  return queues
+    .map((queue, queueIndex) => {
+      const queueText = `${queue.name || ""} ${queue.id || queue.number || ""}`.toLowerCase();
+      const queueMatchesSearch = !search || queueText.includes(search);
+      const agents = (queue.agents || []).filter((agent) => {
+        const tone = monitorStatusTone(agent.statusTone || agent.status);
+        if (statuses[tone] === false) return false;
+        if (extensionFilter && String(agent.number || "") !== String(extensionFilter)) return false;
+        if (queueMatchesSearch) return true;
+        return `${agent.name || ""} ${agent.number || ""}`.toLowerCase().includes(search);
+      });
+      if ((extensionFilter || search) && !agents.length && !queueMatchesSearch) return "";
+      const headers = [
+        fields.calls === false ? "" : "<th>F/R</th>",
+        fields.duration === false ? "" : "<th>Dura.</th>",
+        fields.number === false ? "" : "<th>Numero</th>",
+        fields.pause === false ? "" : "<th>Pausa</th>",
+        fields.idle === false ? "" : "<th>Ocioso</th>",
+        fields.online === false ? "" : "<th>Online</th>"
+      ].join("");
+      const rows = agents
+        .map((agent) => {
+          const tone = monitorStatusTone(agent.statusTone || agent.status);
+          const pauseSummary = agentPauseSummary(agent, tone);
+          const pauseTime = tone === "paused" ? agent.pauseDurationLabel || (Number(agent.pauseSeconds) ? formatSeconds(agent.pauseSeconds) : "0s") : "-";
+          return `
+            <tr class="compact-agent-row ${tone}">
+              <td class="compact-agent-name">
+                <span class="agent-state-dot ${tone}"></span>
+                <strong>${escapeHtml(agent.name || agent.number || "-")}</strong>
+                <span>${escapeHtml(agent.number || "-")}</span>
+                ${pauseSummary ? `<small class="compact-agent-pause">${escapeHtml(pauseSummary)}</small>` : ""}
+              </td>
+              ${fields.calls === false ? "" : `<td title="Feitas/recebidas hoje">${compactAgentCallPair(agent)}</td>`}
+              ${fields.duration === false ? "" : `<td class="call-duration">${escapeHtml(agent.duration || "-")}</td>`}
+              ${fields.number === false ? "" : `<td>${escapeHtml(agent.currentNumber || "-")}</td>`}
+              ${fields.pause === false ? "" : `<td class="pause-value">${escapeHtml(pauseTime)}</td>`}
+              ${fields.idle === false ? "" : `<td class="idle-value">${escapeHtml(agent.idleTime || "-")}</td>`}
+              ${fields.online === false ? "" : `<td>${escapeHtml(agent.onlineDurationLabel || agent.loginTime || "-")}</td>`}
+            </tr>`;
+        })
+        .join("");
+      return `
+        <section class="compact-queue-card command-queue-card">
+          <header>
+            <div>
+              <h3>${escapeHtml(queue.name || queue.id || `Fila ${queueIndex + 1}`)}</h3>
+              <span>Fila ${escapeHtml(queue.id || queue.number || "-")}</span>
+            </div>
+            <strong title="Atendidas | Perdidas">${compactQueueHeader(queue)}</strong>
+          </header>
+          <table class="compact-monitor-table">
+            <thead><tr><th>Nome / ramal</th>${headers}</tr></thead>
+            <tbody>${rows || `<tr><td colspan="${columnCount}" class="empty-table-cell">Sem agentes nesta visualizacao.</td></tr>`}</tbody>
+          </table>
+        </section>`;
+    })
+    .join("");
+}
+
 function renderOverview() {
   const cfg = state.config;
   const pbxExtensions = state.pbxStatus?.extensions || [];
   const liveByNumber = new Map(pbxExtensions.map((extension) => [String(extension.number || ""), extension]));
-  const quickExtensions = cfg.extensions.map((extension) => ({
-    ...extension,
-    live: liveByNumber.get(String(extension.number || "")) || null
-  }));
-  const trunkStatus = state.pbxStatus?.trunk?.registration?.status || "Nao verificado";
-  const trunkTone = statusTone(trunkStatus === "Registered", trunkStatus);
   const overviewDate = state.overview.date || todayKey();
   const selectedQueueItem = selectedOverviewQueue();
   const selectedQueueValue = String(state.overview.queue || "");
   const selectedExtensionValue = String(state.overview.extension || "");
+  const searchValue = String(state.overview.search || "");
   const selectedQueueMembers = selectedQueueItem ? overviewQueueMemberNumbers(selectedQueueItem.queue) : null;
-  const hasOverviewFilters = Boolean(selectedQueueValue || selectedExtensionValue);
-  const visibleExtensions = cfg.extensions.filter((extension) => {
+  const hasOverviewFilters = Boolean(selectedQueueValue || selectedExtensionValue || searchValue);
+  const selectableExtensions = cfg.extensions.filter((extension) => {
     const number = String(extension.number || "");
-    if (selectedExtensionValue && number !== selectedExtensionValue) return false;
     if (selectedQueueMembers && !selectedQueueMembers.has(number)) return false;
     return true;
   });
-  const visibleExtensionNumbers = new Set(visibleExtensions.map((extension) => String(extension.number || "")));
-  const visibleQuickExtensions = quickExtensions.filter((extension) => visibleExtensionNumbers.has(String(extension.number || "")));
-  const registeredExtensions = visibleQuickExtensions.filter((ext) => ext.live?.registered).length;
   const overviewCallsRaw = state.overview.calls?.length ? state.overview.calls : (state.reports || []).filter((call) => localDateKey(call.startedAt) === overviewDate);
   const overviewCalls = overviewCallsRaw.filter((call) =>
     callMatchesOverviewQueue(call, selectedQueueItem) &&
@@ -3402,10 +3513,6 @@ function renderOverview() {
   const rejectedToday = overviewDate === todayKey() && !hasOverviewFilters ? (state.inboundCalls?.rejected || []).length : 0;
   const answeredToday = answeredOverview.length;
   const missedToday = inboundOverview.filter((call) => !isHumanAnsweredCall(call)).length + rejectedToday;
-  const totalReceivedToday = inboundOverview.length;
-  const tmaSeconds = answeredOverview.length
-    ? Math.round(answeredOverview.reduce((sum, call) => sum + Number(call.billsec || call.duration || 0), 0) / answeredOverview.length)
-    : 0;
   const tmeSeconds = answeredOverview.length
     ? Math.round(
         answeredOverview.reduce((sum, call) => {
@@ -3416,22 +3523,6 @@ function renderOverview() {
         }, 0) / answeredOverview.length
       )
     : 0;
-  const byExtension = visibleExtensions.map((extension) => {
-    const calls = inboundOverview.filter((call) => inferTargetExtension(call) === extension.number || String(call.extension || "") === extension.number);
-    const received = calls.length;
-    const answered = calls.filter((call) => isHumanAnsweredCall(call)).length;
-    const liveExtension = liveByNumber.get(String(extension.number || ""));
-    return {
-      ...extension,
-      received,
-      answered,
-      missed: Math.max(received - answered, 0),
-      registered: liveExtension?.registered || false,
-      paused: liveExtension?.paused || false,
-      pauseReason: liveExtension?.pauseReason || "",
-      pauseDurationLabel: liveExtension?.pauseDurationLabel || ""
-    };
-  });
 
   function formatSeconds(totalSeconds) {
     if (!totalSeconds) return "0s";
@@ -3447,106 +3538,120 @@ function renderOverview() {
       return option(value, selectedQueueValue, queueLabel(queue, index));
     })
     .join("")}`;
-  const extensionOptions = `<option value="">Todos os ramais</option>${visibleExtensions
+  const extensionOptions = `<option value="">Todos os ramais</option>${selectableExtensions
     .map((extension) => option(String(extension.number || ""), selectedExtensionValue, `${extension.number} ${extension.name || ""}`.trim()))
     .join("")}`;
-  const filterLabel = [
-    selectedQueueItem ? `Fila ${queueLabel(selectedQueueItem.queue, selectedQueueItem.index)}` : "",
-    selectedExtensionValue ? `Ramal ${selectedExtensionValue}` : ""
-  ].filter(Boolean).join(" / ");
 
-  const extensionRows = byExtension
+  const liveQueuesSource = state.pbxStatus?.queues?.length
+    ? state.pbxStatus.queues
+    : (cfg.queues || []).map((queue) => ({
+        ...queue,
+        completed: 0,
+        abandoned: 0,
+        holdTime: 0,
+        agents: (queue.members || []).map((member) => {
+          const extension = cfg.extensions.find((item) => String(item.number) === String(member)) || {};
+          const live = liveByNumber.get(String(member)) || {};
+          return {
+            number: member,
+            name: extension.name || member,
+            statusTone: live.registered ? "available" : "unavailable",
+            statusLabel: live.registered ? "Disponivel" : "Offline",
+            callsTaken: 0,
+            duration: "",
+            currentNumber: "",
+            idleTime: live.idleTime || "",
+            onlineDurationLabel: live.onlineDurationLabel || ""
+          };
+        })
+      }));
+  const liveQueues = liveQueuesSource.filter((queue, index) => !selectedQueueValue || queueFilterTokens(queue, index).includes(selectedQueueValue));
+  const uniqueAgents = new Map();
+  liveQueues.forEach((queue) => {
+    (queue.agents || []).forEach((agent) => {
+      if (selectedExtensionValue && String(agent.number || "") !== selectedExtensionValue) return;
+      uniqueAgents.set(String(agent.number || agent.name || uniqueAgents.size), agent);
+    });
+  });
+  const agentList = [...uniqueAgents.values()];
+  const availableAgents = agentList.filter((agent) => monitorStatusTone(agent.statusTone || agent.status) === "available").length;
+  const pausedAgents = agentList.filter((agent) => monitorStatusTone(agent.statusTone || agent.status) === "paused").length;
+  const averageQueueHold = liveQueues.length
+    ? Math.round(liveQueues.reduce((sum, queue) => sum + (Number(queue.holdTime) || 0), 0) / liveQueues.length)
+    : 0;
+  const displayQueues = visibleCompactQueues(liveQueues);
+  const queueCards = commandCenterQueueCards(displayQueues, selectedExtensionValue, searchValue);
+  const overviewDateLabel = overviewDate.split("-").reverse().join("/");
+  const kpis = [
+    ["Filas ativas", liveQueues.length, `de ${liveQueuesSource.length}`, "users-round", "accent"],
+    ["Chamadas atendidas", answeredToday, overviewDate === todayKey() ? "Hoje" : overviewDateLabel, "phone-call", "success"],
+    ["Chamadas perdidas", missedToday, overviewDate === todayKey() ? "Hoje" : overviewDateLabel, "phone-missed", "danger"],
+    ["Agentes em pausa", pausedAgents, "Total", "circle-pause", "caution"],
+    ["Agentes disponiveis", availableAgents, "Total", "user-round-check", "success"],
+    ["Tempo medio de espera", formatSeconds(tmeSeconds || averageQueueHold), selectedQueueValue ? "Fila filtrada" : "Todas as filas", "clock-3", "neutral"]
+  ]
     .map(
-      (extension) => `
-      <tr>
-        <td><span class="status-dot ${extension.paused ? "pause" : extension.registered ? "ok" : "warn"}"></span></td>
-        <td><strong>${escapeHtml(extension.number)}</strong><br><span class="hint">${escapeHtml(extension.name)}</span></td>
-        <td>${extension.paused ? `<span class="badge warn">Pausado ${escapeHtml(extension.pauseDurationLabel || "")}</span><br><span class="hint">${escapeHtml(extension.pauseReason || "Pausa")}</span>` : extension.registered ? '<span class="badge ok">Online</span>' : '<span class="badge error">Offline</span>'}</td>
-        <td>${extension.received}</td>
-        <td>${extension.answered}</td>
-        <td>${extension.missed}</td>
-      </tr>`
+      ([label, value, meta, icon, tone]) => `
+        <article class="command-kpi ${tone}">
+          <i data-lucide="${icon}"></i>
+          <div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(meta)}</small></div>
+        </article>`
     )
     .join("");
 
   pages.overview.innerHTML = `
-    <div class="section-grid">
-      <section class="panel overview-filter-panel">
-        <div>
-          <p class="eyebrow">Resumo operacional</p>
-          <h3>Indicadores por data</h3>
-          <p class="hint">Escolha o dia, a fila e o ramal usados pelos cards e pela tabela.</p>
+    <div class="command-center">
+      <section class="command-kpi-grid">${kpis}</section>
+      <section class="panel command-monitor-panel">
+        <header class="command-monitor-header">
+          <div>
+            <h3>Monitor de Filas</h3>
+            <span><i class="command-live-dot"></i> Ao Vivo</span>
+          </div>
+          <div class="command-monitor-tools">
+            <label class="command-search" title="Buscar fila ou ramal">
+              <i data-lucide="search"></i>
+              <input id="overviewSearchInput" type="search" placeholder="Buscar fila ou ramal..." value="${escapeHtml(searchValue)}" />
+            </label>
+            <label class="command-filter-field" title="Data do resumo">
+              <i data-lucide="calendar-days"></i>
+              <input id="overviewDateInput" type="date" value="${escapeHtml(overviewDate)}" aria-label="Data do resumo" />
+            </label>
+            <label class="command-filter-field">
+              <i data-lucide="list-filter"></i>
+              <select id="overviewQueueFilter" aria-label="Filtrar fila">${queueOptions}</select>
+            </label>
+            <label class="command-filter-field">
+              <i data-lucide="headset"></i>
+              <select id="overviewExtensionFilter" aria-label="Filtrar ramal">${extensionOptions}</select>
+            </label>
+            <button id="applyOverviewDateBtn" class="icon-btn" type="button" title="Aplicar data"><i data-lucide="check"></i></button>
+            <button id="overviewColumnsBtn" class="secondary-btn compact" type="button"><i data-lucide="columns-3"></i>Colunas</button>
+            <button id="clearOverviewFiltersBtn" class="icon-btn" type="button" title="Limpar filtros" ${hasOverviewFilters ? "" : "disabled"}><i data-lucide="filter-x"></i></button>
+          </div>
+        </header>
+        <div class="compact-queue-grid command-queue-grid">
+          ${queueCards || `<div class="command-empty"><i data-lucide="search-x"></i><strong>Nenhuma fila encontrada</strong><span>Revise os filtros selecionados.</span></div>`}
         </div>
-        <div class="overview-date-controls">
-          <label>Data do resumo<input id="overviewDateInput" type="date" value="${escapeHtml(overviewDate)}" /></label>
-          <label>Fila<select id="overviewQueueFilter">${queueOptions}</select></label>
-          <label>Ramal<select id="overviewExtensionFilter">${extensionOptions}</select></label>
-          <button id="applyOverviewDateBtn" class="primary-btn"><i data-lucide="calendar-check"></i>Aplicar</button>
-          <button id="todayOverviewDateBtn" class="secondary-btn"><i data-lucide="calendar-days"></i>Hoje</button>
-          <button id="clearOverviewFiltersBtn" class="secondary-btn" ${hasOverviewFilters ? "" : "disabled"}><i data-lucide="filter-x"></i>Limpar</button>
-        </div>
-        ${filterLabel ? `<p class="hint">Filtro ativo: ${escapeHtml(filterLabel)}</p>` : ""}
-      </section>
-      <section class="panel third stat">
-        <span>Ramais online</span>
-        <strong>${registeredExtensions}/${visibleExtensions.length}</strong>
-        <small class="hint">Ramais conectados neste filtro</small>
-      </section>
-      <section class="panel third stat">
-        <span>Tronco da operadora</span>
-        <strong>${escapeHtml(trunkStatus === "Registered" ? "Online" : trunkStatus)}</strong>
-        <small class="hint">Status atual do tronco SIP</small>
-      </section>
-      <section class="panel third stat">
-        <span>Chamadas recebidas</span>
-        <strong>${totalReceivedToday}</strong>
-        <small class="hint">Movimento de ${overviewDate.split("-").reverse().join("/")}</small>
-      </section>
-      <section class="panel third stat">
-        <span>Ligacoes atendidas</span>
-        <strong>${answeredToday}</strong>
-        <small class="hint">Atendidas por operador</small>
-      </section>
-      <section class="panel third stat">
-        <span>TMA</span>
-        <strong>${formatSeconds(tmaSeconds)}</strong>
-        <small class="hint">Tempo medio de atendimento</small>
-      </section>
-      <section class="panel third stat">
-        <span>TME</span>
-        <strong>${formatSeconds(tmeSeconds)}</strong>
-        <small class="hint">Tempo medio de espera</small>
-      </section>
-      <section class="panel third stat">
-        <span>Ligacoes perdidas</span>
-        <strong>${missedToday}</strong>
-        <small class="hint">Nao atendidas${overviewDate === todayKey() ? " ou rejeitadas" : ""}</small>
-      </section>
-      <section class="panel">
-        <div class="panel-header">
-          <h3>Status rapido</h3>
-          <span class="badge ${trunkTone}">${escapeHtml(trunkStatus === "Registered" ? "Tronco online" : "Tronco com alerta")}</span>
-        </div>
-        <div class="pill-row">
-          ${visibleQuickExtensions
-            .map(
-              (extension) => `
-              <span class="badge ${extension.live?.registered ? "ok" : "error"}">${escapeHtml(extension.number)} ${escapeHtml(extension.name || "")} - ${extension.live?.registered ? "Online" : "Offline"}</span>`
-            )
-            .join("")}
-        </div>
-      </section>
-      <section class="panel">
-        <div class="panel-header"><h3>Chamadas por ramal</h3><span class="badge">${overviewDate.split("-").reverse().join("/")}</span></div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th></th><th>Ramal</th><th>Status</th><th>Recebidas</th><th>Atendidas</th><th>Perdidas</th></tr></thead>
-            <tbody>${extensionRows || `<tr><td colspan="6">Nenhum ramal encontrado.</td></tr>`}</tbody>
-          </table>
-        </div>
+        <footer class="command-monitor-footer">
+          <div class="command-legend">
+            <strong>Legenda:</strong>
+            <span><i class="agent-state-dot available"></i>Disponivel</span>
+            <span><i class="agent-state-dot paused"></i>Em pausa</span>
+            <span><i class="agent-state-dot unavailable"></i>Inativo</span>
+            <span><i class="agent-state-dot busy"></i>Em ligacao</span>
+          </div>
+          <span>${monitorNumber(displayQueues.length)} de ${monitorNumber(liveQueuesSource.length)} filas exibidas</span>
+        </footer>
       </section>
     </div>
+    ${state.activeTab === "overview" ? renderMonitorCompactSettings(liveQueuesSource) : ""}
   `;
+}
+
+function renderMonitorPreferencesSurface() {
+  if (state.activeTab === "overview") renderOverview();
+  else renderStatus();
 }
 
 function renderTrunk() {
@@ -6154,7 +6259,7 @@ document.addEventListener("click", async (event) => {
       return;
     }
 
-    if (event.target.closest("#sidebarToggleBtn")) {
+    if (event.target.closest("#sidebarToggleBtn, #sidebarHeaderToggleBtn")) {
       state.sidebarCollapsed = !state.sidebarCollapsed;
       saveSidebarCollapsed(state.sidebarCollapsed);
       applySidebarState();
@@ -7067,6 +7172,7 @@ document.addEventListener("click", async (event) => {
     if (event.target.closest("#clearOverviewFiltersBtn")) {
       state.overview.queue = "";
       state.overview.extension = "";
+      state.overview.search = "";
       renderOverview();
       iconRefresh();
       return;
@@ -7114,16 +7220,16 @@ document.addEventListener("click", async (event) => {
       return;
     }
 
-    if (event.target.closest("#monitorCompactSettingsBtn")) {
+    if (event.target.closest("#monitorCompactSettingsBtn, #overviewColumnsBtn")) {
       state.monitorCompact.settingsOpen = true;
-      renderStatus();
+      renderMonitorPreferencesSurface();
       iconRefresh();
       return;
     }
 
     if (event.target.closest("[data-monitor-compact-close]")) {
       state.monitorCompact.settingsOpen = false;
-      renderStatus();
+      renderMonitorPreferencesSurface();
       iconRefresh();
       return;
     }
@@ -7136,7 +7242,7 @@ document.addEventListener("click", async (event) => {
           ? queues.map((queue, index) => queueCompactId(queue, index))
           : [];
       saveMonitorCompactSettings();
-      renderStatus();
+      renderMonitorPreferencesSurface();
       iconRefresh();
       return;
     }
@@ -7144,7 +7250,7 @@ document.addEventListener("click", async (event) => {
     if (event.target.closest("[data-compact-reset]")) {
       state.monitorCompact = { ...defaultMonitorCompactSettings(), view: state.monitorCompact.view, settingsOpen: true };
       saveMonitorCompactSettings();
-      renderStatus();
+      renderMonitorPreferencesSurface();
       iconRefresh();
       return;
     }
@@ -7404,11 +7510,25 @@ document.addEventListener("wheel", (event) => {
 
 document.addEventListener("input", (event) => {
   if (handleSoftphoneInput(event)) return;
+  const overviewSearch = event.target.closest("#overviewSearchInput");
+  if (overviewSearch) {
+    const cursorPosition = overviewSearch.selectionStart ?? overviewSearch.value.length;
+    state.overview.search = overviewSearch.value || "";
+    renderOverview();
+    iconRefresh();
+    requestAnimationFrame(() => {
+      const nextSearch = $("#overviewSearchInput");
+      if (!nextSearch) return;
+      nextSearch.focus();
+      nextSearch.setSelectionRange(cursorPosition, cursorPosition);
+    });
+    return;
+  }
   const compactSearch = event.target.closest("[data-compact-search]");
   if (compactSearch) {
     const cursorPosition = compactSearch.selectionStart ?? compactSearch.value.length;
     state.monitorCompact.queueSearch = compactSearch.value || "";
-    renderStatus();
+    renderMonitorPreferencesSurface();
     iconRefresh();
     requestAnimationFrame(() => {
       const nextSearch = $("[data-compact-search]");
@@ -7444,7 +7564,7 @@ document.addEventListener("change", (event) => {
     state.monitorCompact.fields = state.monitorCompact.fields || {};
     state.monitorCompact.fields[compactField.dataset.compactField] = compactField.checked;
     saveMonitorCompactSettings();
-    renderStatus();
+    renderMonitorPreferencesSurface();
     iconRefresh();
     return;
   }
@@ -7454,7 +7574,7 @@ document.addEventListener("change", (event) => {
     state.monitorCompact.statuses = state.monitorCompact.statuses || {};
     state.monitorCompact.statuses[compactStatus.dataset.compactStatus] = compactStatus.checked;
     saveMonitorCompactSettings();
-    renderStatus();
+    renderMonitorPreferencesSurface();
     iconRefresh();
     return;
   }
@@ -7467,7 +7587,7 @@ document.addEventListener("change", (event) => {
     else hidden.add(id);
     state.monitorCompact.hiddenQueues = [...hidden];
     saveMonitorCompactSettings();
-    renderStatus();
+    renderMonitorPreferencesSurface();
     iconRefresh();
     return;
   }
@@ -7554,6 +7674,9 @@ boot().catch(() => {
   renderShell();
   applyTheme();
 });
+
+updateOperationalClock();
+setInterval(updateOperationalClock, 1000);
 
 setInterval(() => {
   if (state.user && state.config && state.activeTab === "status") {

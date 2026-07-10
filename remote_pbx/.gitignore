@@ -3,3 +3,4 @@ node_modules/
 data/
 generated/
 npm-debug.log*
+design-implementation-*.png
