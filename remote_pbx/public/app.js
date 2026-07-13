@@ -256,6 +256,24 @@ const menuPermissions = {
   users: "users"
 };
 
+const userMenuGroups = [
+  {
+    label: "Operacao",
+    icon: "activity",
+    tabs: ["overview", "status", "reports", "queues", "extensions", "dialer"]
+  },
+  {
+    label: "Telefonia",
+    icon: "phone",
+    tabs: ["trunk", "routing", "ivr", "audios"]
+  },
+  {
+    label: "Governanca",
+    icon: "shield-check",
+    tabs: ["logs", "security", "audit", "users"]
+  }
+];
+
 const adminOnlyTabs = new Set(["trunk", "extensions", "routing", "ivr", "dialer", "audios", "queues", "logs", "security", "audit", "users"]);
 
 const tabRoutes = {
@@ -5344,12 +5362,38 @@ function renderAudit() {
 }
 
 function renderUsers() {
-  const menuKeys = Object.entries(menuPermissions);
   const users = state.users.length ? state.users : [state.user].filter(Boolean);
-  const rows = users.map((user, index) => `
+  const rows = users.map((user, index) => {
+    const isAdmin = user.role === "admin";
+    const enabledMenuCount = Object.values(menuPermissions).filter((key) => isAdmin || user.permissions?.menus?.[key]).length;
+    const menuGroups = userMenuGroups.map((group) => `
+      <section class="user-permission-group">
+        <div class="user-permission-group-title">
+          <i data-lucide="${group.icon}"></i>
+          <strong>${group.label}</strong>
+          <span>${group.tabs.length}</span>
+        </div>
+        <div class="user-permission-list">
+          ${group.tabs.map((tab) => {
+            const key = menuPermissions[tab];
+            return `<label class="user-permission-option">
+              <input type="checkbox" data-user-menu="${key}" ${(isAdmin || user.permissions?.menus?.[key]) ? "checked" : ""} ${isAdmin ? "disabled" : ""}/>
+              <span>${escapeHtml(titleByTab[tab] || tab)}</span>
+            </label>`;
+          }).join("")}
+        </div>
+      </section>`).join("");
+
+    return `
     <article class="panel user-card" data-user-index="${index}">
       <div class="panel-header">
-        <h3>${escapeHtml(user.username || "novo")}</h3>
+        <div class="user-card-title">
+          <span class="user-avatar"><i data-lucide="user-round"></i></span>
+          <div>
+            <h3>${escapeHtml(user.username || "novo")}</h3>
+            <span>${isAdmin ? "Administrador com acesso total" : "Acesso personalizado"}</span>
+          </div>
+        </div>
         <button class="icon-btn danger" data-remove-user="${index}" ${user.username === "admin" ? "disabled" : ""} title="Remover usuario"><i data-lucide="trash-2"></i></button>
       </div>
       <div class="field-grid compact-grid">
@@ -5360,15 +5404,47 @@ function renderUsers() {
         <label class="wide">Ramais permitidos<input data-user-field="allowedExtensions" value="${escapeHtml((user.allowedExtensions || []).join(", "))}" placeholder="201, 202" /></label>
         <label class="wide">Departamentos<input data-user-field="departments" value="${escapeHtml((user.departments || []).join(", "))}" placeholder="Recepcao, Financeiro" /></label>
       </div>
-      <div class="check-row user-menu-permissions">
-        ${menuKeys.map(([tab, key]) => `<label><input type="checkbox" data-user-menu="${key}" ${(user.role === "admin" || user.permissions?.menus?.[key]) ? "checked" : ""} ${user.role === "admin" ? "disabled" : ""}/> ${escapeHtml(titleByTab[tab] || tab)}</label>`).join("")}
-      </div>
-      <div class="check-row">
-        <label><input type="checkbox" data-user-permission="listenRecordings" ${user.permissions?.listenRecordings ? "checked" : ""}/> Escutar gravacoes</label>
-        <label><input type="checkbox" data-user-permission="downloadRecordings" ${user.permissions?.downloadRecordings ? "checked" : ""}/> Baixar gravacoes</label>
-        <label><input type="checkbox" data-user-field="mustChangePassword" ${user.mustChangePassword ? "checked" : ""}/> Trocar senha no proximo login</label>
-      </div>
-    </article>`).join("");
+      <section class="user-access-block">
+        <div class="user-access-heading">
+          <div>
+            <strong>Acesso aos modulos</strong>
+            <span>Defina quais areas ficam disponiveis para este usuario.</span>
+          </div>
+          <div class="user-access-actions">
+            <span class="user-permission-summary" data-user-menu-count>${enabledMenuCount} de ${Object.keys(menuPermissions).length} modulos</span>
+            ${isAdmin
+              ? `<span class="badge ok">Acesso total</span>`
+              : `<button class="secondary-btn compact" type="button" data-user-toggle-menus="${index}">
+                  <i data-lucide="check-check"></i><span data-user-toggle-label>${enabledMenuCount === Object.keys(menuPermissions).length ? "Limpar" : "Selecionar todos"}</span>
+                </button>`}
+          </div>
+        </div>
+        <div class="user-permission-groups">${menuGroups}</div>
+      </section>
+      <section class="user-access-block user-account-permissions">
+        <div class="user-access-heading">
+          <div>
+            <strong>Gravacoes e seguranca</strong>
+            <span>Permissoes complementares da conta.</span>
+          </div>
+        </div>
+        <div class="user-setting-list">
+          <label class="user-setting-option">
+            <input type="checkbox" data-user-permission="listenRecordings" ${user.permissions?.listenRecordings ? "checked" : ""}/>
+            <span><strong>Escutar gravacoes</strong><small>Reproduzir audios das chamadas.</small></span>
+          </label>
+          <label class="user-setting-option">
+            <input type="checkbox" data-user-permission="downloadRecordings" ${user.permissions?.downloadRecordings ? "checked" : ""}/>
+            <span><strong>Baixar gravacoes</strong><small>Salvar uma copia do audio.</small></span>
+          </label>
+          <label class="user-setting-option">
+            <input type="checkbox" data-user-field="mustChangePassword" ${user.mustChangePassword ? "checked" : ""}/>
+            <span><strong>Trocar senha no proximo login</strong><small>Solicitar uma nova senha ao entrar.</small></span>
+          </label>
+        </div>
+      </section>
+    </article>`;
+  }).join("");
 
   pages.users.innerHTML = `
     <div class="section-grid">
@@ -6181,6 +6257,7 @@ document.addEventListener("click", async (event) => {
   const monitorHangupButton = event.target.closest("[data-monitor-hangup]");
   const monitorSpyButton = event.target.closest("[data-monitor-spy]");
   const removeUserButton = event.target.closest("[data-remove-user]");
+  const toggleUserMenusButton = event.target.closest("[data-user-toggle-menus]");
   const dialKeyButton = event.target.closest("[data-dial-key]");
 
   try {
@@ -6499,6 +6576,20 @@ document.addEventListener("click", async (event) => {
 
     if (event.target.closest("#reloadAuditBtn")) {
       await loadAudit();
+      return;
+    }
+
+    if (toggleUserMenusButton) {
+      const card = toggleUserMenusButton.closest("[data-user-index]");
+      const inputs = $all("[data-user-menu]:not(:disabled)", card);
+      const shouldEnable = inputs.some((input) => !input.checked);
+      inputs.forEach((input) => {
+        input.checked = shouldEnable;
+      });
+      const summary = $("[data-user-menu-count]", card);
+      const label = $("[data-user-toggle-label]", card);
+      if (summary) summary.textContent = `${inputs.filter((input) => input.checked).length} de ${inputs.length} modulos`;
+      if (label) label.textContent = shouldEnable ? "Limpar" : "Selecionar todos";
       return;
     }
 
@@ -7609,6 +7700,18 @@ document.addEventListener("input", (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  const userMenuInput = event.target.closest("[data-user-menu]");
+  if (userMenuInput) {
+    const card = userMenuInput.closest("[data-user-index]");
+    const inputs = $all("[data-user-menu]", card);
+    const enabled = inputs.filter((input) => input.checked).length;
+    const summary = $("[data-user-menu-count]", card);
+    const label = $("[data-user-toggle-label]", card);
+    if (summary) summary.textContent = `${enabled} de ${inputs.length} modulos`;
+    if (label) label.textContent = enabled === inputs.length ? "Limpar" : "Selecionar todos";
+    return;
+  }
+
   if (event.target.closest("#overviewQueueFilter")) {
     state.overview.queue = $("#overviewQueueFilter")?.value || "";
     const selectedQueue = selectedOverviewQueue();

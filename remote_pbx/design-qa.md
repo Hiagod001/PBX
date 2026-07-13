@@ -1,4 +1,4 @@
-# Design QA - UAI PBX Strategic Overview and Operational Pages
+# Design QA - UAI PBX Strategic Overview, Operational Pages and User Access
 
 ## Evidence
 
@@ -6,6 +6,9 @@
 - Strategic overview screenshot: `C:\Users\Acer Aspire5\Downloads\nodetv\remote_pbx\design-implementation-strategy-1440x1024.png`
 - Queue monitor screenshot: `C:\Users\Acer Aspire5\Downloads\nodetv\remote_pbx\design-implementation-monitor-1440x1024.png`
 - Combined comparison: `C:\Users\Acer Aspire5\Downloads\nodetv\remote_pbx\design-qa-monitor-comparison.png`
+- User permissions defect reference: `C:\Users\ACERAS~1\AppData\Local\Temp\codex-clipboard-cd6f395f-c04e-4680-94ad-b9c22dd52c82.png`
+- User permissions implementation: `C:\Users\Acer Aspire5\Downloads\nodetv\remote_pbx\design-implementation-user-permissions-390x844.png`
+- User permissions combined comparison: `C:\Users\Acer Aspire5\Downloads\nodetv\remote_pbx\design-qa-user-permissions-comparison.png`
 - Viewport: 1440 x 1024 desktop.
 - State: authenticated local administrator with the seeded PBX fixture. The local mandatory password warning and one sample queue are data-state differences; production uses the current administrator and live queue data.
 
@@ -18,6 +21,8 @@ The overview intentionally no longer repeats the queue monitor. It retains the s
 ## Focused Comparison
 
 The top bar, KPI block proportions, monitor toolbar, queue headers, column density, status legend, sidebar navigation, and sidebar footer remained readable in the combined 1440 x 1024 comparison, so separate crops were not required.
+
+The supplied user permissions defect crop and the updated compact implementation were opened together at original detail. The unstructured oversized controls were replaced by 15 px native checkboxes, grouped module lists, compact section headings, an access counter, an administrator access badge, and a separate recordings/security area. The updated surface preserves the existing PBX visual tokens while making the permission hierarchy immediately scannable.
 
 ## Findings
 
@@ -40,6 +45,9 @@ The top bar, KPI block proportions, monitor toolbar, queue headers, column densi
 - Overview links to Monitor and Reports: use the existing route navigation handler.
 - Monitor search, columns/settings, complete view, and refresh controls: rendered with existing handlers.
 - Users permissions and form fields: fixed and no longer overflow.
+- User module selection: individual checkboxes update the counter; bulk selection was verified at 14/14 and 0/14.
+- User permissions responsive layout: three groups on desktop and one column at 390 x 844, with zero page or card overflow.
+- User permission checkbox dimensions: 15 x 15 px in desktop and compact layouts.
 - Desktop horizontal overflow on every administrator route: none.
 - Compact production viewport at 571 x 856: all 14 administrator routes pass without page-level horizontal overflow; wide operational tables remain internally scrollable.
 - Browser console: the discovered Lucide warning was fixed; no application error remains in the tested change.
@@ -55,6 +63,8 @@ The top bar, KPI block proportions, monitor toolbar, queue headers, column densi
 5. Browser logs exposed an unsupported `phone-check` Lucide name; all occurrences were replaced with `phone-call`.
 6. Production compact-width review found the dialer form retaining a four-column track; its form and dual-select tracks were collapsed to one responsive column.
 7. Final desktop and compact production checks across every administrator route confirmed zero page-level horizontal overflow and consistent shell styling.
+8. The user access editor was reorganized into Operacao, Telefonia, and Governanca groups, with recordings/security isolated as complementary permissions.
+9. The final before/after comparison confirmed the oversized checkbox defect is removed and the compact permission hierarchy remains readable at 390 x 844.
 
 ## Final Result
 
