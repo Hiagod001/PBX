@@ -5847,4 +5847,14 @@ body {
   .route-hero {
     grid-template-columns: 1fr;
   }
+
+  .dialer-form,
+  .dual-select {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dialer-form > label,
+  .dialer-form > label.wide {
+    grid-column: 1 / -1;
+  }
 }

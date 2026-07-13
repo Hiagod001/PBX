@@ -23,7 +23,7 @@ The top bar, KPI block proportions, monitor toolbar, queue headers, column densi
 
 - No actionable P0, P1, or P2 visual differences remain.
 - P3: the local fixture has no calls for the selected day, so the strategic charts were verified in their empty state; production verification will cover live data density after deployment.
-- P3: the in-app Browser viewport override did not change the active viewport during this pass. Existing mobile shell behavior and new responsive CSS breakpoints were retained, but a new 390 x 844 screenshot was not captured.
+- P3: responsive production verification used the in-app Browser's 571 x 856 compact viewport rather than an exact 390 x 844 device frame.
 
 ## Required Fidelity Surfaces
 
@@ -41,6 +41,7 @@ The top bar, KPI block proportions, monitor toolbar, queue headers, column densi
 - Monitor search, columns/settings, complete view, and refresh controls: rendered with existing handlers.
 - Users permissions and form fields: fixed and no longer overflow.
 - Desktop horizontal overflow on every administrator route: none.
+- Compact production viewport at 571 x 856: all 14 administrator routes pass without page-level horizontal overflow; wide operational tables remain internally scrollable.
 - Browser console: the discovered Lucide warning was fixed; no application error remains in the tested change.
 - `npm run check`: passed.
 - `npm test`: 9 of 9 passed.
@@ -52,7 +53,8 @@ The top bar, KPI block proportions, monitor toolbar, queue headers, column densi
 3. Cross-page review found oversized route typography and overflowing user permission controls.
 4. Route typography, shared panels, forms, tables, checkboxes, reports, and responsive tracks were normalized.
 5. Browser logs exposed an unsupported `phone-check` Lucide name; all occurrences were replaced with `phone-call`.
-6. Final desktop checks across every administrator route confirmed zero page-level horizontal overflow and consistent shell styling.
+6. Production compact-width review found the dialer form retaining a four-column track; its form and dual-select tracks were collapsed to one responsive column.
+7. Final desktop and compact production checks across every administrator route confirmed zero page-level horizontal overflow and consistent shell styling.
 
 ## Final Result
 
