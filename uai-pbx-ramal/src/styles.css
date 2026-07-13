@@ -203,6 +203,14 @@ input {
   font-weight: 950;
 }
 
+.status-badge.is-connecting {
+  background: #b45309;
+}
+
+.status-badge.is-offline {
+  background: #64748b;
+}
+
 .active-call-panel {
   border: 1px solid #384862;
   border-radius: 8px;

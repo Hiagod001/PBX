@@ -1,0 +1,12 @@
+[Unit]
+Description=Check UAI PBX PJSIP health every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=true
+Unit=uai-pbx-pjsip-watchdog.service
+
+[Install]
+WantedBy=timers.target

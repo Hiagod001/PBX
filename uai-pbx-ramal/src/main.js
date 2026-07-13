@@ -105,6 +105,12 @@ function toneLog(message) {
   fs.appendFile(path.join(app.getPath("userData"), "tone.log"), line, () => {});
 }
 
+function sipLog(message) {
+  const safeMessage = String(message || "").replace(/[\r\n]+/g, " ").slice(0, 800);
+  const line = `[${new Date().toISOString()}] ${safeMessage}\n`;
+  fs.appendFile(path.join(app.getPath("userData"), "sip.log"), line, () => {});
+}
+
 function stopTone(name) {
   const key = String(name || "");
   const child = toneProcesses.get(key);
@@ -172,6 +178,7 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
       sandbox: false
     }
   });
@@ -202,6 +209,11 @@ ipcMain.handle("app:server", () => ({
   serverUrl: PBX_URL,
   extension: currentExtension
 }));
+
+ipcMain.handle("app:sip-log", (_event, message) => {
+  sipLog(message);
+  return { ok: true };
+});
 
 ipcMain.handle("app:asset-url", (_event, name) => pathToFileURL(assetPath(name)).toString());
 

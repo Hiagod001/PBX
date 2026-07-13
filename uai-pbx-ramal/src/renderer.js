@@ -5,6 +5,12 @@ const state = {
   portal: null,
   ua: null,
   registerer: null,
+  registrationStatus: "offline",
+  softphoneStarting: null,
+  reconnectTimer: null,
+  reconnectAttempts: 0,
+  sipGeneration: 0,
+  stoppingSoftphone: false,
   session: null,
   incoming: false,
   autoAnswerNext: false,
@@ -29,6 +35,7 @@ const loginTestRingBtn = document.querySelector("#loginTestRingBtn");
 const loginMessage = document.querySelector("#loginMessage");
 const logoutBtn = document.querySelector("#logoutBtn");
 const extensionLabel = document.querySelector("#extensionLabel");
+const registrationBadge = document.querySelector("#registrationBadge");
 const numberInput = document.querySelector("#numberInput");
 const activeCallPanel = document.querySelector("#activeCallPanel");
 const activeCallKind = document.querySelector("#activeCallKind");
@@ -86,9 +93,63 @@ let toneAudioContext = null;
 let toneTestToken = 0;
 let activeTone = "";
 const synthTones = new Map();
+const SIP_REGISTER_TIMEOUT_MS = 15000;
+const SIP_RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 30000];
+
+function sipLog(message) {
+  window.pbxAPI.sipLog?.(String(message || "")).catch(() => null);
+}
+
+function isSipRegistered() {
+  return Boolean(
+    state.registerer
+    && state.ua
+    && window.SIP
+    && state.registerer.state === SIP.RegistererState.Registered
+    && state.ua.transport.state === SIP.TransportState.Connected
+  );
+}
+
+function setRegistrationStatus(nextStatus) {
+  const status = ["online", "connecting", "offline"].includes(nextStatus) ? nextStatus : "offline";
+  state.registrationStatus = status;
+  registrationBadge.textContent = status === "online" ? "Online" : status === "connecting" ? "Conectando" : "Offline";
+  registrationBadge.classList.toggle("is-connecting", status === "connecting");
+  registrationBadge.classList.toggle("is-offline", status === "offline");
+  if (!state.session && !state.callPending) callBtn.disabled = status !== "online";
+}
+
+function clearSipReconnectTimer() {
+  if (!state.reconnectTimer) return;
+  clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = null;
+}
+
+function scheduleSipReconnect(reason = "conexao indisponivel") {
+  if (state.stoppingSoftphone || !state.extension || state.reconnectTimer) return;
+  const attempt = state.reconnectAttempts + 1;
+  state.reconnectAttempts = attempt;
+  const delay = SIP_RECONNECT_DELAYS_MS[Math.min(attempt - 1, SIP_RECONNECT_DELAYS_MS.length - 1)];
+  setRegistrationStatus("connecting");
+  sipLog(`reconnect scheduled attempt=${attempt} delayMs=${delay} reason=${reason}`);
+  if (!state.session && !state.callPending) setMessage("Telefone offline. Reconectando...");
+  state.reconnectTimer = setTimeout(() => {
+    state.reconnectTimer = null;
+    startSoftphone().catch((error) => {
+      sipLog(`reconnect failed attempt=${attempt} error=${error.message || "unknown"}`);
+    });
+  }, delay);
+}
+
+function assertSoftphoneAttemptActive() {
+  if (state.stoppingSoftphone || !state.extension) throw new Error("Registro SIP cancelado");
+}
 
 function showLogin(message = "") {
+  state.stoppingSoftphone = true;
   state.extension = null;
+  clearSipReconnectTimer();
+  setRegistrationStatus("offline");
   stopCallTimer();
   setActiveCallVisible(false);
   loginView.classList.remove("hidden");
@@ -103,6 +164,9 @@ function showLogin(message = "") {
 
 async function showPhone(extension) {
   state.extension = extension;
+  state.stoppingSoftphone = false;
+  state.reconnectAttempts = 0;
+  setRegistrationStatus("connecting");
   loginView.classList.add("hidden");
   phoneView.classList.remove("hidden");
   logoutBtn.classList.remove("hidden");
@@ -532,61 +596,149 @@ async function loadPortal() {
   return state.portal;
 }
 
-async function startSoftphone() {
-  if (state.ua) return;
-  const portal = await loadPortal();
-  await waitForSipLibrary();
-  const sip = portal.sip;
-  const userAgent = new SIP.UserAgent({
-    uri: SIP.UserAgent.makeURI(sip.uri),
-    authorizationUsername: sip.authorizationUsername,
-    authorizationPassword: sip.password,
-    displayName: sip.displayName,
-    transportOptions: { server: sip.wsServer },
-    sessionDescriptionHandlerFactoryOptions: {
-      constraints: { audio: audioConstraints(), video: false }
-    }
-  });
-
-  userAgent.delegate = {
-    async onInvite(invitation) {
-      setCallSession(invitation);
-      if (state.autoAnswerNext) {
-        state.autoAnswerNext = false;
-        setMessage("Conectando chamada...", true);
-        await answerSipCall(invitation).catch((error) => setMessage(`Falha ao atender: ${error.message}`));
+function waitForSipRegistration(registerer, generation, timeoutMs = SIP_REGISTER_TIMEOUT_MS) {
+  if (registerer.state === SIP.RegistererState.Registered) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      registerer.stateChange.removeListener(listener);
+      if (error) reject(error);
+      else resolve();
+    };
+    const listener = (nextState) => {
+      if (generation !== state.sipGeneration) {
+        finish(new Error("Registro SIP substituido"));
         return;
       }
-      state.currentDirection = "entrada";
-      state.incoming = true;
-      state.currentNumber = normalizeCallerNumber(invitation.remoteIdentity?.displayName || invitation.remoteIdentity?.uri?.user || "entrada");
-      state.currentProtocol = "";
-      await assignCallProtocol("entrada", state.currentNumber).catch(() => null);
-      state.callStatus = "Recebendo chamada";
-      setMessage("Chamada recebida.", true);
-      startRingtone();
-      window.pbxAPI?.incomingCall?.({ number: state.currentNumber, extension: state.extension?.number || "" }).catch(() => null);
-      renderActiveCallPanel();
-    }
-  };
+      if (nextState === SIP.RegistererState.Registered) finish();
+      if (nextState === SIP.RegistererState.Terminated) finish(new Error("Registro SIP encerrado pelo servidor"));
+    };
+    const timer = setTimeout(() => finish(new Error("Servidor nao confirmou o registro SIP")), timeoutMs);
+    registerer.stateChange.addListener(listener);
+  });
+}
 
-  state.ua = userAgent;
-  state.registerer = new SIP.Registerer(userAgent);
-  await userAgent.start();
-  await state.registerer.register();
-  setMessage("Telefone online.", true);
+async function disposeSipStack(unregister = false) {
+  const registerer = state.registerer;
+  const userAgent = state.ua;
+  state.sipGeneration += 1;
+  state.registerer = null;
+  state.ua = null;
+  if (unregister && registerer) await registerer.unregister().catch(() => null);
+  if (userAgent) await userAgent.stop().catch(() => null);
+}
+
+async function startSoftphone() {
+  if (isSipRegistered()) return;
+  if (state.softphoneStarting) return state.softphoneStarting;
+
+  clearSipReconnectTimer();
+  state.softphoneStarting = (async () => {
+    state.stoppingSoftphone = false;
+    setRegistrationStatus("connecting");
+    sipLog(`registration starting extension=${state.extension?.number || "unknown"}`);
+    if (state.ua || state.registerer) await disposeSipStack(false);
+    assertSoftphoneAttemptActive();
+
+    const portal = await loadPortal();
+    await waitForSipLibrary();
+    assertSoftphoneAttemptActive();
+    const sip = portal.sip;
+    const userAgent = new SIP.UserAgent({
+      uri: SIP.UserAgent.makeURI(sip.uri),
+      authorizationUsername: sip.authorizationUsername,
+      authorizationPassword: sip.password,
+      displayName: sip.displayName,
+      transportOptions: {
+        server: sip.wsServer,
+        connectionTimeout: 10,
+        keepAliveInterval: 20,
+        keepAliveDebounce: 10
+      },
+      sessionDescriptionHandlerFactoryOptions: {
+        constraints: { audio: audioConstraints(), video: false }
+      }
+    });
+
+    const generation = state.sipGeneration + 1;
+    state.sipGeneration = generation;
+    userAgent.delegate = {
+      async onInvite(invitation) {
+        setCallSession(invitation);
+        if (state.autoAnswerNext) {
+          state.autoAnswerNext = false;
+          setMessage("Conectando chamada...", true);
+          await answerSipCall(invitation).catch((error) => setMessage(`Falha ao atender: ${error.message}`));
+          return;
+        }
+        state.currentDirection = "entrada";
+        state.incoming = true;
+        state.currentNumber = normalizeCallerNumber(invitation.remoteIdentity?.displayName || invitation.remoteIdentity?.uri?.user || "entrada");
+        state.currentProtocol = "";
+        await assignCallProtocol("entrada", state.currentNumber).catch(() => null);
+        state.callStatus = "Recebendo chamada";
+        setMessage("Chamada recebida.", true);
+        startRingtone();
+        window.pbxAPI?.incomingCall?.({ number: state.currentNumber, extension: state.extension?.number || "" }).catch(() => null);
+        renderActiveCallPanel();
+      }
+    };
+
+    const registerer = new SIP.Registerer(userAgent);
+    state.ua = userAgent;
+    state.registerer = registerer;
+
+    userAgent.transport.stateChange.addListener((nextState) => {
+      if (generation !== state.sipGeneration || state.stoppingSoftphone) return;
+      sipLog(`transport state=${nextState}`);
+      if (nextState === SIP.TransportState.Connecting) setRegistrationStatus("connecting");
+      if (nextState === SIP.TransportState.Disconnected) {
+        setRegistrationStatus("offline");
+        scheduleSipReconnect("websocket desconectado");
+      }
+    });
+
+    registerer.stateChange.addListener((nextState) => {
+      if (generation !== state.sipGeneration || state.stoppingSoftphone) return;
+      sipLog(`registerer state=${nextState}`);
+      if (nextState === SIP.RegistererState.Registered) {
+        state.reconnectAttempts = 0;
+        setRegistrationStatus("online");
+        setMessage("Telefone online.", true);
+      } else if (nextState === SIP.RegistererState.Unregistered || nextState === SIP.RegistererState.Terminated) {
+        setRegistrationStatus("offline");
+        scheduleSipReconnect(`registro ${nextState}`);
+      }
+    });
+
+    await userAgent.start();
+    await registerer.register();
+    await waitForSipRegistration(registerer, generation);
+    sipLog("registration confirmed");
+  })().catch((error) => {
+    setRegistrationStatus("offline");
+    scheduleSipReconnect(error.message || "falha no registro");
+    throw error;
+  }).finally(() => {
+    state.softphoneStarting = null;
+  });
+
+  return state.softphoneStarting;
 }
 
 async function stopSoftphone() {
+  state.stoppingSoftphone = true;
+  clearSipReconnectTimer();
   clearPendingCallTimeout();
   stopRingtone();
   stopRingback();
   await terminateSipSession(state.session);
   state.session = null;
-  if (state.registerer) await state.registerer.unregister().catch(() => null);
-  if (state.ua) await state.ua.stop().catch(() => null);
-  state.ua = null;
-  state.registerer = null;
+  await disposeSipStack(true);
+  setRegistrationStatus("offline");
   state.portal = null;
   state.incoming = false;
   state.autoAnswerNext = false;

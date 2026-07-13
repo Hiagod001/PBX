@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const { defaultConfig } = require("../src/store");
-const { renderExtensions, renderQueues } = require("../src/asterisk");
+const { renderPjsip, renderExtensions, renderQueues } = require("../src/asterisk");
 
 function queueConfig() {
   const config = structuredClone(defaultConfig);
@@ -34,6 +34,13 @@ test("queue members expose aggregate SIP device state", () => {
   assert.match(queues, /member => Local\/505@queue-member\/n,1,505,hint:505@queue-state/);
   assert.match(dialplan, /\[queue-state\]/);
   assert.match(dialplan, /exten => 505,hint,PJSIP\/505&PJSIP\/web-505/);
+});
+
+test("PJSIP keeps a warm worker pool for registration traffic", () => {
+  const pjsip = renderPjsip(queueConfig());
+  assert.match(pjsip, /\[system\]/);
+  assert.match(pjsip, /threadpool_initial_size=16/);
+  assert.match(pjsip, /threadpool_max_size=64/);
 });
 
 test("queue dialplan refuses to return a call to its originating extension", () => {

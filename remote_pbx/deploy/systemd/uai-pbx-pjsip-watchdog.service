@@ -1,0 +1,7 @@
+[Unit]
+Description=UAI PBX PJSIP overload watchdog
+After=asterisk.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/uai-pbx-pjsip-watchdog

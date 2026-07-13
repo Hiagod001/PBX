@@ -292,6 +292,13 @@ function outboundCallerIdStep(config) {
 
 function renderPjsip(config) {
   const transportProtocol = ["udp", "tcp", "tls"].includes(config.trunk.transport) ? config.trunk.transport : "udp";
+  const system = section("system", [
+    "type=system",
+    "threadpool_initial_size=16",
+    "threadpool_auto_increment=5",
+    "threadpool_idle_timeout=120",
+    "threadpool_max_size=64"
+  ]);
   const transport = section(`transport-${transportProtocol}`, [
     "type=transport",
     `protocol=${transportProtocol}`,
@@ -498,6 +505,7 @@ function renderPjsip(config) {
     "type=global",
     "user_agent=PBX-SIP-Admin",
     "",
+    system,
     transport,
     browserTransports,
     extensions,
@@ -967,6 +975,7 @@ async function generateAsteriskConfigs(config, targetDir = generatedDir) {
 
 module.exports = {
   generateAsteriskConfigs,
+  renderPjsip,
   renderExtensions,
   renderQueues
 };

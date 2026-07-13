@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("pbxAPI", {
   server: () => ipcRenderer.invoke("app:server"),
+  sipLog: (message) => ipcRenderer.invoke("app:sip-log", message),
   assetUrl: (name) => ipcRenderer.invoke("app:asset-url", name),
   startTone: (name) => ipcRenderer.invoke("app:tone-start", name),
   stopTone: (name) => ipcRenderer.invoke("app:tone-stop", name),
