@@ -46,7 +46,7 @@ const compactMonitorStatusOptions = [
 
 function defaultMonitorCompactSettings() {
   return {
-    view: "full",
+    view: "compact",
     settingsOpen: false,
     queueSearch: "",
     hiddenQueues: [],
@@ -206,7 +206,7 @@ const pages = {
 };
 
 const titleByTab = {
-  overview: "Central de Operacoes",
+  overview: "Visao Estrategica",
   status: "Monitor de Filas",
   trunk: "Tronco SIP",
   extensions: "Ramais SIP",
@@ -223,7 +223,7 @@ const titleByTab = {
 };
 
 const subtitleByTab = {
-  overview: "Console operacional do UAI PBX",
+  overview: "Indicadores, tendencias e desempenho do atendimento",
   status: "Acompanhamento em tempo real de filas e agentes",
   trunk: "Conectividade SIP e entradas da operadora",
   extensions: "Cadastro, presenca e recursos dos ramais",
@@ -2980,57 +2980,9 @@ function renderMonitorCompactSettings(queues = []) {
 
 function renderCompactMonitor(queues = [], waitingCalls = [], totals = {}, lastReadLabel = "", trunkStatus = "", trunkTone = "warn", liveLabel = "") {
   const prefs = state.monitorCompact;
-  const fields = prefs.fields || {};
-  const statuses = prefs.statuses || {};
   const visibleQueues = visibleCompactQueues(queues);
-  const compactPanels = visibleQueues
-    .map((queue, queueIndex) => {
-      const agents = (queue.agents || []).filter((agent) => statuses[monitorStatusTone(agent.statusTone || agent.status)] !== false);
-      const rows = agents
-        .map((agent) => {
-          const tone = monitorStatusTone(agent.statusTone || agent.status);
-          const pauseSummary = agentPauseSummary(agent, tone);
-          const pauseTime = tone === "paused" ? agent.pauseDurationLabel || (Number(agent.pauseSeconds) ? formatSeconds(agent.pauseSeconds) : "0s") : "";
-          return `
-            <tr class="compact-agent-row ${tone}">
-              <td class="compact-agent-name">
-                <strong>${escapeHtml(agent.name || agent.number || "-")}</strong>
-                <span>${escapeHtml(agent.number || "-")}</span>
-                ${pauseSummary ? `<small class="compact-agent-pause">${escapeHtml(pauseSummary)}</small>` : ""}
-              </td>
-              ${fields.calls === false ? "" : `<td title="Feitas/recebidas hoje">${compactAgentCallPair(agent)}</td>`}
-              ${fields.duration === false ? "" : `<td>${escapeHtml(agent.duration || "-")}</td>`}
-              ${fields.number === false ? "" : `<td>${escapeHtml(agent.currentNumber || "-")}</td>`}
-              ${fields.pause === false ? "" : `<td>${escapeHtml(pauseTime || "-")}</td>`}
-              ${fields.idle === false ? "" : `<td>${escapeHtml(agent.idleTime || "-")}</td>`}
-              ${fields.online === false ? "" : `<td>${escapeHtml(agent.onlineDurationLabel || agent.loginTime || "-")}</td>`}
-            </tr>`;
-        })
-        .join("");
-      const compactHeaders = [
-        fields.calls === false ? "" : "<th>F/R</th>",
-        fields.duration === false ? "" : "<th>Dura.</th>",
-        fields.number === false ? "" : "<th>Numero</th>",
-        fields.pause === false ? "" : "<th>Pausa</th>",
-        fields.idle === false ? "" : "<th>Ocioso</th>",
-        fields.online === false ? "" : "<th>Online</th>"
-      ].join("");
-      return `
-        <section class="compact-queue-card">
-          <header>
-            <div>
-              <h3>${escapeHtml(queue.name || queue.id || `Fila ${queueIndex + 1}`)}</h3>
-              <span>Fila ${escapeHtml(queue.id || "-")}</span>
-            </div>
-            <strong title="Atendidas | Perdidas">${compactQueueHeader(queue)}</strong>
-          </header>
-          <table class="compact-monitor-table">
-            <thead><tr><th>Nome / ramal</th>${compactHeaders}</tr></thead>
-            <tbody>${rows || `<tr><td colspan="6" class="empty-table-cell">Sem agentes nesta visualizacao.</td></tr>`}</tbody>
-          </table>
-        </section>`;
-    })
-    .join("");
+  const searchValue = String(prefs.queueSearch || "");
+  const compactPanels = commandCenterQueueCards(visibleQueues, "", searchValue);
   const waitingRows = waitingCalls
     .map(
       (call) => `
@@ -3046,32 +2998,52 @@ function renderCompactMonitor(queues = [], waitingCalls = [], totals = {}, lastR
     .join("");
 
   return `
-    <div class="monitor-page compact-monitor-page">
-      <section class="panel monitor-hero compact-monitor-hero">
-        <div>
-          <p class="eyebrow">Call center</p>
-          <h3>Monitor compacto</h3>
-          <p class="hint">Ultima leitura: ${escapeHtml(lastReadLabel)}</p>
-        </div>
-        <div class="monitor-toolbar">
-          <span class="live-pill"><span></span>${escapeHtml(liveLabel)}</span>
-          <span class="badge ${trunkTone}">Tronco ${escapeHtml(trunkStatus)}</span>
-          <span class="badge">${monitorNumber(visibleQueues.length)}/${monitorNumber(queues.length)} filas</span>
-          <span class="badge ok">${monitorNumber(totals.available)} livres</span>
-          <span class="badge warn">${monitorNumber(totals.busy)} ocupados</span>
-          <button id="monitorViewToggleBtn" class="secondary-btn" type="button"><i data-lucide="layout-dashboard"></i>Completo</button>
-          <button id="monitorCompactSettingsBtn" class="icon-btn" type="button" title="Opcoes do compacto"><i data-lucide="settings"></i></button>
-          <button id="refreshPbxStatusBtn" class="secondary-btn"><i data-lucide="rotate-cw"></i>Agora</button>
-        </div>
+    <div class="monitor-page compact-monitor-page command-center">
+      <section class="command-kpi-grid monitor-command-kpis">
+        ${[
+          ["Filas monitoradas", visibleQueues.length, `${queues.length} cadastradas`, "list-ordered", "accent"],
+          ["Em espera", totals.waiting || 0, "Neste momento", "clock-3", totals.waiting ? "caution" : "success"],
+          ["Atendidas", totals.completed || 0, "Hoje", "phone-call", "success"],
+          ["Perdidas", totals.abandoned || 0, "Hoje", "phone-missed", totals.abandoned ? "danger" : "success"],
+          ["Agentes em pausa", totals.paused || 0, "Agora", "circle-pause", totals.paused ? "caution" : "neutral"],
+          ["Agentes disponiveis", totals.available || 0, "Agora", "user-round-check", "success"]
+        ].map(([label, value, meta, icon, tone]) => `
+          <article class="command-kpi ${tone}">
+            <i data-lucide="${icon}"></i>
+            <div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(meta)}</small></div>
+          </article>`).join("")}
       </section>
-      <div class="compact-queue-grid">
-        ${compactPanels || `
-          <section class="panel">
-            <div class="panel-header"><h3>Nenhuma fila visivel</h3></div>
-            <p class="hint">Abra a engrenagem para mostrar filas no monitor compacto.</p>
-          </section>
-        `}
-      </div>
+      <section class="panel command-monitor-panel">
+        <header class="command-monitor-header">
+          <div>
+            <h3>Monitor de Filas</h3>
+            <span><i class="command-live-dot"></i> ${escapeHtml(liveLabel)}</span>
+          </div>
+          <div class="command-monitor-tools">
+            <label class="command-search" title="Buscar fila ou ramal">
+              <i data-lucide="search"></i>
+              <input data-compact-search type="search" placeholder="Buscar fila ou ramal..." value="${escapeHtml(searchValue)}" />
+            </label>
+            <span class="badge ${trunkTone}">Tronco ${escapeHtml(trunkStatus)}</span>
+            <button id="monitorCompactSettingsBtn" class="secondary-btn compact" type="button"><i data-lucide="columns-3"></i>Colunas</button>
+            <button id="monitorViewToggleBtn" class="icon-btn" type="button" title="Abrir monitor completo"><i data-lucide="maximize-2"></i></button>
+            <button id="refreshPbxStatusBtn" class="icon-btn" type="button" title="Atualizar agora"><i data-lucide="rotate-cw"></i></button>
+          </div>
+        </header>
+        <div class="compact-queue-grid command-queue-grid">
+          ${compactPanels || `<div class="command-empty"><i data-lucide="search-x"></i><strong>Nenhuma fila encontrada</strong><span>Revise a busca ou as filas visiveis.</span></div>`}
+        </div>
+        <footer class="command-monitor-footer">
+          <div class="command-legend">
+            <strong>Legenda:</strong>
+            <span><i class="agent-state-dot available"></i>Disponivel</span>
+            <span><i class="agent-state-dot paused"></i>Em pausa</span>
+            <span><i class="agent-state-dot unavailable"></i>Inativo</span>
+            <span><i class="agent-state-dot busy"></i>Em ligacao</span>
+          </div>
+          <span>Atualizado em ${escapeHtml(lastReadLabel)}</span>
+        </footer>
+      </section>
       <section class="panel monitor-waiting monitor-waiting-final">
         <div class="panel-header">
           <h3>Chamadas em espera</h3>
@@ -3214,7 +3186,7 @@ function renderStatus() {
   const queueCount = Math.max(queues.length, 1);
 
   const generalStats = [
-    ["Atendidas", totals.completed, "phone-check", "available"],
+    ["Atendidas", totals.completed, "phone-call", "available"],
     ["Abandonadas", totals.abandoned, "phone-off", "busy"],
     ["Agentes", totals.agents, "headset", ""],
     ["TME medio", formatSeconds(Math.round(totals.holdTime / queueCount)), "timer", "ringing"],
@@ -3489,15 +3461,12 @@ function commandCenterQueueCards(queues = [], extensionFilter = "", searchValue 
 
 function renderOverview() {
   const cfg = state.config;
-  const pbxExtensions = state.pbxStatus?.extensions || [];
-  const liveByNumber = new Map(pbxExtensions.map((extension) => [String(extension.number || ""), extension]));
   const overviewDate = state.overview.date || todayKey();
   const selectedQueueItem = selectedOverviewQueue();
   const selectedQueueValue = String(state.overview.queue || "");
   const selectedExtensionValue = String(state.overview.extension || "");
-  const searchValue = String(state.overview.search || "");
   const selectedQueueMembers = selectedQueueItem ? overviewQueueMemberNumbers(selectedQueueItem.queue) : null;
-  const hasOverviewFilters = Boolean(selectedQueueValue || selectedExtensionValue || searchValue);
+  const hasOverviewFilters = Boolean(selectedQueueValue || selectedExtensionValue);
   const selectableExtensions = cfg.extensions.filter((extension) => {
     const number = String(extension.number || "");
     if (selectedQueueMembers && !selectedQueueMembers.has(number)) return false;
@@ -3508,11 +3477,17 @@ function renderOverview() {
     callMatchesOverviewQueue(call, selectedQueueItem) &&
     callMatchesOverviewExtension(call, selectedExtensionValue)
   );
-  const inboundOverview = overviewCalls.filter((call) => call.type === "inbound" || /inbound|ivr-main|ringgroup|support/.test(call.context || ""));
+  const isInboundCall = (call) => call.type === "inbound" || /inbound|ivr-main|ringgroup|support/.test(String(call.context || ""));
+  const inboundOverview = overviewCalls.filter(isInboundCall);
   const answeredOverview = inboundOverview.filter((call) => isHumanAnsweredCall(call));
   const rejectedToday = overviewDate === todayKey() && !hasOverviewFilters ? (state.inboundCalls?.rejected || []).length : 0;
   const answeredToday = answeredOverview.length;
   const missedToday = inboundOverview.filter((call) => !isHumanAnsweredCall(call)).length + rejectedToday;
+  const totalCalls = overviewCalls.length + rejectedToday;
+  const answerRate = inboundOverview.length + rejectedToday
+    ? Math.round((answeredToday / (inboundOverview.length + rejectedToday)) * 100)
+    : 0;
+  const lossRate = inboundOverview.length + rejectedToday ? Math.max(0, 100 - answerRate) : 0;
   const tmeSeconds = answeredOverview.length
     ? Math.round(
         answeredOverview.reduce((sum, call) => {
@@ -3523,14 +3498,17 @@ function renderOverview() {
         }, 0) / answeredOverview.length
       )
     : 0;
-
-  function formatSeconds(totalSeconds) {
-    if (!totalSeconds) return "0s";
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    if (!minutes) return `${seconds}s`;
-    return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
-  }
+  const answeredCalls = overviewCalls.filter(isHumanAnsweredCall);
+  const tmaSeconds = answeredCalls.length
+    ? Math.round(answeredCalls.reduce((sum, call) => sum + (Number(call.duration) || 0), 0) / answeredCalls.length)
+    : 0;
+  const withinTarget = answeredOverview.filter((call) => {
+    const started = call.startedAt ? new Date(call.startedAt) : null;
+    const answered = call.answeredAt ? new Date(call.answeredAt) : null;
+    if (!started || !answered || Number.isNaN(started.getTime()) || Number.isNaN(answered.getTime())) return false;
+    return answered.getTime() - started.getTime() <= 20000;
+  }).length;
+  const serviceLevel = answeredOverview.length ? Math.round((withinTarget / answeredOverview.length) * 100) : 0;
 
   const queueOptions = `<option value="">Todas as filas</option>${(cfg.queues || [])
     .map((queue, index) => {
@@ -3542,53 +3520,14 @@ function renderOverview() {
     .map((extension) => option(String(extension.number || ""), selectedExtensionValue, `${extension.number} ${extension.name || ""}`.trim()))
     .join("")}`;
 
-  const liveQueuesSource = state.pbxStatus?.queues?.length
-    ? state.pbxStatus.queues
-    : (cfg.queues || []).map((queue) => ({
-        ...queue,
-        completed: 0,
-        abandoned: 0,
-        holdTime: 0,
-        agents: (queue.members || []).map((member) => {
-          const extension = cfg.extensions.find((item) => String(item.number) === String(member)) || {};
-          const live = liveByNumber.get(String(member)) || {};
-          return {
-            number: member,
-            name: extension.name || member,
-            statusTone: live.registered ? "available" : "unavailable",
-            statusLabel: live.registered ? "Disponivel" : "Offline",
-            callsTaken: 0,
-            duration: "",
-            currentNumber: "",
-            idleTime: live.idleTime || "",
-            onlineDurationLabel: live.onlineDurationLabel || ""
-          };
-        })
-      }));
-  const liveQueues = liveQueuesSource.filter((queue, index) => !selectedQueueValue || queueFilterTokens(queue, index).includes(selectedQueueValue));
-  const uniqueAgents = new Map();
-  liveQueues.forEach((queue) => {
-    (queue.agents || []).forEach((agent) => {
-      if (selectedExtensionValue && String(agent.number || "") !== selectedExtensionValue) return;
-      uniqueAgents.set(String(agent.number || agent.name || uniqueAgents.size), agent);
-    });
-  });
-  const agentList = [...uniqueAgents.values()];
-  const availableAgents = agentList.filter((agent) => monitorStatusTone(agent.statusTone || agent.status) === "available").length;
-  const pausedAgents = agentList.filter((agent) => monitorStatusTone(agent.statusTone || agent.status) === "paused").length;
-  const averageQueueHold = liveQueues.length
-    ? Math.round(liveQueues.reduce((sum, queue) => sum + (Number(queue.holdTime) || 0), 0) / liveQueues.length)
-    : 0;
-  const displayQueues = visibleCompactQueues(liveQueues);
-  const queueCards = commandCenterQueueCards(displayQueues, selectedExtensionValue, searchValue);
   const overviewDateLabel = overviewDate.split("-").reverse().join("/");
   const kpis = [
-    ["Filas ativas", liveQueues.length, `de ${liveQueuesSource.length}`, "users-round", "accent"],
-    ["Chamadas atendidas", answeredToday, overviewDate === todayKey() ? "Hoje" : overviewDateLabel, "phone-call", "success"],
-    ["Chamadas perdidas", missedToday, overviewDate === todayKey() ? "Hoje" : overviewDateLabel, "phone-missed", "danger"],
-    ["Agentes em pausa", pausedAgents, "Total", "circle-pause", "caution"],
-    ["Agentes disponiveis", availableAgents, "Total", "user-round-check", "success"],
-    ["Tempo medio de espera", formatSeconds(tmeSeconds || averageQueueHold), selectedQueueValue ? "Fila filtrada" : "Todas as filas", "clock-3", "neutral"]
+    ["Chamadas no periodo", totalCalls, overviewDate === todayKey() ? "Hoje" : overviewDateLabel, "phone-call", "accent"],
+    ["Taxa de atendimento", `${answerRate}%`, `${answeredToday} atendidas`, "circle-check-big", answerRate >= 80 ? "success" : "caution"],
+    ["Chamadas perdidas", missedToday, `${lossRate}% das entradas`, "phone-missed", missedToday ? "danger" : "success"],
+    ["Nivel de servico", `${serviceLevel}%`, "Atendidas em ate 20s", "gauge", serviceLevel >= 80 ? "success" : "caution"],
+    ["Tempo medio de espera", formatSeconds(tmeSeconds), selectedQueueValue ? "Fila selecionada" : "Todas as filas", "timer", "neutral"],
+    ["Tempo medio de chamada", formatSeconds(tmaSeconds), `${answeredCalls.length} chamadas atendidas`, "clock-3", "neutral"]
   ]
     .map(
       ([label, value, meta, icon, tone]) => `
@@ -3599,53 +3538,183 @@ function renderOverview() {
     )
     .join("");
 
-  pages.overview.innerHTML = `
-    <div class="command-center">
-      <section class="command-kpi-grid">${kpis}</section>
-      <section class="panel command-monitor-panel">
-        <header class="command-monitor-header">
-          <div>
-            <h3>Monitor de Filas</h3>
-            <span><i class="command-live-dot"></i> Ao Vivo</span>
-          </div>
-          <div class="command-monitor-tools">
-            <label class="command-search" title="Buscar fila ou ramal">
-              <i data-lucide="search"></i>
-              <input id="overviewSearchInput" type="search" placeholder="Buscar fila ou ramal..." value="${escapeHtml(searchValue)}" />
-            </label>
-            <label class="command-filter-field" title="Data do resumo">
-              <i data-lucide="calendar-days"></i>
-              <input id="overviewDateInput" type="date" value="${escapeHtml(overviewDate)}" aria-label="Data do resumo" />
-            </label>
-            <label class="command-filter-field">
-              <i data-lucide="list-filter"></i>
-              <select id="overviewQueueFilter" aria-label="Filtrar fila">${queueOptions}</select>
-            </label>
-            <label class="command-filter-field">
-              <i data-lucide="headset"></i>
-              <select id="overviewExtensionFilter" aria-label="Filtrar ramal">${extensionOptions}</select>
-            </label>
-            <button id="applyOverviewDateBtn" class="icon-btn" type="button" title="Aplicar data"><i data-lucide="check"></i></button>
-            <button id="overviewColumnsBtn" class="secondary-btn compact" type="button"><i data-lucide="columns-3"></i>Colunas</button>
-            <button id="clearOverviewFiltersBtn" class="icon-btn" type="button" title="Limpar filtros" ${hasOverviewFilters ? "" : "disabled"}><i data-lucide="filter-x"></i></button>
-          </div>
-        </header>
-        <div class="compact-queue-grid command-queue-grid">
-          ${queueCards || `<div class="command-empty"><i data-lucide="search-x"></i><strong>Nenhuma fila encontrada</strong><span>Revise os filtros selecionados.</span></div>`}
+  const hourBuckets = new Map();
+  overviewCalls.forEach((call) => {
+    const date = call.startedAt ? new Date(call.startedAt) : null;
+    if (!date || Number.isNaN(date.getTime())) return;
+    const hour = date.getHours();
+    hourBuckets.set(hour, (hourBuckets.get(hour) || 0) + 1);
+  });
+  const hourlySeries = [...hourBuckets.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([hour, value]) => ({ label: `${String(hour).padStart(2, "0")}:00`, value }));
+  const maxHourly = Math.max(1, ...hourlySeries.map((item) => item.value));
+  const hourlyRows = hourlySeries
+    .map((item) => `
+      <div class="strategy-bar-row">
+        <span>${escapeHtml(item.label)}</span>
+        <div><i style="width:${Math.max(4, Math.round((item.value / maxHourly) * 100))}%"></i></div>
+        <strong>${monitorNumber(item.value)}</strong>
+      </div>`)
+    .join("");
+
+  const directionItems = [
+    ["Recebidas", overviewCalls.filter(isInboundCall).length + rejectedToday, "phone-incoming"],
+    ["Realizadas", overviewCalls.filter((call) => call.type === "outbound").length, "phone-outgoing"],
+    ["Internas", overviewCalls.filter((call) => call.type === "internal").length, "repeat-2"]
+  ];
+  const maxDirection = Math.max(1, ...directionItems.map((item) => item[1]));
+  const directionRows = directionItems
+    .map(([label, value, icon]) => `
+      <div class="strategy-distribution-row">
+        <i data-lucide="${icon}"></i>
+        <div>
+          <span><strong>${escapeHtml(label)}</strong><b>${monitorNumber(value)}</b></span>
+          <div class="strategy-progress"><i style="width:${Math.round((value / maxDirection) * 100)}%"></i></div>
         </div>
-        <footer class="command-monitor-footer">
-          <div class="command-legend">
-            <strong>Legenda:</strong>
-            <span><i class="agent-state-dot available"></i>Disponivel</span>
-            <span><i class="agent-state-dot paused"></i>Em pausa</span>
-            <span><i class="agent-state-dot unavailable"></i>Inativo</span>
-            <span><i class="agent-state-dot busy"></i>Em ligacao</span>
+      </div>`)
+    .join("");
+
+  const queuePerformance = (cfg.queues || [])
+    .map((queue, index) => {
+      const queueItem = { queue, index, tokens: queueFilterTokens(queue, index) };
+      if (selectedQueueValue && !queueItem.tokens.includes(selectedQueueValue)) return null;
+      const calls = overviewCallsRaw.filter((call) => callMatchesOverviewQueue(call, queueItem) && callMatchesOverviewExtension(call, selectedExtensionValue));
+      const inbound = calls.filter(isInboundCall);
+      const answered = inbound.filter(isHumanAnsweredCall).length;
+      const missed = inbound.length - answered;
+      const rate = inbound.length ? Math.round((answered / inbound.length) * 100) : 0;
+      return { queue, index, total: inbound.length, answered, missed, rate };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.total - a.total);
+  const queueRows = queuePerformance
+    .map((item) => `
+      <tr>
+        <td><strong>${escapeHtml(queueLabel(item.queue, item.index))}</strong><span class="table-subline">Fila ${escapeHtml(queueDialNumber(item.queue, item.index))}</span></td>
+        <td>${monitorNumber(item.total)}</td>
+        <td class="positive-value">${monitorNumber(item.answered)}</td>
+        <td class="negative-value">${monitorNumber(item.missed)}</td>
+        <td><span class="strategy-rate ${item.total ? (item.rate >= 80 ? "good" : item.rate >= 60 ? "attention" : "critical") : "neutral"}">${item.total ? `${monitorNumber(item.rate)}%` : "-"}</span></td>
+      </tr>`)
+    .join("");
+
+  const extensionPerformance = selectableExtensions
+    .filter((extension) => !selectedExtensionValue || String(extension.number || "") === selectedExtensionValue)
+    .map((extension) => {
+      const calls = overviewCalls.filter((call) => callMatchesOverviewExtension(call, extension.number));
+      const answered = calls.filter(isHumanAnsweredCall).length;
+      const average = answered
+        ? Math.round(calls.filter(isHumanAnsweredCall).reduce((sum, call) => sum + (Number(call.duration) || 0), 0) / answered)
+        : 0;
+      return { extension, total: calls.length, answered, average };
+    })
+    .filter((item) => item.total > 0 || selectedExtensionValue)
+    .sort((a, b) => b.answered - a.answered || b.total - a.total)
+    .slice(0, 6);
+  const extensionRows = extensionPerformance
+    .map((item, index) => `
+      <tr>
+        <td><span class="strategy-rank">${index + 1}</span></td>
+        <td><strong>${escapeHtml(item.extension.name || item.extension.number)}</strong><span class="table-subline">Ramal ${escapeHtml(item.extension.number)}</span></td>
+        <td>${monitorNumber(item.total)}</td>
+        <td class="positive-value">${monitorNumber(item.answered)}</td>
+        <td>${escapeHtml(formatSeconds(item.average))}</td>
+      </tr>`)
+    .join("");
+
+  const peakHour = hourlySeries.slice().sort((a, b) => b.value - a.value)[0];
+  const eligibleQueues = queuePerformance.filter((item) => item.total > 0);
+  const bestQueue = eligibleQueues.slice().sort((a, b) => b.rate - a.rate || b.total - a.total)[0];
+  const attentionQueue = eligibleQueues.slice().sort((a, b) => b.missed - a.missed || a.rate - b.rate)[0];
+  const busiestExtension = extensionPerformance[0];
+  const insights = [
+    ["Pico de volume", peakHour ? `${peakHour.label} com ${peakHour.value} chamadas` : "Sem chamadas no periodo", "chart-no-axes-column-increasing", "neutral"],
+    ["Melhor taxa por fila", bestQueue ? `${queueLabel(bestQueue.queue, bestQueue.index)} em ${bestQueue.rate}%` : "Sem volume por fila", "trophy", "success"],
+    ["Ponto de atencao", attentionQueue?.missed ? `${queueLabel(attentionQueue.queue, attentionQueue.index)} perdeu ${attentionQueue.missed}` : "Nenhuma perda identificada", "triangle-alert", attentionQueue?.missed ? "danger" : "success"],
+    ["Ramal em destaque", busiestExtension ? `${busiestExtension.extension.number} com ${busiestExtension.answered} atendidas` : "Sem atividade por ramal", "headset", "accent"]
+  ]
+    .map(([label, value, icon, tone]) => `
+      <article class="strategy-insight ${tone}">
+        <i data-lucide="${icon}"></i>
+        <div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>
+      </article>`)
+    .join("");
+
+  pages.overview.innerHTML = `
+    <div class="command-center strategy-overview">
+      <section class="panel strategy-toolbar">
+        <div>
+          <p class="eyebrow">Analise operacional</p>
+          <h3>Desempenho do atendimento</h3>
+          <p class="hint">Indicadores consolidados para orientar capacidade, qualidade e operacao.</p>
+        </div>
+        <div class="strategy-filter-bar">
+          <label class="command-filter-field" title="Data do resumo">
+            <i data-lucide="calendar-days"></i>
+            <input id="overviewDateInput" type="date" value="${escapeHtml(overviewDate)}" aria-label="Data do resumo" />
+          </label>
+          <label class="command-filter-field">
+            <i data-lucide="list-filter"></i>
+            <select id="overviewQueueFilter" aria-label="Filtrar fila">${queueOptions}</select>
+          </label>
+          <label class="command-filter-field">
+            <i data-lucide="headset"></i>
+            <select id="overviewExtensionFilter" aria-label="Filtrar ramal">${extensionOptions}</select>
+          </label>
+          <button id="applyOverviewDateBtn" class="primary-btn compact" type="button"><i data-lucide="check"></i>Aplicar</button>
+          <button id="clearOverviewFiltersBtn" class="icon-btn" type="button" title="Limpar filtros" ${hasOverviewFilters ? "" : "disabled"}><i data-lucide="filter-x"></i></button>
+        </div>
+      </section>
+      <section class="command-kpi-grid">${kpis}</section>
+      <div class="strategy-grid">
+        <section class="panel strategy-volume-panel">
+          <div class="panel-header">
+            <div><p class="eyebrow">Tendencia</p><h3>Volume por horario</h3></div>
+            <span class="badge">${monitorNumber(totalCalls)} chamadas</span>
           </div>
-          <span>${monitorNumber(displayQueues.length)} de ${monitorNumber(liveQueuesSource.length)} filas exibidas</span>
-        </footer>
+          <div class="strategy-bars">${hourlyRows || `<div class="command-empty compact"><i data-lucide="chart-no-axes-column"></i><strong>Sem dados no periodo</strong><span>Escolha outra data ou filtro.</span></div>`}</div>
+        </section>
+        <section class="panel strategy-distribution-panel">
+          <div class="panel-header"><div><p class="eyebrow">Composicao</p><h3>Perfil das chamadas</h3></div></div>
+          <div class="strategy-distribution">${directionRows}</div>
+          <div class="strategy-quality-summary">
+            <span><small>Atendimento</small><strong>${monitorNumber(answerRate)}%</strong></span>
+            <span><small>Servico em 20s</small><strong>${monitorNumber(serviceLevel)}%</strong></span>
+          </div>
+        </section>
+      </div>
+      <div class="strategy-grid lower">
+        <section class="panel strategy-queue-panel">
+          <div class="panel-header">
+            <div><p class="eyebrow">Performance</p><h3>Resultado por fila</h3></div>
+            <button class="secondary-btn compact" type="button" data-tab="status"><i data-lucide="monitor-dot"></i>Abrir monitor</button>
+          </div>
+          <div class="table-wrap">
+            <table class="strategy-table">
+              <thead><tr><th>Fila</th><th>Recebidas</th><th>Atendidas</th><th>Perdidas</th><th>Taxa</th></tr></thead>
+              <tbody>${queueRows || `<tr><td colspan="5" class="empty-table-cell">Sem dados de fila para os filtros aplicados.</td></tr>`}</tbody>
+            </table>
+          </div>
+        </section>
+        <section class="panel strategy-insights-panel">
+          <div class="panel-header"><div><p class="eyebrow">Leitura rapida</p><h3>Destaques do periodo</h3></div></div>
+          <div class="strategy-insights">${insights}</div>
+        </section>
+      </div>
+      <section class="panel strategy-extension-panel">
+        <div class="panel-header">
+          <div><p class="eyebrow">Produtividade</p><h3>Desempenho por ramal</h3></div>
+          <button class="secondary-btn compact" type="button" data-tab="reports"><i data-lucide="file-chart-column"></i>Relatorio completo</button>
+        </div>
+        <div class="table-wrap">
+          <table class="strategy-table extension-performance-table">
+            <thead><tr><th>Posicao</th><th>Ramal</th><th>Chamadas</th><th>Atendidas</th><th>Duracao media</th></tr></thead>
+            <tbody>${extensionRows || `<tr><td colspan="5" class="empty-table-cell">Sem atividade de ramais no periodo selecionado.</td></tr>`}</tbody>
+          </table>
+        </div>
       </section>
     </div>
-    ${state.activeTab === "overview" ? renderMonitorCompactSettings(liveQueuesSource) : ""}
   `;
 }
 
@@ -4891,7 +4960,7 @@ function renderReports() {
   const permissions = meta.permissions || {};
   const statCards = [
     ["Total de chamadas", dashboard.total || 0, "phone-call", "neutral"],
-    ["Atendidas", dashboard.answered || 0, "phone-check", "success"],
+    ["Atendidas", dashboard.answered || 0, "phone-call", "success"],
     ["Nao atendidas", dashboard.noAnswer || 0, "phone-missed", "warn"],
     ["Perdidas", dashboard.missed || 0, "phone-off", "danger"],
     ["Ocupadas", dashboard.busy || 0, "circle-slash", "warn"],

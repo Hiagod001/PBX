@@ -4,3 +4,5 @@ data/
 generated/
 npm-debug.log*
 design-implementation-*.png
+design-qa-*.png
+local-ui.*.log
