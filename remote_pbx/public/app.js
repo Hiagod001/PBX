@@ -164,6 +164,17 @@ const state = {
     loading: false,
     filters: {}
   },
+  recordingLibrary: {
+    view: "calls",
+    calls: [],
+    dashboard: {},
+    meta: { page: 1, pageSize: 20, total: 0, pages: 1, permissions: {} },
+    filters: {},
+    filtersOpen: false,
+    loading: false
+  },
+  systemView: { scope: "all" },
+  auditView: { page: 1, pageSize: 20, filters: {} },
   users: [],
   auditEvents: [],
   monitorSpy: { open: false, target: "", mode: "listen", output: "", status: "", busy: false, ua: null, registerer: null, session: null, sip: null, allowedModes: null },
@@ -221,10 +232,10 @@ const titleByTab = {
   routing: "Rotas e permissoes",
   ivr: "Construtor URA",
   dialer: "Discador",
-  audios: "Audios URA",
+  audios: "Gravacoes",
   queues: "Grupos e filas",
   security: "Seguranca",
-  logs: "Logs tecnicos",
+  logs: "Sistema",
   reports: "Relatorios PBX",
   audit: "Auditoria",
   users: "Usuarios"
@@ -238,10 +249,10 @@ const subtitleByTab = {
   routing: "Regras de entrada, saida e permissoes",
   ivr: "Fluxos de atendimento automatico",
   dialer: "Campanhas e chamadas de saida",
-  audios: "Biblioteca de audios do atendimento",
+  audios: "Pesquisa, reproducao e organizacao das gravacoes",
   queues: "Equipes, estrategias e distribuicao de chamadas",
   security: "Protecao e politicas do ambiente",
-  logs: "Diagnosticos e saude tecnica do PBX",
+  logs: "Saude, conectividade e eventos do PBX",
   reports: "Indicadores e historico operacional",
   audit: "Rastreabilidade das alteracoes",
   users: "Acessos e permissoes administrativas"
@@ -1715,7 +1726,12 @@ async function loadTabData(tab = state.activeTab) {
     renderLogs();
     iconRefresh();
   }
-  if (["ivr", "audios"].includes(tab)) await loadIvrAudios();
+  if (tab === "ivr") await loadIvrAudios();
+  if (tab === "audios") {
+    await Promise.all([loadRecordingLibrary(), loadIvrAudios()]);
+    renderAudios();
+    iconRefresh();
+  }
 }
 
 async function setActiveTab(tab, { push = false, replace = false, collect = false, load = false } = {}) {
@@ -4832,42 +4848,154 @@ function renderDialer() {
   `;
 }
 
+function recordingPartyNumber(call = {}) {
+  if (call.type === "inbound") return call.source || call.callerId || call.destination || "";
+  if (call.type === "outbound") return call.destination || call.callerId || call.source || "";
+  return call.destination || call.source || call.callerId || "";
+}
+
+function recordingDisplayTitle(call = {}) {
+  const typeLabel = call.typeLabel || { inbound: "Entrada", outbound: "Saida", internal: "Interna" }[call.type] || "Chamada";
+  const extension = call.extension ? `Ramal ${call.extension}` : "Sem ramal identificado";
+  const party = recordingPartyNumber(call);
+  return [typeLabel, extension, party].filter(Boolean).join(" - ");
+}
+
+function renderIvrAudioLibrary() {
+  const rows = (state.ivrAudios || [])
+    .map(
+      (audio) => `
+        <div class="audio-item ivr-audio-row">
+          <div>
+            <strong>${escapeHtml(audio.label)}</strong>
+            <div class="hint">${escapeHtml(audio.playback)}</div>
+          </div>
+          <audio controls preload="none" src="${escapeHtml(audio.url)}"></audio>
+          <button type="button" class="icon-btn danger" data-delete-ivr-audio="${escapeHtml(audio.file)}" title="Excluir audio">
+            <i data-lucide="trash-2"></i>
+          </button>
+        </div>`
+    )
+    .join("");
+  return `
+    <section class="panel recording-ivr-library">
+      <div class="panel-header">
+        <div>
+          <h3>Audios da URA</h3>
+          <p class="table-meta">Arquivos usados nos menus e opcoes do atendimento automatico.</p>
+        </div>
+        <span class="badge">${monitorNumber(state.ivrAudios.length)} arquivos</span>
+      </div>
+      <form id="ivrAudioUploadForm" class="recording-upload" enctype="multipart/form-data">
+        <input name="audio" type="file" accept=".wav,.gsm,.ulaw,.alaw,.sln16,.mp3,audio/*" required />
+        <button class="primary-btn" type="submit"><i data-lucide="upload"></i>Enviar audio</button>
+      </form>
+      <div class="audio-list">${rows || `<div class="governance-empty"><i data-lucide="audio-lines"></i><strong>Nenhum audio da URA</strong><span>Envie um arquivo para usa-lo no construtor.</span></div>`}</div>
+    </section>`;
+}
+
 function renderAudios() {
   if (!pages.audios) return;
-  pages.audios.innerHTML = `
-    <div class="section-grid">
-      <section class="panel">
-        <div class="panel-header">
-          <div>
-            <h3>Biblioteca de audios da URA</h3>
-            <p class="hint">Envie os audios aqui e depois use nos cards de menu ou opcao dentro do construtor.</p>
+  const library = state.recordingLibrary;
+  const filters = library.filters || {};
+  const meta = library.meta || {};
+  const dashboard = library.dashboard || {};
+  const permissions = meta.permissions || {};
+  const view = library.view || "calls";
+  const activeFilterCount = Object.values(filters).filter((value) => String(value || "") !== "").length;
+  const extensionOptions = `<option value="">Todos os ramais</option>${(state.config.extensions || [])
+    .map((extension) => option(extension.number, filters.extension || "", `${extension.number} - ${extension.name || "Ramal"}`))
+    .join("")}`;
+  const queueOptions = `<option value="">Todas as filas</option>${(state.config.queues || [])
+    .map((queue, index) => option(queue.id || queue.number || "", filters.queue || "", queueLabel(queue, index)))
+    .join("")}`;
+  const recordingRows = (library.calls || [])
+    .map((call) => {
+      const tone = reportStatusTone(call.status);
+      const downloadButton = permissions.canDownloadRecordings
+        ? `<a class="icon-btn" href="/api/pbx/recordings/${encodeURIComponent(call.uniqueId)}/download" title="Baixar gravacao"><i data-lucide="download"></i></a>`
+        : "";
+      return `
+        <article class="recording-row">
+          <div class="recording-type-icon ${escapeHtml(call.type || "")}"><i data-lucide="${reportTypeIcon(call.type)}"></i></div>
+          <div class="recording-identity">
+            <strong>${escapeHtml(recordingDisplayTitle(call))}</strong>
+            <span>${escapeHtml(formatDateTime(call.startedAt))} | ${escapeHtml(call.extensionName || call.department || "Operador nao identificado")} | ${escapeHtml(call.durationLabel || "0s")}</span>
+            <code title="Nome usado ao baixar">${escapeHtml(call.recordingDownloadName || call.recordingFile || call.uniqueId || "gravacao")}</code>
           </div>
-          <span class="badge">${state.ivrAudios.length} arquivos</span>
-        </div>
-        <form id="ivrAudioUploadForm" class="inline-form" enctype="multipart/form-data">
-          <input name="audio" type="file" accept=".wav,.gsm,.ulaw,.alaw,.sln16,.mp3,audio/*" required />
-          <button class="primary-btn" type="submit"><i data-lucide="upload"></i>Enviar audio</button>
-        </form>
-        <div class="audio-list">
-          ${(state.ivrAudios || [])
-            .map(
-              (audio) => `
-              <div class="audio-item">
-                <div>
-                  <strong>${escapeHtml(audio.label)}</strong>
-                  <div class="hint">${escapeHtml(audio.playback)}</div>
-                </div>
-                <audio controls preload="none" src="${escapeHtml(audio.url)}"></audio>
-                <button type="button" class="icon-btn danger" data-delete-ivr-audio="${escapeHtml(audio.file)}" title="Excluir audio">
-                  <i data-lucide="trash-2"></i>
-                </button>
-              </div>`
-            )
-            .join("") || `<p class="hint">Nenhum audio enviado ainda.</p>`}
+          <div class="recording-tags">
+            <span class="badge ${tone}">${escapeHtml(call.statusLabel || "Gravada")}</span>
+            <span class="badge">${escapeHtml(call.typeLabel || "Chamada")}</span>
+          </div>
+          <div class="recording-actions">
+            <button class="primary-btn compact" data-listen-recording="${escapeHtml(call.uniqueId)}"><i data-lucide="play"></i>Escutar</button>
+            ${downloadButton}
+            <button class="icon-btn" data-call-details="${escapeHtml(call.id)}" title="Detalhes da chamada"><i data-lucide="eye"></i></button>
+          </div>
+        </article>`;
+    })
+    .join("");
+
+  const callLibrary = `
+    <section class="recording-summary-grid">
+      ${[
+        ["Gravacoes encontradas", meta.total || dashboard.total || 0, "library"],
+        ["Entradas", dashboard.inbound || 0, "phone-incoming"],
+        ["Saidas", dashboard.outbound || 0, "phone-outgoing"],
+        ["Duracao media", formatSeconds(dashboard.averageCallTime || 0), "clock-3"]
+      ]
+        .map(([label, value, icon]) => `<div class="recording-summary"><i data-lucide="${icon}"></i><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
+        .join("")}
+    </section>
+    <section class="panel recording-filters-panel">
+      <div class="panel-header">
+        <div><h3>Localizar gravacoes</h3><p class="table-meta">${activeFilterCount ? `${activeFilterCount} filtro(s) ativo(s)` : "Pesquise pelo cliente, operador ou periodo."}</p></div>
+        <button id="toggleRecordingFiltersBtn" class="secondary-btn" type="button"><i data-lucide="${library.filtersOpen ? "chevron-up" : "sliders-horizontal"}"></i>${library.filtersOpen ? "Menos filtros" : "Mais filtros"}</button>
+      </div>
+      <div class="recording-filter-grid primary">
+        <label>Data inicial<input data-recording-filter="dateStart" type="date" value="${escapeHtml(filters.dateStart || "")}" /></label>
+        <label>Data final<input data-recording-filter="dateEnd" type="date" value="${escapeHtml(filters.dateEnd || "")}" /></label>
+        <label class="recording-number-filter">Numero<input data-recording-filter="number" value="${escapeHtml(filters.number || "")}" placeholder="Cliente, origem ou destino" inputmode="tel" /></label>
+        <label>Ramal<select data-recording-filter="extension">${extensionOptions}</select></label>
+        <label>Direcao<select data-recording-filter="type">${option("", filters.type || "", "Todas")}${option("inbound", filters.type || "", "Entrada")}${option("outbound", filters.type || "", "Saida")}${option("internal", filters.type || "", "Interna")}</select></label>
+      </div>
+      <div class="recording-filter-grid advanced ${library.filtersOpen ? "" : "hidden"}">
+        <label>Status<select data-recording-filter="status">${option("", filters.status || "", "Todos")}${option("answered", filters.status || "", "Atendida")}${option("no_answer", filters.status || "", "Nao atendida")}${option("busy", filters.status || "", "Ocupado")}${option("failed", filters.status || "", "Falhou")}</select></label>
+        <label>Fila<select data-recording-filter="queue">${queueOptions}</select></label>
+        <label>Duracao minima<input data-recording-filter="minDuration" type="number" min="0" value="${escapeHtml(filters.minDuration || "")}" placeholder="Segundos" /></label>
+        <label>Duracao maxima<input data-recording-filter="maxDuration" type="number" min="0" value="${escapeHtml(filters.maxDuration || "")}" placeholder="Segundos" /></label>
+        <label>Origem<input data-recording-filter="source" value="${escapeHtml(filters.source || "")}" /></label>
+        <label>Destino<input data-recording-filter="destination" value="${escapeHtml(filters.destination || "")}" /></label>
+        <label class="wide">Busca geral<input data-recording-filter="q" value="${escapeHtml(filters.q || "")}" placeholder="Nome, protocolo, Caller ID ou identificador" /></label>
+      </div>
+      <div class="filter-actions">
+        <button id="applyRecordingFiltersBtn" class="primary-btn" type="button"><i data-lucide="search"></i>Filtrar gravacoes</button>
+        <button id="clearRecordingFiltersBtn" class="secondary-btn" type="button"><i data-lucide="x"></i>Limpar</button>
+      </div>
+    </section>
+    <section class="panel recording-results-panel">
+      <div class="panel-header">
+        <div><h3>Gravacoes de chamadas</h3><p class="table-meta">${library.loading ? "Carregando..." : `${monitorNumber(meta.total || 0)} resultado(s)`}</p></div>
+        <button id="reloadRecordingsBtn" class="icon-btn" type="button" title="Atualizar gravacoes"><i data-lucide="rotate-cw"></i></button>
+      </div>
+      <div class="recording-list">${recordingRows || `<div class="governance-empty"><i data-lucide="file-audio"></i><strong>Nenhuma gravacao encontrada</strong><span>Revise os filtros ou o periodo selecionado.</span></div>`}</div>
+      <div class="pagination recording-pagination">
+        <button class="secondary-btn" data-recording-page="${Math.max(1, Number(meta.page || 1) - 1)}" ${Number(meta.page || 1) <= 1 ? "disabled" : ""}><i data-lucide="chevron-left"></i>Anterior</button>
+        <span>Pagina ${monitorNumber(meta.page || 1)} de ${monitorNumber(meta.pages || 1)}</span>
+        <button class="secondary-btn" data-recording-page="${Math.min(Number(meta.pages || 1), Number(meta.page || 1) + 1)}" ${Number(meta.page || 1) >= Number(meta.pages || 1) ? "disabled" : ""}>Proxima<i data-lucide="chevron-right"></i></button>
+      </div>
+    </section>`;
+
+  pages.audios.innerHTML = `
+    <div class="recordings-shell">
+      <section class="recording-toolbar">
+        <div class="segmented-control" role="group" aria-label="Tipo de audio">
+          <button type="button" data-recording-view="calls" class="${view === "calls" ? "active" : ""}"><i data-lucide="headphones"></i>Chamadas gravadas</button>
+          <button type="button" data-recording-view="ivr" class="${view === "ivr" ? "active" : ""}"><i data-lucide="audio-lines"></i>Audios da URA</button>
         </div>
       </section>
-    </div>
-  `;
+      ${view === "ivr" ? renderIvrAudioLibrary() : callLibrary}
+    </div>`;
 }
 
 function removeQueueReferences(queueId) {
@@ -5087,65 +5215,96 @@ function logFriendlyMessage(message = "") {
 
 function renderLogs() {
   if (!pages.logs) return;
-  const sipRows = (state.pbxStatus?.logs || [])
-    .slice(0, 80)
-    .map((log) => {
-      const tone = log.outcome === "ok" ? "ok" : log.outcome === "erro" ? "error" : "warn";
-      const friendly = logFriendlyMessage(log.message);
+  const status = state.pbxStatus || {};
+  const extensions = status.extensions || [];
+  const activeCallCount = new Set((status.activeChannels || []).map((channel) => channel.linkedId || channel.uniqueId || channel.channel).filter(Boolean)).size;
+  const sipEvents = (status.logs || []).map((log) => ({
+    source: "sip",
+    time: log.time || "",
+    outcome: log.outcome || "info",
+    title: logFriendlyMessage(log.message),
+    raw: log.message || "",
+    extension: log.extension || "",
+    destination: log.ip || ""
+  }));
+  const outboundEvents = (state.outboundDiagnostics?.logs || []).map((item) => ({
+    source: "outbound",
+    time: item.time || "",
+    outcome: item.status || "info",
+    title: logFriendlyMessage(item.message),
+    raw: item.message || "",
+    extension: item.extension || "",
+    destination: item.dialed || ""
+  }));
+  const allEvents = [...outboundEvents, ...sipEvents];
+  const attentionCount = allEvents.filter((item) => ["erro", "error", "warn", "warning"].includes(String(item.outcome).toLowerCase())).length;
+  const scope = state.systemView.scope || "all";
+  const visibleEvents = allEvents
+    .filter((item) => {
+      if (scope === "sip" || scope === "outbound") return item.source === scope;
+      if (scope === "attention") return ["erro", "error", "warn", "warning"].includes(String(item.outcome).toLowerCase());
+      return true;
+    })
+    .slice(0, 60);
+  const eventRows = visibleEvents
+    .map((item) => {
+      const outcome = String(item.outcome || "info").toLowerCase();
+      const tone = outcome === "ok" ? "ok" : ["erro", "error"].includes(outcome) ? "error" : "warn";
+      const sourceLabel = item.source === "sip" ? "Registro SIP" : "Chamada de saida";
       return `
-        <tr>
-          <td>${escapeHtml(log.time || "-")}</td>
-          <td><span class="badge ${tone}">${escapeHtml(log.outcome || "info")}</span></td>
-          <td>${escapeHtml(log.extension || "-")}</td>
-          <td>${escapeHtml(log.ip || "-")}</td>
-          <td><strong>${escapeHtml(friendly)}</strong><br><span class="hint">${escapeHtml(log.message || "-")}</span></td>
-        </tr>`;
+        <article class="system-event-row ${tone}">
+          <div class="system-event-icon"><i data-lucide="${item.source === "sip" ? "radio" : "phone-outgoing"}"></i></div>
+          <div class="system-event-main">
+            <strong>${escapeHtml(item.title)}</strong>
+            <span>${escapeHtml(sourceLabel)} | ${escapeHtml(item.extension ? `Ramal ${item.extension}` : "Sem ramal")} ${item.destination ? `| ${escapeHtml(item.destination)}` : ""}</span>
+            ${item.raw && item.raw !== item.title ? `<details><summary>Detalhe tecnico</summary><code>${escapeHtml(item.raw)}</code></details>` : ""}
+          </div>
+          <div class="system-event-meta"><span class="badge ${tone}">${escapeHtml(item.outcome || "info")}</span><time>${escapeHtml(item.time || "-")}</time></div>
+        </article>`;
     })
     .join("");
-
-  const outboundRows = (state.outboundDiagnostics?.logs || [])
-    .slice(0, 80)
-    .map(
-      (item) => `
-      <tr>
-        <td>${escapeHtml(item.time || "-")}</td>
-        <td>${escapeHtml(item.extension || "-")}</td>
-        <td>${escapeHtml(item.dialed || "-")}</td>
-        <td><span class="badge ${item.status === "erro" ? "error" : "warn"}">${escapeHtml(item.status || "info")}</span></td>
-        <td><strong>${escapeHtml(logFriendlyMessage(item.message))}</strong><br><span class="hint">${escapeHtml(item.message || "-")}</span></td>
-      </tr>`
-    )
-    .join("");
+  const trunkRegistered = status.trunk?.registration?.status === "Registered";
+  const checkedAt = status.checkedAt ? formatDateTime(status.checkedAt) : "Aguardando leitura";
 
   pages.logs.innerHTML = `
-    <div class="section-grid">
-      <section class="panel">
+    <div class="governance-shell">
+      <section class="governance-summary">
+        ${[
+          ["Asterisk", status.checkedAt ? "Operacional" : "Sem leitura", "server", status.checkedAt ? "ok" : "warn"],
+          ["Tronco principal", trunkRegistered ? "Registrado" : status.trunk?.registration?.status || "Nao verificado", "radio-tower", trunkRegistered ? "ok" : "warn"],
+          ["Ramais online", `${extensions.filter((extension) => extension.registered).length}/${extensions.length}`, "phone", "ok"],
+          ["Chamadas ativas", activeCallCount, "phone-call", activeCallCount ? "info" : ""]
+        ]
+          .map(([label, value, icon, tone]) => `<div class="governance-kpi ${tone}"><i data-lucide="${icon}"></i><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
+          .join("")}
+      </section>
+      <section class="panel system-health-panel">
         <div class="panel-header">
-          <h3>Logs tecnicos</h3>
-          <button id="refreshTechnicalLogsBtn" class="secondary-btn"><i data-lucide="rotate-cw"></i>Atualizar</button>
+          <div><h3>Saude do sistema</h3><p class="table-meta">Ultima leitura: ${escapeHtml(checkedAt)}</p></div>
+          <div class="governance-actions">
+            <button class="secondary-btn" data-tab="audit" type="button"><i data-lucide="history"></i>Ver auditoria</button>
+            <button id="refreshTechnicalLogsBtn" class="primary-btn" type="button"><i data-lucide="rotate-cw"></i>Atualizar</button>
+          </div>
         </div>
-        <p class="hint">Eventos de SIP e diagnosticos de saida para suporte tecnico.</p>
-      </section>
-      <section class="panel">
-        <div class="panel-header"><h3>Tentativas de saida</h3><span class="badge">${(state.outboundDiagnostics?.logs || []).length} eventos</span></div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Hora</th><th>Ramal</th><th>Numero</th><th>Status</th><th>Mensagem</th></tr></thead>
-            <tbody>${outboundRows || `<tr><td colspan="5">Nenhum erro recente de saida encontrado.</td></tr>`}</tbody>
-          </table>
-        </div>
-      </section>
-      <section class="panel">
-        <div class="panel-header"><h3>Eventos SIP recentes</h3><span class="badge">${state.pbxStatus?.logs?.length || 0} eventos</span></div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Hora</th><th>Resultado</th><th>Ramal</th><th>IP</th><th>Mensagem</th></tr></thead>
-            <tbody>${sipRows || `<tr><td colspan="5">Nenhuma tentativa encontrada no log.</td></tr>`}</tbody>
-          </table>
+        <div class="system-health-strip">
+          <span><strong>Servidor SIP</strong>${escapeHtml(status.trunk?.server || state.config.trunk?.sipServer || "-")}</span>
+          <span><strong>Eventos recentes</strong>${monitorNumber(allEvents.length)}</span>
+          <span><strong>Precisam de atencao</strong>${monitorNumber(attentionCount)}</span>
+          <span><strong>Filas carregadas</strong>${monitorNumber((status.queues || []).length)}</span>
         </div>
       </section>
-    </div>
-  `;
+      <section class="panel system-events-panel">
+        <div class="panel-header">
+          <div><h3>Eventos recentes</h3><p class="table-meta">Mensagem principal simplificada; o detalhe tecnico fica recolhido.</p></div>
+          <div class="segmented-control compact" role="group" aria-label="Filtrar eventos do sistema">
+            ${[["all", "Todos"], ["attention", "Atencao"], ["sip", "SIP"], ["outbound", "Saida"]]
+              .map(([key, label]) => `<button type="button" data-system-scope="${key}" class="${scope === key ? "active" : ""}">${escapeHtml(label)}</button>`)
+              .join("")}
+          </div>
+        </div>
+        <div class="system-event-list">${eventRows || `<div class="governance-empty"><i data-lucide="circle-check-big"></i><strong>Nenhum evento neste filtro</strong><span>O sistema nao registrou ocorrencias para esta visualizacao.</span></div>`}</div>
+      </section>
+    </div>`;
 }
 
 function renderReports() {
@@ -5494,52 +5653,128 @@ function renderAuditChanges(event) {
   return "";
 }
 
+function auditEventGroup(event = {}) {
+  const action = String(event.action || "").toLowerCase();
+  if (action === "listen" || action === "download") return "recordings";
+  if (action.startsWith("monitor-")) return "monitoring";
+  if (action.includes("config") || action.includes("users") || action.includes("ivr-audio")) return "configuration";
+  return "other";
+}
+
+function auditEventPresentation(event = {}) {
+  const group = auditEventGroup(event);
+  if (group === "recordings") return { icon: "file-audio", tone: "info", label: "Gravacoes" };
+  if (group === "monitoring") return { icon: "headphones", tone: "warn", label: "Monitoramento" };
+  if (group === "configuration") return { icon: "settings-2", tone: "ok", label: "Configuracao" };
+  return { icon: "activity", tone: "", label: "Outros" };
+}
+
+function auditEventSummary(event = {}) {
+  return [
+    event.summary || event.details || "",
+    event.source && event.destination ? `${event.source} -> ${event.destination}` : "",
+    event.target ? `Ramal ${event.target}` : "",
+    Array.isArray(event.sections) && event.sections.length ? `Areas: ${event.sections.join(", ")}` : ""
+  ].filter(Boolean).join(" | ") || "Evento registrado sem descricao adicional.";
+}
+
+function collectAuditFiltersFromDom() {
+  const filters = {};
+  $all("[data-audit-filter]", pages.audit).forEach((input) => {
+    if (input.value !== "") filters[input.dataset.auditFilter] = input.value;
+  });
+  return filters;
+}
+
 function renderAudit() {
-  const rows = (state.auditEvents || [])
+  const view = state.auditView || { page: 1, pageSize: 20, filters: {} };
+  const filters = view.filters || {};
+  const allEvents = [...(state.auditEvents || [])].sort((a, b) => {
+    const left = new Date(a.accessedAt || a.at || a.updatedAt || 0).getTime() || 0;
+    const right = new Date(b.accessedAt || b.at || b.updatedAt || 0).getTime() || 0;
+    return right - left;
+  });
+  const filteredEvents = allEvents.filter((event) => {
+    const group = auditEventGroup(event);
+    const actor = String(event.user || "");
+    const timestamp = new Date(event.accessedAt || event.at || event.updatedAt || 0);
+    if (filters.group && group !== filters.group) return false;
+    if (filters.user && actor !== filters.user) return false;
+    if (filters.dateStart && (!timestamp.getTime() || timestamp < new Date(`${filters.dateStart}T00:00:00`))) return false;
+    if (filters.dateEnd && (!timestamp.getTime() || timestamp > new Date(`${filters.dateEnd}T23:59:59`))) return false;
+    if (filters.q) {
+      const haystack = [auditActionLabel(event), event.action, auditEventSummary(event), actor, event.role, event.ip, event.callId, event.uniqueId]
+        .join(" ")
+        .toLowerCase();
+      if (!haystack.includes(String(filters.q).toLowerCase())) return false;
+    }
+    return true;
+  });
+  const pageSize = Number(view.pageSize) || 20;
+  const pagesCount = Math.max(1, Math.ceil(filteredEvents.length / pageSize));
+  const page = Math.min(Math.max(1, Number(view.page) || 1), pagesCount);
+  state.auditView.page = page;
+  const pageEvents = filteredEvents.slice((page - 1) * pageSize, page * pageSize);
+  const userOptions = [...new Set(allEvents.map((event) => String(event.user || "")).filter(Boolean))]
+    .sort()
+    .map((user) => option(user, filters.user || "", user))
+    .join("");
+  const rows = pageEvents
     .map((event) => {
-      const summary = [
-        event.summary || event.details || "",
-        event.callId || event.uniqueId || "",
-        event.source && event.destination ? `${event.source} -> ${event.destination}` : "",
-        event.target ? `Alvo: ${event.target}` : "",
-        event.channel ? `Canal: ${event.channel}` : "",
-        Array.isArray(event.sections) && event.sections.length ? `Secoes: ${event.sections.join(", ")}` : ""
-      ].filter(Boolean).join(" | ");
+      const presentation = auditEventPresentation(event);
+      const summary = auditEventSummary(event);
+      const eventId = event.callId || event.uniqueId || event.id || "";
+      const hasTechnicalDetails = Boolean(event.before !== undefined || event.after !== undefined || (event.changes || []).length || event.channel || event.ip || eventId);
       return `
-        <tr>
-          <td>${escapeHtml(formatDateTime(event.accessedAt || event.at || event.updatedAt || ""))}</td>
-          <td><strong>${escapeHtml(event.user || "-")}</strong><br><span class="hint">${escapeHtml(event.role || "")}</span></td>
-          <td><span class="badge">${escapeHtml(auditActionLabel(event))}</span><br><span class="hint">${escapeHtml(event.action || "")}</span></td>
-          <td>
-            <div class="audit-detail">
-              <span>${escapeHtml(summary || "-")}</span>
-              ${renderAuditChanges(event)}
+        <article class="audit-event-row">
+          <div class="audit-event-icon ${presentation.tone}"><i data-lucide="${presentation.icon}"></i></div>
+          <div class="audit-event-content">
+            <div class="audit-event-heading">
+              <strong>${escapeHtml(auditActionLabel(event))}</strong>
+              <span class="badge ${presentation.tone}">${escapeHtml(presentation.label)}</span>
             </div>
-          </td>
-          <td>${escapeHtml(event.ip || "-")}</td>
-        </tr>`;
+            <p>${escapeHtml(summary)}</p>
+            <div class="audit-event-byline">
+              <span><i data-lucide="user-round"></i>${escapeHtml(event.user || "Sistema")} ${event.role ? `(${escapeHtml(event.role)})` : ""}</span>
+              <span><i data-lucide="clock-3"></i>${escapeHtml(formatDateTime(event.accessedAt || event.at || event.updatedAt || ""))}</span>
+            </div>
+            ${hasTechnicalDetails ? `<details class="audit-technical-details"><summary>Ver detalhes tecnicos</summary><div class="audit-technical-meta"><span><b>Codigo:</b> ${escapeHtml(event.action || "-")}</span><span><b>IP:</b> ${escapeHtml(event.ip || "-")}</span><span><b>Identificador:</b> ${escapeHtml(eventId || "-")}</span>${event.channel ? `<span><b>Canal:</b> ${escapeHtml(event.channel)}</span>` : ""}</div>${renderAuditChanges(event)}</details>` : ""}
+          </div>
+        </article>`;
     })
     .join("");
+  const activeFilterCount = Object.values(filters).filter((value) => String(value || "") !== "").length;
+  const today = todayKey();
 
   pages.audit.innerHTML = `
-    <div class="section-grid">
-      <section class="panel">
-        <div class="panel-header">
-          <div>
-            <p class="eyebrow">Auditoria</p>
-            <h3>Mudancas e acessos do sistema</h3>
-          </div>
-          <button id="reloadAuditBtn" class="secondary-btn"><i data-lucide="rotate-cw"></i>Atualizar</button>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Data</th><th>Usuario</th><th>Acao</th><th>Detalhe</th><th>IP</th></tr></thead>
-            <tbody>${rows || `<tr><td colspan="5">Nenhum evento de auditoria registrado ainda.</td></tr>`}</tbody>
-          </table>
-        </div>
+    <div class="governance-shell audit-shell">
+      <section class="governance-summary audit-summary">
+        ${[
+          ["Eventos registrados", allEvents.length, "history"],
+          ["Hoje", allEvents.filter((event) => String(event.accessedAt || event.at || event.updatedAt || "").slice(0, 10) === today).length, "calendar-days"],
+          ["Configuracoes", allEvents.filter((event) => auditEventGroup(event) === "configuration").length, "settings-2"],
+          ["Monitoramentos", allEvents.filter((event) => auditEventGroup(event) === "monitoring").length, "headphones"]
+        ]
+          .map(([label, value, icon]) => `<div class="governance-kpi"><i data-lucide="${icon}"></i><span>${escapeHtml(label)}</span><strong>${monitorNumber(value)}</strong></div>`)
+          .join("")}
       </section>
-    </div>
-  `;
+      <section class="panel audit-filter-panel">
+        <div class="panel-header"><div><h3>Filtrar auditoria</h3><p class="table-meta">${activeFilterCount ? `${activeFilterCount} filtro(s) ativo(s)` : "Encontre uma alteracao sem percorrer o historico inteiro."}</p></div><button id="reloadAuditBtn" class="icon-btn" type="button" title="Atualizar auditoria"><i data-lucide="rotate-cw"></i></button></div>
+        <div class="audit-filter-grid">
+          <label class="wide">Pesquisar<input data-audit-filter="q" value="${escapeHtml(filters.q || "")}" placeholder="Acao, ramal, numero, usuario ou identificador" /></label>
+          <label>Tipo<select data-audit-filter="group">${option("", filters.group || "", "Todos")}${option("configuration", filters.group || "", "Configuracoes")}${option("monitoring", filters.group || "", "Monitoramento")}${option("recordings", filters.group || "", "Gravacoes")}${option("other", filters.group || "", "Outros")}</select></label>
+          <label>Usuario<select data-audit-filter="user"><option value="">Todos</option>${userOptions}</select></label>
+          <label>Data inicial<input data-audit-filter="dateStart" type="date" value="${escapeHtml(filters.dateStart || "")}" /></label>
+          <label>Data final<input data-audit-filter="dateEnd" type="date" value="${escapeHtml(filters.dateEnd || "")}" /></label>
+        </div>
+        <div class="filter-actions"><button id="applyAuditFiltersBtn" class="primary-btn" type="button"><i data-lucide="search"></i>Aplicar filtros</button><button id="clearAuditFiltersBtn" class="secondary-btn" type="button"><i data-lucide="x"></i>Limpar</button></div>
+      </section>
+      <section class="panel audit-events-panel">
+        <div class="panel-header"><div><h3>Historico de atividades</h3><p class="table-meta">${monitorNumber(filteredEvents.length)} evento(s) encontrado(s)</p></div><button class="secondary-btn" data-tab="logs" type="button"><i data-lucide="server"></i>Ver sistema</button></div>
+        <div class="audit-event-list">${rows || `<div class="governance-empty"><i data-lucide="search-x"></i><strong>Nenhum evento encontrado</strong><span>Revise os filtros aplicados.</span></div>`}</div>
+        <div class="pagination"><button class="secondary-btn" data-audit-page="${Math.max(1, page - 1)}" ${page <= 1 ? "disabled" : ""}><i data-lucide="chevron-left"></i>Anterior</button><span>Pagina ${page} de ${pagesCount}</span><button class="secondary-btn" data-audit-page="${Math.min(pagesCount, page + 1)}" ${page >= pagesCount ? "disabled" : ""}>Proxima<i data-lucide="chevron-right"></i></button></div>
+      </section>
+    </div>`;
 }
 
 function renderUsers() {
@@ -5925,6 +6160,54 @@ function collectReportFiltersFromDom() {
     if (input.value !== "") filters[input.dataset.reportFilter] = input.value;
   });
   return filters;
+}
+
+function collectRecordingFiltersFromDom() {
+  const filters = {};
+  $all("[data-recording-filter]", pages.audios).forEach((input) => {
+    if (input.value !== "") filters[input.dataset.recordingFilter] = input.value;
+  });
+  return filters;
+}
+
+function recordingFilterParams(extra = {}) {
+  const params = new URLSearchParams();
+  Object.entries({ recording: "with", ...(state.recordingLibrary.filters || {}), ...extra }).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value) !== "") params.set(key, value);
+  });
+  return params;
+}
+
+async function loadRecordingLibrary(extra = {}) {
+  const library = state.recordingLibrary;
+  const meta = library.meta || {};
+  library.loading = true;
+  if (state.activeTab === "audios") {
+    renderAudios();
+    iconRefresh();
+  }
+  const params = recordingFilterParams({
+    page: extra.page || meta.page || 1,
+    pageSize: extra.pageSize || meta.pageSize || 20,
+    sortBy: "startedAt",
+    sortDir: "desc"
+  });
+  const dashboardParams = recordingFilterParams();
+  try {
+    const [callsResponse, dashboardResponse] = await Promise.all([
+      api(`/api/pbx/reports/calls?${params.toString()}`),
+      api(`/api/pbx/reports/dashboard?${dashboardParams.toString()}`)
+    ]);
+    library.calls = callsResponse.data || [];
+    library.meta = callsResponse.meta || library.meta;
+    library.dashboard = dashboardResponse.dashboard || {};
+  } finally {
+    library.loading = false;
+    if (state.activeTab === "audios") {
+      renderAudios();
+      iconRefresh();
+    }
+  }
 }
 
 async function loadReports(extra = {}) {
@@ -6406,6 +6689,10 @@ document.addEventListener("click", async (event) => {
   const removeIvr = event.target.closest("[data-remove-ivr]");
   const reportPageButton = event.target.closest("[data-report-page]");
   const reportSortButton = event.target.closest("[data-report-sort]");
+  const recordingViewButton = event.target.closest("[data-recording-view]");
+  const recordingPageButton = event.target.closest("[data-recording-page]");
+  const systemScopeButton = event.target.closest("[data-system-scope]");
+  const auditPageButton = event.target.closest("[data-audit-page]");
   const listenRecordingButton = event.target.closest("[data-listen-recording]");
   const callDetailsButton = event.target.closest("[data-call-details]");
   const removeQueueMemberButton = event.target.closest("[data-remove-queue-member]");
@@ -6790,6 +7077,29 @@ document.addEventListener("click", async (event) => {
           state.monitorSpy.output = error.message;
           renderMonitorSpyPortal();
         });
+      return;
+    }
+
+    if (event.target.closest("#applyAuditFiltersBtn")) {
+      state.auditView.filters = collectAuditFiltersFromDom();
+      state.auditView.page = 1;
+      renderAudit();
+      iconRefresh();
+      return;
+    }
+
+    if (event.target.closest("#clearAuditFiltersBtn")) {
+      state.auditView.filters = {};
+      state.auditView.page = 1;
+      renderAudit();
+      iconRefresh();
+      return;
+    }
+
+    if (auditPageButton) {
+      state.auditView.page = Number(auditPageButton.dataset.auditPage) || 1;
+      renderAudit();
+      iconRefresh();
       return;
     }
 
@@ -7505,6 +7815,52 @@ document.addEventListener("click", async (event) => {
       renderAll();
       iconRefresh();
       setMessage(response.message || "Audio excluido.", "ok");
+      return;
+    }
+
+    if (recordingViewButton) {
+      state.recordingLibrary.view = recordingViewButton.dataset.recordingView === "ivr" ? "ivr" : "calls";
+      renderAudios();
+      iconRefresh();
+      if (state.recordingLibrary.view === "calls" && !state.recordingLibrary.calls.length) await loadRecordingLibrary({ page: 1 });
+      return;
+    }
+
+    if (event.target.closest("#toggleRecordingFiltersBtn")) {
+      state.recordingLibrary.filtersOpen = !state.recordingLibrary.filtersOpen;
+      renderAudios();
+      iconRefresh();
+      return;
+    }
+
+    if (event.target.closest("#applyRecordingFiltersBtn")) {
+      state.recordingLibrary.filters = collectRecordingFiltersFromDom();
+      state.recordingLibrary.meta.page = 1;
+      await loadRecordingLibrary({ page: 1 });
+      return;
+    }
+
+    if (event.target.closest("#clearRecordingFiltersBtn")) {
+      state.recordingLibrary.filters = {};
+      state.recordingLibrary.meta.page = 1;
+      await loadRecordingLibrary({ page: 1 });
+      return;
+    }
+
+    if (recordingPageButton) {
+      await loadRecordingLibrary({ page: Number(recordingPageButton.dataset.recordingPage) || 1 });
+      return;
+    }
+
+    if (event.target.closest("#reloadRecordingsBtn")) {
+      await loadRecordingLibrary();
+      return;
+    }
+
+    if (systemScopeButton) {
+      state.systemView.scope = systemScopeButton.dataset.systemScope || "all";
+      renderLogs();
+      iconRefresh();
       return;
     }
 

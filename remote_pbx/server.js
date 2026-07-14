@@ -2337,6 +2337,38 @@ function applyReportScope(calls, scope) {
   });
 }
 
+function recordingNamePart(value = "") {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+}
+
+function recordingDownloadName(call = {}) {
+  const started = parseFlexibleDate(call.startedAt);
+  const pad = (value) => String(value).padStart(2, "0");
+  const stamp = started
+    ? `${started.getFullYear()}-${pad(started.getMonth() + 1)}-${pad(started.getDate())}_${pad(started.getHours())}-${pad(started.getMinutes())}-${pad(started.getSeconds())}`
+    : "sem-data";
+  const type = { inbound: "entrada", outbound: "saida", internal: "interna" }[call.type] || "chamada";
+  const party = call.type === "inbound"
+    ? call.source || call.callerId || call.destination
+    : call.type === "outbound"
+      ? call.destination || call.callerId || call.source
+      : call.destination || call.source || call.callerId;
+  const extension = recordingNamePart(call.extension);
+  const number = recordingNamePart(party);
+  const uniqueId = recordingNamePart(call.uniqueId || call.id);
+  const fileExtension = path.extname(call.recordingPath || call.recordingFile || "").toLowerCase() || ".wav";
+  return [stamp, type, extension ? `ramal-${extension}` : "", number ? `numero-${number}` : "", uniqueId ? `id-${uniqueId}` : ""]
+    .filter(Boolean)
+    .join("_")
+    .slice(0, 180) + fileExtension;
+}
+
 function parseReportFilters(query) {
   return {
     dateStart: String(query.dateStart || query.startDate || ""),
@@ -2345,6 +2377,7 @@ function parseReportFilters(query) {
     timeEnd: String(query.timeEnd || ""),
     source: String(query.source || query.src || ""),
     destination: String(query.destination || query.dst || ""),
+    number: String(query.number || ""),
     extension: String(query.extension || ""),
     extensionName: String(query.extensionName || ""),
     type: String(query.type || ""),
@@ -2386,6 +2419,7 @@ function applyReportFilters(calls, filters) {
     }
     if (!includesText(call.source, filters.source)) return false;
     if (!includesText(call.destination, filters.destination)) return false;
+    if (filters.number && ![call.source, call.destination, call.callerId, call.did].some((value) => includesText(value, filters.number))) return false;
     if (!includesText(call.extension, filters.extension)) return false;
     if (!includesText(call.extensionName, filters.extensionName)) return false;
     if (filters.type && call.type !== filters.type) return false;
@@ -3405,6 +3439,7 @@ app.get("/api/pbx/reports/calls", requireAuth, async (req, res) => {
   const offset = (page - 1) * pageSize;
   const pageCalls = sorted.slice(offset, offset + pageSize).map((call) => {
     const { recordingPath, ...safeCall } = call;
+    safeCall.recordingDownloadName = recordingDownloadName(call);
     return safeCall;
   });
 
@@ -3432,6 +3467,7 @@ app.get("/api/pbx/reports/calls/:id", requireAuth, async (req, res) => {
   const call = calls.find((item) => item.id === req.params.id || item.uniqueId === req.params.id);
   if (!call) return res.status(404).json({ error: "Chamada nao encontrada" });
   const { recordingPath, ...safeCall } = call;
+  safeCall.recordingDownloadName = recordingDownloadName(call);
   safeCall.timeline = [
     { label: "Inicio", at: safeCall.startedAt, description: `${safeCall.source || "-"} chamou ${safeCall.destination || "-"}` },
     safeCall.answeredAt ? { label: "Atendimento", at: safeCall.answeredAt, description: `Atendida apos ${safeCall.waitsecLabel}` } : null,
@@ -3645,7 +3681,7 @@ app.get("/api/pbx/recordings/:uniqueid/download", requireAuth, async (req, res) 
   if (!scope.canDownload) return res.status(403).json({ error: "Sem permissao para baixar gravacoes" });
   if (!call.recordingPath || !(await fs.pathExists(call.recordingPath))) return res.status(404).json({ error: "Gravacao nao encontrada" });
   await writeAuditEvent(req, call, "download");
-  res.download(call.recordingPath, call.recordingFile || `${call.uniqueId}${path.extname(call.recordingPath)}`);
+  res.download(call.recordingPath, recordingDownloadName(call));
 });
 
 app.get("/api/pbx/reports/export/csv", requireAuth, async (req, res) => {
@@ -3917,6 +3953,9 @@ module.exports = {
     configRevision,
     requireAdmin,
     requireSupervisor,
+    applyReportFilters,
+    parseReportFilters,
+    recordingDownloadName,
     sanitizeAuditValue,
     userCanInterveneLiveCalls,
     userCanMonitorExtension,

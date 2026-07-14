@@ -20,3 +20,25 @@ test("live monitor audio plays without showing native duration controls", () => 
   assert.doesNotMatch(appSource, /id="monitorSpyAudio"[^>]*controls/);
   assert.match(stylesSource, /\.monitor-spy-player audio\s*\{\s*display: none;/);
 });
+
+test("recording library exposes detailed call filters and keeps IVR audio separate", () => {
+  assert.match(appSource, /data-recording-view="calls"/);
+  assert.match(appSource, /data-recording-view="ivr"/);
+  assert.match(appSource, /data-recording-filter="number"/);
+  assert.match(appSource, /data-recording-filter="extension"/);
+  assert.match(appSource, /data-recording-filter="queue"/);
+  assert.match(appSource, /data-recording-filter="minDuration"/);
+  assert.match(appSource, /data-recording-filter="maxDuration"/);
+});
+
+test("system and audit views keep technical detail progressive", () => {
+  assert.match(appSource, /data-system-scope="\$\{key\}"/);
+  assert.match(appSource, /data-audit-filter="q"/);
+  assert.match(appSource, /data-audit-filter="group"/);
+  assert.match(appSource, /<details class="audit-technical-details">/);
+});
+
+test("desktop sidebar cannot create a horizontal scrollbar", () => {
+  assert.match(stylesSource, /@media \(min-width: 821px\)[\s\S]*?\.sidebar,[\s\S]*?overflow-x: hidden;/);
+  assert.match(stylesSource, /\.nav-tabs button span\s*\{[\s\S]*?text-overflow: ellipsis;/);
+});
