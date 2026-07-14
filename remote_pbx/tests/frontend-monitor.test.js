@@ -41,4 +41,5 @@ test("system and audit views keep technical detail progressive", () => {
 test("desktop sidebar cannot create a horizontal scrollbar", () => {
   assert.match(stylesSource, /@media \(min-width: 821px\)[\s\S]*?\.sidebar,[\s\S]*?overflow-x: hidden;/);
   assert.match(stylesSource, /\.nav-tabs button span\s*\{[\s\S]*?text-overflow: ellipsis;/);
+  assert.match(stylesSource, /\.app-shell:not\(\.sidebar-collapsed\) \.nav-tabs button::after\s*\{\s*content: none;/);
 });

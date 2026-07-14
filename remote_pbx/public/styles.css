@@ -932,6 +932,10 @@ html[data-theme="dark"] .command-queue-card .compact-agent-name.agent-presence-c
     overflow-x: hidden;
   }
 
+  .app-shell:not(.sidebar-collapsed) .nav-tabs button::after {
+    content: none;
+  }
+
   .nav-tabs button,
   .app-shell.sidebar-collapsed .nav-tabs button {
     width: 100%;
