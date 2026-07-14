@@ -595,6 +595,7 @@ async function runAsteriskControl(action, extensionNumber, payload = {}) {
   if (action === "spy-browser") {
     args.push(String(payload.targetEndpoint || payload.target || ""));
     args.push(String(payload.listenerEndpoint || ""));
+    args.push(String(payload.mode || "listen"));
   }
   if (action === "dialer-call") args.push(String(payload.file || ""));
 
@@ -2311,6 +2312,20 @@ function userReportScope(req, config) {
   };
 }
 
+function userCanInterveneLiveCalls(req) {
+  return userRole(req) === "admin" || Boolean(req.session?.user?.permissions?.interveneCalls);
+}
+
+function userCanMonitorExtension(req, config, extensionNumber) {
+  const scope = userReportScope(req, config);
+  if (scope.all) return true;
+  const target = String(extensionNumber || "");
+  const extension = (config.extensions || []).find((item) => String(item.number) === target);
+  if (!extension) return false;
+  if ((scope.extensions || []).map(String).includes(target)) return true;
+  return (scope.departments || []).map(String).includes(String(extension.department || ""));
+}
+
 function applyReportScope(calls, scope) {
   if (scope.all) return calls;
   const extensions = new Set((scope.extensions || []).map(String));
@@ -2792,7 +2807,7 @@ function spyEndpointForMonitor(status, extensionNumber) {
 }
 
 function asteriskCommandFailed(output = "") {
-  return /not a known channel|unable to create channel|no such channel|invalid|failed|falha|erro/i.test(String(output || ""));
+  return /not a known channel|unable to create channel|no such channel|no such application|not registered|invalid|failed|falha|erro|indisponivel/i.test(String(output || ""));
 }
 
 function activeChannelsForMonitor(status, extensionNumber, channelName = "") {
@@ -3313,8 +3328,14 @@ app.get("/api/config", requireAuth, async (req, res) => {
   res.json(withConfigRevision(configForUser(config, req), config));
 });
 
-app.get("/api/monitor/sip", requireAuth, requireAdmin, async (req, res) => {
-  res.json({ sip: monitorSipSettings(req) });
+app.get("/api/monitor/sip", requireAuth, requireSupervisor, async (req, res) => {
+  const config = await getConfig();
+  const scope = userReportScope(req, config);
+  if (!scope.canListen) return res.status(403).json({ error: "Sem permissao para escuta de chamadas" });
+  res.json({
+    sip: monitorSipSettings(req),
+    allowedModes: userCanInterveneLiveCalls(req) ? ["listen", "whisper", "barge"] : ["listen"]
+  });
 });
 
 app.put("/api/config", requireAuth, requireAdmin, async (req, res) => {
@@ -3457,10 +3478,14 @@ app.post("/api/pbx/monitor/action", requireAuth, requireSupervisor, async (req, 
   const channel = String(req.body?.channel || "").trim();
   const target = String(req.body?.target || "").trim();
   const listener = String(req.body?.listener || "").replace(/[^\d]/g, "");
+  const mode = String(req.body?.mode || "listen").trim().toLowerCase();
 
   if (["spy", "spy-browser", "hangup-monitor-spy"].includes(action)) {
     const scope = userReportScope(req, config);
     if (!scope.canListen) return res.status(403).json({ error: "Sem permissao para escuta de chamadas" });
+  }
+  if (action === "spy-browser" && !["listen", "whisper", "barge"].includes(mode)) {
+    return res.status(400).json({ error: "Modo de monitoramento invalido" });
   }
 
   try {
@@ -3517,21 +3542,37 @@ app.post("/api/pbx/monitor/action", requireAuth, requireSupervisor, async (req, 
     if (action === "spy-browser") {
       const targetExtension = (config.extensions || []).find((item) => String(item.number) === target);
       if (!targetExtension) return res.status(400).json({ error: "Informe o ramal monitorado" });
+      if (!userCanMonitorExtension(req, config, target)) {
+        return res.status(403).json({ error: "Ramal fora do escopo permitido para este supervisor" });
+      }
+      if (mode !== "listen" && !userCanInterveneLiveCalls(req)) {
+        return res.status(403).json({ error: "Sem permissao para intervir em chamadas" });
+      }
       const status = await readPbxStatus(config);
+      const activeChannel = activeChannelForMonitor(status, target, "");
+      if (!activeChannel?.channel) {
+        return res.status(409).json({ error: "O ramal nao esta em uma chamada ativa" });
+      }
       const targetEndpoint = spyEndpointForMonitor(status, target);
       const listenerEndpoint = process.env.PBX_MONITOR_SIP_USER || "monitor-admin";
-      const output = await runAsteriskControl("spy-browser", "00", { targetEndpoint, listenerEndpoint });
+      const output = await runAsteriskControl("spy-browser", "00", { targetEndpoint, listenerEndpoint, mode });
       if (asteriskCommandFailed(output)) {
-        return res.status(409).json({ error: "O Asterisk nao conseguiu abrir a escuta no navegador", detail: output, targetEndpoint });
+        return res.status(409).json({ error: "O Asterisk nao conseguiu abrir o monitoramento no navegador", detail: output, targetEndpoint });
       }
-      await writeSystemAuditEvent(req, "monitor-spy", {
-        label: "Iniciou escuta no navegador",
-        summary: `Monitor escutando ramal ${target} (${targetEndpoint})`,
+      const auditByMode = {
+        listen: { event: "monitor-spy", label: "Iniciou escuta no navegador", summary: "escutando" },
+        whisper: { event: "monitor-whisper", label: "Iniciou sussurro ao operador", summary: "falando com o operador" },
+        barge: { event: "monitor-barge", label: "Iniciou intervencao na chamada", summary: "falando com operador e cliente" }
+      };
+      const audit = auditByMode[mode];
+      await writeSystemAuditEvent(req, audit.event, {
+        label: audit.label,
+        summary: `Monitor ${audit.summary} no ramal ${target} (${targetEndpoint})`,
         target,
         output,
-        after: { listenerEndpoint, target, targetEndpoint }
+        after: { listenerEndpoint, target, targetEndpoint, mode, activeChannel: activeChannel.channel }
       });
-      return res.json({ ok: true, output, listenerEndpoint, target, targetEndpoint });
+      return res.json({ ok: true, output, listenerEndpoint, target, targetEndpoint, mode });
     }
 
     if (action === "hangup-monitor-spy") {
@@ -3552,6 +3593,9 @@ app.post("/api/pbx/monitor/action", requireAuth, requireSupervisor, async (req, 
       const targetExtension = (config.extensions || []).find((item) => String(item.number) === target);
       const listenerExtension = (config.extensions || []).find((item) => String(item.number) === listener);
       if (!targetExtension || !listenerExtension) return res.status(400).json({ error: "Informe ramal monitorado e ramal que vai escutar" });
+      if (!userCanMonitorExtension(req, config, target)) {
+        return res.status(403).json({ error: "Ramal fora do escopo permitido para este supervisor" });
+      }
       const status = await readPbxStatus(config);
       const targetEndpoint = spyEndpointForMonitor(status, target);
       const output = await runAsteriskControl("spy", listener, { targetEndpoint });
@@ -3874,6 +3918,8 @@ module.exports = {
     requireAdmin,
     requireSupervisor,
     sanitizeAuditValue,
+    userCanInterveneLiveCalls,
+    userCanMonitorExtension,
     userRole
   }
 };

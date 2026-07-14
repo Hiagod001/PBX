@@ -43,6 +43,11 @@ const compactMonitorStatusOptions = [
   ["paused", "Pausa"],
   ["unavailable", "Offline"]
 ];
+const MONITOR_SPY_MODES = Object.freeze({
+  listen: { label: "Escutar", actionLabel: "Iniciar escuta", liveLabel: "Escuta ao vivo", icon: "headphones", microphone: false },
+  whisper: { label: "Sussurrar", actionLabel: "Iniciar sussurro", liveLabel: "Sussurro ao vivo", icon: "message-circle", microphone: true },
+  barge: { label: "Intervir", actionLabel: "Iniciar intervencao", liveLabel: "Intervencao ao vivo", icon: "messages-square", microphone: true }
+});
 
 function defaultMonitorCompactSettings() {
   return {
@@ -160,7 +165,7 @@ const state = {
   },
   users: [],
   auditEvents: [],
-  monitorSpy: { open: false, target: "", listener: "", output: "", status: "", ua: null, registerer: null, session: null, sip: null },
+  monitorSpy: { open: false, target: "", mode: "listen", output: "", status: "", ua: null, registerer: null, session: null, sip: null, allowedModes: null },
   monitorCompact: storedMonitorCompactSettings(),
   inboundCalls: { cdr: [], rejected: [] },
   pbxStatus: null,
@@ -2322,6 +2327,20 @@ function browserCanUseMicrophone() {
   return window.isSecureContext || ["localhost", "127.0.0.1", "::1"].includes(host);
 }
 
+function monitorSpyMode(value = "listen") {
+  return MONITOR_SPY_MODES[value] ? value : "listen";
+}
+
+function allowedMonitorSpyModes() {
+  const localModes = state.user?.role === "admin" || state.user?.permissions?.interveneCalls
+    ? ["listen", "whisper", "barge"]
+    : ["listen"];
+  const serverModes = Array.isArray(state.monitorSpy?.allowedModes) && state.monitorSpy.allowedModes.length
+    ? state.monitorSpy.allowedModes
+    : localModes;
+  return localModes.filter((mode) => serverModes.includes(mode));
+}
+
 function attachRemoteAudio(session) {
   const audio = $("#remoteAudio");
   const peerConnection = session?.sessionDescriptionHandler?.peerConnection;
@@ -2342,8 +2361,16 @@ function attachMonitorSpyAudio(session) {
   peerConnection.getReceivers().forEach((receiver) => {
     if (receiver.track) stream.addTrack(receiver.track);
   });
+  if (!stream.getAudioTracks().length) return;
   audio.srcObject = stream;
+  audio.muted = false;
+  audio.volume = 1;
   audio.play().catch(() => {});
+}
+
+function restoreMonitorSpyAudio() {
+  if (!state.monitorSpy?.session) return;
+  setTimeout(() => attachMonitorSpyAudio(state.monitorSpy.session), 0);
 }
 
 async function terminateSipSession(session) {
@@ -2353,13 +2380,58 @@ async function terminateSipSession(session) {
   else if (session.reject) await session.reject().catch(() => {});
 }
 
+function waitForMonitorSpyRegistration(registerer, timeoutMs = 8000) {
+  if (registerer.state === SIP.RegistererState.Registered) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      registerer.stateChange.removeListener(listener);
+      if (error) reject(error);
+      else resolve();
+    };
+    const listener = (nextState) => {
+      if (nextState === SIP.RegistererState.Registered) finish();
+      if (nextState === SIP.RegistererState.Terminated) finish(new Error("Registro do monitor foi encerrado pelo servidor"));
+    };
+    const timer = setTimeout(() => finish(new Error("Servidor nao confirmou o registro do monitor")), timeoutMs);
+    registerer.stateChange.addListener(listener);
+  });
+}
+
+async function finishMonitorSipOperation(operationFactory, timeoutMs = 2500) {
+  await Promise.race([
+    Promise.resolve().then(operationFactory).catch(() => null),
+    new Promise((resolve) => setTimeout(resolve, timeoutMs))
+  ]);
+}
+
+async function disposeMonitorSpySoftphone() {
+  const registerer = state.monitorSpy.registerer;
+  const userAgent = state.monitorSpy.ua;
+  state.monitorSpy.registerer = null;
+  state.monitorSpy.ua = null;
+  state.monitorSpy.sip = null;
+  if (registerer) await finishMonitorSipOperation(() => registerer.unregister());
+  if (userAgent) await finishMonitorSipOperation(() => userAgent.stop());
+}
+
 async function ensureMonitorSpySoftphone() {
   await waitForSipLibrary();
   if (!state.monitorSpy.sip) {
     const response = await api("/api/monitor/sip");
     state.monitorSpy.sip = response.sip;
+    state.monitorSpy.allowedModes = response.allowedModes || ["listen"];
   }
-  if (state.monitorSpy.ua) return;
+  if (state.monitorSpy.ua && state.monitorSpy.registerer) {
+    if (state.monitorSpy.registerer.state !== SIP.RegistererState.Registered) {
+      await state.monitorSpy.registerer.register();
+      await waitForMonitorSpyRegistration(state.monitorSpy.registerer);
+    }
+    return;
+  }
   const sip = state.monitorSpy.sip;
   const userAgent = new SIP.UserAgent({
     uri: SIP.UserAgent.makeURI(sip.uri),
@@ -2368,15 +2440,17 @@ async function ensureMonitorSpySoftphone() {
     displayName: sip.displayName || "Monitor PBX",
     transportOptions: { server: sip.wsServer },
     sessionDescriptionHandlerFactoryOptions: {
-      constraints: { audio: true, video: false }
+      constraints: { audio: false, video: false }
     }
   });
 
   userAgent.delegate = {
     async onInvite(invitation) {
+      const mode = monitorSpyMode(state.monitorSpy.mode);
+      const modeConfig = MONITOR_SPY_MODES[mode];
       state.monitorSpy.session = invitation;
-      state.monitorSpy.status = "Recebendo audio";
-      state.monitorSpy.output = "Escuta conectando no navegador...";
+      state.monitorSpy.status = "Conectando";
+      state.monitorSpy.output = `${modeConfig.label} conectando no navegador...`;
       invitation.delegate = {
         ...(invitation.delegate || {}),
         onBye() {
@@ -2398,8 +2472,8 @@ async function ensureMonitorSpySoftphone() {
       invitation.stateChange?.addListener?.((nextState) => {
         let shouldAttachAudio = false;
         if (nextState === sessionState.Established) {
-          state.monitorSpy.status = "Ao vivo";
-          state.monitorSpy.output = "Audio da chamada conectado neste navegador.";
+          state.monitorSpy.status = modeConfig.liveLabel;
+          state.monitorSpy.output = `${modeConfig.label} conectado ao ramal ${state.monitorSpy.target}.`;
           shouldAttachAudio = true;
         }
         if (nextState === sessionState.Terminated) {
@@ -2413,14 +2487,37 @@ async function ensureMonitorSpySoftphone() {
       });
       renderStatus();
       iconRefresh();
-      await invitation.accept({ sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } } });
+      try {
+        await invitation.accept({
+          sessionDescriptionHandlerOptions: { constraints: { audio: modeConfig.microphone, video: false } }
+        });
+      } catch (error) {
+        state.monitorSpy.session = null;
+        state.monitorSpy.status = "Falha";
+        state.monitorSpy.output = modeConfig.microphone
+          ? "Nao foi possivel acessar o microfone para este modo."
+          : `Nao foi possivel receber o audio: ${error.message}`;
+        await api("/api/pbx/monitor/action", {
+          method: "POST",
+          body: JSON.stringify({ action: "hangup-monitor-spy" })
+        }).catch(() => null);
+        await disposeMonitorSpySoftphone();
+        renderStatus();
+        iconRefresh();
+      }
     }
   };
 
   state.monitorSpy.ua = userAgent;
   state.monitorSpy.registerer = new SIP.Registerer(userAgent, { expires: WEB_SIP_REGISTER_EXPIRES_SECONDS });
-  await userAgent.start();
-  await state.monitorSpy.registerer.register();
+  try {
+    await userAgent.start();
+    await state.monitorSpy.registerer.register();
+    await waitForMonitorSpyRegistration(state.monitorSpy.registerer);
+  } catch (error) {
+    await disposeMonitorSpySoftphone();
+    throw error;
+  }
 }
 
 async function stopMonitorSpy() {
@@ -2432,29 +2529,46 @@ async function stopMonitorSpy() {
     body: JSON.stringify({ action: "hangup-monitor-spy" })
   }).catch(() => null);
   state.monitorSpy.session = null;
+  await disposeMonitorSpySoftphone();
   state.monitorSpy.status = "Parada";
-  state.monitorSpy.output = "Escuta parada.";
+  state.monitorSpy.output = "Monitoramento encerrado.";
   renderStatus();
   iconRefresh();
 }
 
-async function startMonitorBrowserSpy(target) {
+async function startMonitorBrowserSpy(target, requestedMode = "listen") {
+  const mode = monitorSpyMode(requestedMode);
+  const modeConfig = MONITOR_SPY_MODES[mode];
+  if (!allowedMonitorSpyModes().includes(mode)) throw new Error("Sem permissao para este modo de monitoramento");
+  if (modeConfig.microphone && (!browserCanUseMicrophone() || !navigator.mediaDevices?.getUserMedia)) {
+    throw new Error("O navegador nao pode acessar o microfone neste ambiente");
+  }
+  state.monitorSpy.mode = mode;
   state.monitorSpy.status = "Registrando monitor";
-  state.monitorSpy.output = "Preparando audio no navegador...";
+  state.monitorSpy.output = "Preparando o canal seguro de audio...";
   renderStatus();
   iconRefresh();
-  await ensureMonitorSpySoftphone();
-  state.monitorSpy.status = "Chamando escuta";
-  state.monitorSpy.output = "Conectando na chamada do operador...";
-  renderStatus();
-  iconRefresh();
-  const response = await api("/api/pbx/monitor/action", {
-    method: "POST",
-    body: JSON.stringify({ action: "spy-browser", target })
-  });
-  state.monitorSpy.output = response.output || "Escuta enviada para este navegador.";
-  renderStatus();
-  iconRefresh();
+  try {
+    await ensureMonitorSpySoftphone();
+    state.monitorSpy.status = "Conectando";
+    state.monitorSpy.output = `Abrindo ${modeConfig.label.toLowerCase()} na chamada do operador...`;
+    renderStatus();
+    iconRefresh();
+    await api("/api/pbx/monitor/action", {
+      method: "POST",
+      body: JSON.stringify({ action: "spy-browser", target, mode })
+    });
+    state.monitorSpy.output = "Solicitacao enviada ao Asterisk.";
+    renderStatus();
+    iconRefresh();
+  } catch (error) {
+    state.monitorSpy.status = "Falha";
+    state.monitorSpy.output = error.message;
+    await disposeMonitorSpySoftphone();
+    renderStatus();
+    iconRefresh();
+    throw error;
+  }
 }
 
 function finishSoftphoneSession(session, message = "Chamada encerrada.") {
@@ -3101,14 +3215,30 @@ function renderMonitorSpyModal() {
   const target = String(state.monitorSpy.target || "");
   const targetExtension = (state.config.extensions || []).find((extension) => String(extension.number) === target);
   const listening = Boolean(state.monitorSpy.session);
+  const mode = monitorSpyMode(state.monitorSpy.mode);
+  const modeConfig = MONITOR_SPY_MODES[mode];
+  const modeHint = {
+    listen: "Somente o supervisor recebe o audio da chamada.",
+    whisper: "A voz do supervisor e enviada somente ao operador.",
+    barge: "A voz do supervisor e enviada ao operador e ao cliente."
+  }[mode];
+  const modeOptions = allowedMonitorSpyModes()
+    .map((key) => {
+      const item = MONITOR_SPY_MODES[key];
+      return `
+        <button class="monitor-spy-mode ${mode === key ? "active" : ""}" type="button" data-monitor-spy-mode="${key}" aria-pressed="${mode === key}" ${listening ? "disabled" : ""}>
+          <i data-lucide="${item.icon}"></i><span>${escapeHtml(item.label)}</span>
+        </button>`;
+    })
+    .join("");
   return `
     <div class="modal-backdrop" data-monitor-spy-close></div>
-    <section class="modal-card monitor-spy-card" role="dialog" aria-modal="true" aria-label="Escuta em tempo real">
+    <section class="modal-card monitor-spy-card" role="dialog" aria-modal="true" aria-label="Monitoramento em tempo real">
       <header>
         <div>
           <p class="eyebrow">Monitoramento</p>
-          <h3>Escutar chamada do ramal ${escapeHtml(target || "-")}</h3>
-          <p class="hint">O audio da chamada sera aberto neste navegador em tempo real.</p>
+          <h3>Chamada do ramal ${escapeHtml(target || "-")}</h3>
+          <p class="hint">${escapeHtml(modeHint)}</p>
         </div>
         <button class="icon-btn" id="monitorSpyCloseBtn" type="button" title="Fechar"><i data-lucide="x"></i></button>
       </header>
@@ -3116,6 +3246,7 @@ function renderMonitorSpyModal() {
         <span><strong>Ramal monitorado</strong>${escapeHtml(target || "-")}</span>
         <span><strong>Operador</strong>${escapeHtml(targetExtension?.name || "-")}</span>
       </div>
+      <div class="monitor-spy-modes" role="group" aria-label="Modo de monitoramento">${modeOptions}</div>
       <div class="monitor-spy-player">
         <span class="badge ${listening ? "ok" : "warn"}">${escapeHtml(state.monitorSpy.status || (listening ? "Ao vivo" : "Pronta"))}</span>
         <audio id="monitorSpyAudio" autoplay controls></audio>
@@ -3123,8 +3254,8 @@ function renderMonitorSpyModal() {
       ${state.monitorSpy.output ? `<p class="callout ok">${escapeHtml(state.monitorSpy.output)}</p>` : ""}
       <div class="modal-actions">
         <button class="secondary-btn" id="monitorSpyCancelBtn" type="button">Cancelar</button>
-        ${listening ? `<button class="secondary-btn danger" id="monitorSpyStopBtn" type="button"><i data-lucide="phone-off"></i>Parar escuta</button>` : ""}
-        <button class="primary-btn" id="monitorSpyStartBtn" type="button" ${listening ? "disabled" : ""}><i data-lucide="ear"></i>Escutar neste navegador</button>
+        ${listening ? `<button class="secondary-btn danger" id="monitorSpyStopBtn" type="button"><i data-lucide="phone-off"></i>Encerrar monitoramento</button>` : ""}
+        <button class="primary-btn" id="monitorSpyStartBtn" type="button" ${listening ? "disabled" : ""}><i data-lucide="${modeConfig.icon}"></i>${escapeHtml(modeConfig.actionLabel)}</button>
       </div>
     </section>
   `;
@@ -3288,7 +3419,7 @@ function renderStatus() {
                 ${pauseSummary ? `<small class="monitor-pause-detail">${escapeHtml(pauseSummary)}</small>` : ""}
               </td>
               <td class="agent-action-cell" data-label="Acao">
-                <button class="icon-btn compact" data-monitor-spy="${escapeHtml(agent.number || "")}" ${canControlCall ? "" : "disabled"} title="Escutar em tempo real"><i data-lucide="ear"></i></button>
+                <button class="icon-btn compact" data-monitor-spy="${escapeHtml(agent.number || "")}" ${canControlCall ? "" : "disabled"} title="Monitorar chamada"><i data-lucide="headphones"></i></button>
                 <button class="icon-btn compact danger" data-monitor-hangup="${escapeHtml(agent.channel || "")}" data-monitor-extension="${escapeHtml(agent.number || "")}" ${canControlCall ? "" : "disabled"} title="Desconectar chamada"><i data-lucide="phone-off"></i></button>
               </td>
               <td data-label="Atendidas">${monitorNumber(agent.callsTaken)}</td>
@@ -3372,6 +3503,7 @@ function renderStatus() {
   if (state.monitorCompact.view === "compact") {
     pages.status.innerHTML = renderCompactMonitor(queues, waitingCalls, totals, lastReadLabel, trunkStatus, trunkTone, liveLabel);
     restoreCompactSettingsViewport(compactSettingsViewport);
+    restoreMonitorSpyAudio();
     return;
   }
 
@@ -3431,6 +3563,7 @@ function renderStatus() {
     ${renderMonitorSpyModal()}
   `;
   restoreCompactSettingsViewport(compactSettingsViewport);
+  restoreMonitorSpyAudio();
 }
 
 function renderFlow() {
@@ -3441,7 +3574,7 @@ function commandCenterQueueCards(queues = [], extensionFilter = "", searchValue 
   const fields = state.monitorCompact.fields || {};
   const statuses = state.monitorCompact.statuses || {};
   const search = String(searchValue || "").trim().toLowerCase();
-  const columnCount = 1 + ["calls", "duration", "number", "pause", "idle", "online"].filter((key) => fields[key] !== false).length;
+  const columnCount = 2 + ["calls", "duration", "number", "pause", "idle", "online"].filter((key) => fields[key] !== false).length;
   return queues
     .map((queue, queueIndex) => {
       const queueText = `${queue.name || ""} ${queue.id || queue.number || ""}`.toLowerCase();
@@ -3460,13 +3593,15 @@ function commandCenterQueueCards(queues = [], extensionFilter = "", searchValue 
         fields.number === false ? "" : "<th>Numero</th>",
         fields.pause === false ? "" : "<th>Pausa</th>",
         fields.idle === false ? "" : "<th>Ocioso</th>",
-        fields.online === false ? "" : "<th>Online</th>"
+        fields.online === false ? "" : "<th>Online</th>",
+        '<th class="compact-monitor-action">Acao</th>'
       ].join("");
       const rows = agents
         .map((agent) => {
           const tone = monitorStatusTone(agent.statusTone || agent.status);
           const pauseSummary = agentPauseSummary(agent, tone);
           const pauseTime = tone === "paused" ? agent.pauseDurationLabel || (Number(agent.pauseSeconds) ? formatSeconds(agent.pauseSeconds) : "0s") : "-";
+          const canMonitorCall = Boolean(agent.channel) || ["busy", "ringing"].includes(tone);
           return `
             <tr class="compact-agent-row ${tone}">
               <td class="compact-agent-name agent-presence-cell ${tone}">
@@ -3480,6 +3615,7 @@ function commandCenterQueueCards(queues = [], extensionFilter = "", searchValue 
               ${fields.pause === false ? "" : `<td class="pause-value">${escapeHtml(pauseTime)}</td>`}
               ${fields.idle === false ? "" : `<td class="idle-value">${escapeHtml(agent.idleTime || "-")}</td>`}
               ${fields.online === false ? "" : `<td>${escapeHtml(agent.onlineDurationLabel || agent.loginTime || "-")}</td>`}
+              <td class="compact-monitor-action"><button class="icon-btn compact" data-monitor-spy="${escapeHtml(agent.number || "")}" ${canMonitorCall ? "" : "disabled"} type="button" title="Monitorar chamada"><i data-lucide="headphones"></i></button></td>
             </tr>`;
         })
         .join("");
@@ -5291,6 +5427,8 @@ function auditActionLabel(event) {
     "monitor-transfer-waiting": "Chamada em espera transferida",
     "monitor-hangup-channel": "Chamada encerrada pelo monitor",
     "monitor-spy": "Escuta iniciada pelo monitor",
+    "monitor-whisper": "Sussurro iniciado pelo monitor",
+    "monitor-barge": "Intervencao iniciada pelo monitor",
     listen: "Gravacao escutada",
     download: "Gravacao baixada"
   };
@@ -5448,7 +5586,7 @@ function renderUsers() {
       <section class="user-access-block user-account-permissions">
         <div class="user-access-heading">
           <div>
-            <strong>Gravacoes e seguranca</strong>
+            <strong>Gravacoes e monitoramento</strong>
             <span>Permissoes complementares da conta.</span>
           </div>
         </div>
@@ -5460,6 +5598,10 @@ function renderUsers() {
           <label class="user-setting-option">
             <input type="checkbox" data-user-permission="downloadRecordings" ${user.permissions?.downloadRecordings ? "checked" : ""}/>
             <span><strong>Baixar gravacoes</strong><small>Salvar uma copia do audio.</small></span>
+          </label>
+          <label class="user-setting-option">
+            <input type="checkbox" data-user-permission="interveneCalls" ${user.permissions?.interveneCalls ? "checked" : ""}/>
+            <span><strong>Intervir em chamadas</strong><small>Usar sussurro e intervencao ao vivo.</small></span>
           </label>
           <label class="user-setting-option">
             <input type="checkbox" data-user-field="mustChangePassword" ${user.mustChangePassword ? "checked" : ""}/>
@@ -6280,6 +6422,7 @@ document.addEventListener("click", async (event) => {
   const transferWaitingButton = event.target.closest("[data-transfer-waiting]");
   const monitorHangupButton = event.target.closest("[data-monitor-hangup]");
   const monitorSpyButton = event.target.closest("[data-monitor-spy]");
+  const monitorSpyModeButton = event.target.closest("[data-monitor-spy-mode]");
   const removeUserButton = event.target.closest("[data-remove-user]");
   const toggleUserMenusButton = event.target.closest("[data-user-toggle-menus]");
   const dialKeyButton = event.target.closest("[data-dial-key]");
@@ -6543,7 +6686,17 @@ document.addEventListener("click", async (event) => {
     }
 
     if (event.target.closest("[data-monitor-spy-close]") || event.target.closest("#monitorSpyCloseBtn") || event.target.closest("#monitorSpyCancelBtn")) {
+      if (state.monitorSpy.session || state.monitorSpy.ua) await stopMonitorSpy();
       state.monitorSpy.open = false;
+      renderStatus();
+      iconRefresh();
+      return;
+    }
+
+    if (monitorSpyModeButton && !state.monitorSpy.session) {
+      state.monitorSpy.mode = monitorSpyMode(monitorSpyModeButton.dataset.monitorSpyMode);
+      state.monitorSpy.output = "";
+      state.monitorSpy.status = "Pronta";
       renderStatus();
       iconRefresh();
       return;
@@ -6562,8 +6715,9 @@ document.addEventListener("click", async (event) => {
         iconRefresh();
         return;
       }
-      await startMonitorBrowserSpy(target);
-      setMessage("Escuta em tempo real iniciada.", "ok");
+      const mode = monitorSpyMode(state.monitorSpy.mode);
+      await startMonitorBrowserSpy(target, mode);
+      setMessage(`${MONITOR_SPY_MODES[mode].label} iniciado.`, "ok");
       return;
     }
 
@@ -6582,16 +6736,21 @@ document.addEventListener("click", async (event) => {
 
     if (monitorSpyButton) {
       const target = monitorSpyButton.dataset.monitorSpy || "";
+      if (state.monitorSpy.session && target !== state.monitorSpy.target) {
+        setMessage("Encerre o monitoramento atual antes de abrir outro ramal.", "warn");
+        return;
+      }
       state.monitorSpy = {
         open: true,
         target,
-        listener: "",
+        mode: state.monitorSpy.session ? monitorSpyMode(state.monitorSpy.mode) : "listen",
         output: "",
         status: state.monitorSpy.session ? "Ao vivo" : "Pronta",
         ua: state.monitorSpy.ua,
         registerer: state.monitorSpy.registerer,
         session: state.monitorSpy.session,
-        sip: state.monitorSpy.sip
+        sip: state.monitorSpy.sip,
+        allowedModes: state.monitorSpy.allowedModes
       };
       renderStatus();
       iconRefresh();

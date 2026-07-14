@@ -65,3 +65,27 @@ test("audit payloads redact nested credentials", () => {
   assert.equal(result.extension.secret, "[redacted]");
   assert.equal(result.safe, "visible");
 });
+
+test("live monitoring respects supervisor extension scope", () => {
+  const config = {
+    extensions: [
+      { number: "505", department: "Suporte" },
+      { number: "701", department: "Financeiro" }
+    ]
+  };
+  const supervisor = {
+    session: { user: { role: "supervisor", allowedExtensions: ["505"], departments: [] } }
+  };
+  assert.equal(_test.userCanMonitorExtension(supervisor, config, "505"), true);
+  assert.equal(_test.userCanMonitorExtension(supervisor, config, "701"), false);
+  assert.equal(_test.userCanMonitorExtension({ session: { user: { role: "admin" } } }, config, "701"), true);
+});
+
+test("call intervention requires explicit supervisor permission", () => {
+  assert.equal(_test.userCanInterveneLiveCalls({ session: { user: { role: "admin" } } }), true);
+  assert.equal(_test.userCanInterveneLiveCalls({ session: { user: { role: "supervisor", permissions: {} } } }), false);
+  assert.equal(
+    _test.userCanInterveneLiveCalls({ session: { user: { role: "supervisor", permissions: { interveneCalls: true } } } }),
+    true
+  );
+});

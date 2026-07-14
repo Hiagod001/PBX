@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const { defaultConfig } = require("../src/store");
-const { renderPjsip, renderExtensions, renderQueues } = require("../src/asterisk");
+const { renderPjsip, renderExtensions, renderQueues, renderModules } = require("../src/asterisk");
 
 function queueConfig() {
   const config = structuredClone(defaultConfig);
@@ -43,6 +43,10 @@ test("PJSIP keeps a warm worker pool for registration traffic", () => {
   assert.match(pjsip, /threadpool_max_size=64/);
   assert.match(pjsip, /\[transport-ws\]/);
   assert.doesNotMatch(pjsip, /\[transport-wss\]/);
+});
+
+test("live call monitoring loads ChanSpy on every Asterisk start", () => {
+  assert.match(renderModules(), /load = app_chanspy\.so/);
 });
 
 test("queue dialplan refuses to return a call to its originating extension", () => {

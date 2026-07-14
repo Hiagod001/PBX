@@ -615,6 +615,24 @@ textarea {
   width: 36%;
 }
 
+.command-queue-card .compact-monitor-table .compact-monitor-action {
+  width: 34px;
+  padding: 1px 3px;
+}
+
+.command-queue-card .compact-monitor-action .icon-btn {
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+}
+
+.command-queue-card .compact-monitor-action .icon-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
 .command-queue-card .compact-agent-row,
 .command-queue-card .compact-agent-row.available,
 .command-queue-card .compact-agent-row.busy,
@@ -5425,6 +5443,50 @@ html[data-theme="dark"] .report-stat.info {
 
 .monitor-spy-card {
   width: min(520px, calc(100vw - 28px));
+}
+
+.monitor-spy-modes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-soft);
+}
+
+.monitor-spy-mode {
+  min-width: 0;
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.monitor-spy-mode svg {
+  width: 16px;
+  height: 16px;
+}
+
+.monitor-spy-mode.active {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: 0 1px 3px rgba(17, 25, 34, 0.08);
+}
+
+.monitor-spy-mode:disabled {
+  cursor: default;
+  opacity: 0.72;
 }
 
 .compact-detail-grid {

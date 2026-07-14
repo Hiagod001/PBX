@@ -5,6 +5,7 @@ ACTION="${1:-}"
 EXTENSION="${2:-}"
 VALUE="${3:-}"
 EXTRA="${4:-}"
+MODE="${5:-listen}"
 
 if ! [[ "$EXTENSION" =~ ^[0-9]{2,8}$ ]]; then
   echo "Ramal invalido." >&2
@@ -66,11 +67,25 @@ case "$ACTION" in
   spy-browser)
     TARGET="$(printf '%s' "${VALUE:-}" | tr -cd '[:alnum:]_-')"
     LISTENER="$(printf '%s' "${EXTRA:-}" | tr -cd '[:alnum:]_-')"
+    MODE="$(printf '%s' "${MODE:-listen}" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alpha:]-')"
     if [[ -z "$TARGET" || ! "$TARGET" =~ ^(web-)?[0-9]{2,8}$ || -z "$LISTENER" || ! "$LISTENER" =~ ^[a-zA-Z0-9_-]{3,40}$ ]]; then
       echo "Escuta do navegador invalida." >&2
       exit 2
     fi
-    /usr/sbin/asterisk -rx "channel originate PJSIP/${LISTENER} application ChanSpy PJSIP/${TARGET},q"
+    case "$MODE" in
+      listen) SPY_OPTIONS="qbES" ;;
+      whisper) SPY_OPTIONS="qwbES" ;;
+      barge) SPY_OPTIONS="qBbES" ;;
+      *)
+        echo "Modo de monitoramento invalido." >&2
+        exit 2
+        ;;
+    esac
+    if ! /usr/sbin/asterisk -rx "core show application ChanSpy" >/dev/null 2>&1; then
+      echo "Modulo ChanSpy indisponivel." >&2
+      exit 3
+    fi
+    /usr/sbin/asterisk -rx "channel originate PJSIP/${LISTENER} application ChanSpy PJSIP/${TARGET},${SPY_OPTIONS}"
     ;;
   originate)
     TARGET="$(printf '%s' "${VALUE:-}" | tr -cd '[:digit:]#*')"

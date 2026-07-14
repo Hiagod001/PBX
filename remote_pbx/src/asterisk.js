@@ -859,6 +859,7 @@ function renderModules() {
     "[modules]",
     "autoload=no",
     "; Modulos minimos para PBX PJSIP: reduz ruido e evita drivers legados.",
+    "load = app_chanspy.so",
     "load = app_dial.so",
     "load = app_playback.so",
     "load = app_stack.so",
@@ -968,5 +969,6 @@ module.exports = {
   generateAsteriskConfigs,
   renderPjsip,
   renderExtensions,
-  renderQueues
+  renderQueues,
+  renderModules
 };
