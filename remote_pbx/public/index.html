@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>UAI PBX | Central de Operacoes</title>
-    <link rel="stylesheet" href="/styles.css?v=20260713-user-permissions" />
+    <link rel="stylesheet" href="/styles.css?v=20260714-monitor-audio-ui" />
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
     <script src="/vendor/sip.js?v=20260528-local" defer></script>
   </head>
@@ -169,7 +169,10 @@
         </section>
 
         <div id="tab-overview" class="tab-page active"></div>
-        <div id="tab-status" class="tab-page"></div>
+        <div id="tab-status" class="tab-page">
+          <div id="monitorStatusContent"></div>
+          <div id="monitorSpyPortal"></div>
+        </div>
         <div id="tab-trunk" class="tab-page"></div>
         <div id="tab-extensions" class="tab-page"></div>
         <div id="tab-routing" class="tab-page"></div>
@@ -185,6 +188,6 @@
       </section>
     </main>
 
-    <script src="/app.js?v=20260713-user-permissions"></script>
+    <script src="/app.js?v=20260714-monitor-audio-ui"></script>
   </body>
 </html>

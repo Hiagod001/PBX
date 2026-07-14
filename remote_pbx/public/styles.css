@@ -5503,7 +5503,7 @@ html[data-theme="dark"] .report-stat.info {
 }
 
 .monitor-spy-player audio {
-  width: 100%;
+  display: none;
 }
 
 .modal-actions {

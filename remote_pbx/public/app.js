@@ -48,6 +48,7 @@ const MONITOR_SPY_MODES = Object.freeze({
   whisper: { label: "Sussurrar", actionLabel: "Iniciar sussurro", liveLabel: "Sussurro ao vivo", icon: "message-circle", microphone: true },
   barge: { label: "Intervir", actionLabel: "Iniciar intervencao", liveLabel: "Intervencao ao vivo", icon: "messages-square", microphone: true }
 });
+let monitorSpyPreparation = null;
 
 function defaultMonitorCompactSettings() {
   return {
@@ -165,7 +166,7 @@ const state = {
   },
   users: [],
   auditEvents: [],
-  monitorSpy: { open: false, target: "", mode: "listen", output: "", status: "", ua: null, registerer: null, session: null, sip: null, allowedModes: null },
+  monitorSpy: { open: false, target: "", mode: "listen", output: "", status: "", busy: false, ua: null, registerer: null, session: null, sip: null, allowedModes: null },
   monitorCompact: storedMonitorCompactSettings(),
   inboundCalls: { cdr: [], rejected: [] },
   pbxStatus: null,
@@ -209,6 +210,8 @@ const pages = {
   audit: document.querySelector("#tab-audit"),
   users: document.querySelector("#tab-users")
 };
+const monitorStatusContent = document.querySelector("#monitorStatusContent");
+const monitorSpyPortal = document.querySelector("#monitorSpyPortal");
 
 const titleByTab = {
   overview: "Visao Estrategica",
@@ -2449,50 +2452,52 @@ async function ensureMonitorSpySoftphone() {
       const mode = monitorSpyMode(state.monitorSpy.mode);
       const modeConfig = MONITOR_SPY_MODES[mode];
       state.monitorSpy.session = invitation;
+      state.monitorSpy.busy = true;
       state.monitorSpy.status = "Conectando";
       state.monitorSpy.output = `${modeConfig.label} conectando no navegador...`;
       invitation.delegate = {
         ...(invitation.delegate || {}),
         onBye() {
           state.monitorSpy.session = null;
+          state.monitorSpy.busy = false;
           state.monitorSpy.status = "Encerrada";
           state.monitorSpy.output = "Escuta encerrada.";
-          renderStatus();
-          iconRefresh();
+          renderMonitorSpyPortal();
         },
         onCancel() {
           state.monitorSpy.session = null;
+          state.monitorSpy.busy = false;
           state.monitorSpy.status = "Cancelada";
           state.monitorSpy.output = "Escuta cancelada.";
-          renderStatus();
-          iconRefresh();
+          renderMonitorSpyPortal();
         }
       };
       const sessionState = window.SIP?.SessionState || {};
       invitation.stateChange?.addListener?.((nextState) => {
         let shouldAttachAudio = false;
         if (nextState === sessionState.Established) {
+          state.monitorSpy.busy = false;
           state.monitorSpy.status = modeConfig.liveLabel;
           state.monitorSpy.output = `${modeConfig.label} conectado ao ramal ${state.monitorSpy.target}.`;
           shouldAttachAudio = true;
         }
         if (nextState === sessionState.Terminated) {
           state.monitorSpy.session = null;
+          state.monitorSpy.busy = false;
           state.monitorSpy.status = "Encerrada";
           state.monitorSpy.output = "Escuta encerrada.";
         }
-        renderStatus();
-        iconRefresh();
+        renderMonitorSpyPortal();
         if (shouldAttachAudio) setTimeout(() => attachMonitorSpyAudio(invitation), 50);
       });
-      renderStatus();
-      iconRefresh();
+      renderMonitorSpyPortal();
       try {
         await invitation.accept({
           sessionDescriptionHandlerOptions: { constraints: { audio: modeConfig.microphone, video: false } }
         });
       } catch (error) {
         state.monitorSpy.session = null;
+        state.monitorSpy.busy = false;
         state.monitorSpy.status = "Falha";
         state.monitorSpy.output = modeConfig.microphone
           ? "Nao foi possivel acessar o microfone para este modo."
@@ -2502,8 +2507,7 @@ async function ensureMonitorSpySoftphone() {
           body: JSON.stringify({ action: "hangup-monitor-spy" })
         }).catch(() => null);
         await disposeMonitorSpySoftphone();
-        renderStatus();
-        iconRefresh();
+        renderMonitorSpyPortal();
       }
     }
   };
@@ -2520,9 +2524,20 @@ async function ensureMonitorSpySoftphone() {
   }
 }
 
+function prepareMonitorSpySoftphone() {
+  if (!monitorSpyPreparation) {
+    monitorSpyPreparation = ensureMonitorSpySoftphone().finally(() => {
+      monitorSpyPreparation = null;
+    });
+  }
+  return monitorSpyPreparation;
+}
+
 async function stopMonitorSpy() {
   const session = state.monitorSpy.session;
+  state.monitorSpy.busy = true;
   state.monitorSpy.status = "Encerrando";
+  renderMonitorSpyPortal();
   if (session) await terminateSipSession(session);
   await api("/api/pbx/monitor/action", {
     method: "POST",
@@ -2530,10 +2545,10 @@ async function stopMonitorSpy() {
   }).catch(() => null);
   state.monitorSpy.session = null;
   await disposeMonitorSpySoftphone();
+  state.monitorSpy.busy = false;
   state.monitorSpy.status = "Parada";
   state.monitorSpy.output = "Monitoramento encerrado.";
-  renderStatus();
-  iconRefresh();
+  renderMonitorSpyPortal();
 }
 
 async function startMonitorBrowserSpy(target, requestedMode = "listen") {
@@ -2543,30 +2558,29 @@ async function startMonitorBrowserSpy(target, requestedMode = "listen") {
   if (modeConfig.microphone && (!browserCanUseMicrophone() || !navigator.mediaDevices?.getUserMedia)) {
     throw new Error("O navegador nao pode acessar o microfone neste ambiente");
   }
+  if (state.monitorSpy.busy) return;
   state.monitorSpy.mode = mode;
+  state.monitorSpy.busy = true;
   state.monitorSpy.status = "Registrando monitor";
   state.monitorSpy.output = "Preparando o canal seguro de audio...";
-  renderStatus();
-  iconRefresh();
+  renderMonitorSpyPortal();
   try {
-    await ensureMonitorSpySoftphone();
+    await prepareMonitorSpySoftphone();
     state.monitorSpy.status = "Conectando";
     state.monitorSpy.output = `Abrindo ${modeConfig.label.toLowerCase()} na chamada do operador...`;
-    renderStatus();
-    iconRefresh();
+    renderMonitorSpyPortal();
     await api("/api/pbx/monitor/action", {
       method: "POST",
       body: JSON.stringify({ action: "spy-browser", target, mode })
     });
     state.monitorSpy.output = "Solicitacao enviada ao Asterisk.";
-    renderStatus();
-    iconRefresh();
+    renderMonitorSpyPortal();
   } catch (error) {
+    state.monitorSpy.busy = false;
     state.monitorSpy.status = "Falha";
     state.monitorSpy.output = error.message;
     await disposeMonitorSpySoftphone();
-    renderStatus();
-    iconRefresh();
+    renderMonitorSpyPortal();
     throw error;
   }
 }
@@ -3206,7 +3220,6 @@ function renderCompactMonitor(queues = [], waitingCalls = [], totals = {}, lastR
       </section>
     </div>
     ${state.activeTab === "status" ? renderMonitorCompactSettings(queues) : ""}
-    ${renderMonitorSpyModal()}
   `;
 }
 
@@ -3215,6 +3228,8 @@ function renderMonitorSpyModal() {
   const target = String(state.monitorSpy.target || "");
   const targetExtension = (state.config.extensions || []).find((extension) => String(extension.number) === target);
   const listening = Boolean(state.monitorSpy.session);
+  const busy = Boolean(state.monitorSpy.busy);
+  const locked = listening || busy;
   const mode = monitorSpyMode(state.monitorSpy.mode);
   const modeConfig = MONITOR_SPY_MODES[mode];
   const modeHint = {
@@ -3226,7 +3241,7 @@ function renderMonitorSpyModal() {
     .map((key) => {
       const item = MONITOR_SPY_MODES[key];
       return `
-        <button class="monitor-spy-mode ${mode === key ? "active" : ""}" type="button" data-monitor-spy-mode="${key}" aria-pressed="${mode === key}" ${listening ? "disabled" : ""}>
+        <button class="monitor-spy-mode ${mode === key ? "active" : ""}" type="button" data-monitor-spy-mode="${key}" aria-pressed="${mode === key}" ${locked ? "disabled" : ""}>
           <i data-lucide="${item.icon}"></i><span>${escapeHtml(item.label)}</span>
         </button>`;
     })
@@ -3247,18 +3262,25 @@ function renderMonitorSpyModal() {
         <span><strong>Operador</strong>${escapeHtml(targetExtension?.name || "-")}</span>
       </div>
       <div class="monitor-spy-modes" role="group" aria-label="Modo de monitoramento">${modeOptions}</div>
-      <div class="monitor-spy-player">
+      <div class="monitor-spy-player" aria-live="polite">
         <span class="badge ${listening ? "ok" : "warn"}">${escapeHtml(state.monitorSpy.status || (listening ? "Ao vivo" : "Pronta"))}</span>
-        <audio id="monitorSpyAudio" autoplay controls></audio>
+        <audio id="monitorSpyAudio" autoplay playsinline></audio>
       </div>
       ${state.monitorSpy.output ? `<p class="callout ok">${escapeHtml(state.monitorSpy.output)}</p>` : ""}
       <div class="modal-actions">
         <button class="secondary-btn" id="monitorSpyCancelBtn" type="button">Cancelar</button>
         ${listening ? `<button class="secondary-btn danger" id="monitorSpyStopBtn" type="button"><i data-lucide="phone-off"></i>Encerrar monitoramento</button>` : ""}
-        <button class="primary-btn" id="monitorSpyStartBtn" type="button" ${listening ? "disabled" : ""}><i data-lucide="${modeConfig.icon}"></i>${escapeHtml(modeConfig.actionLabel)}</button>
+        <button class="primary-btn" id="monitorSpyStartBtn" type="button" ${locked ? "disabled" : ""}><i data-lucide="${modeConfig.icon}"></i>${escapeHtml(busy ? "Conectando..." : modeConfig.actionLabel)}</button>
       </div>
     </section>
   `;
+}
+
+function renderMonitorSpyPortal() {
+  if (!monitorSpyPortal) return;
+  monitorSpyPortal.innerHTML = renderMonitorSpyModal();
+  restoreMonitorSpyAudio();
+  iconRefresh();
 }
 
 function captureCompactSettingsViewport() {
@@ -3501,13 +3523,12 @@ function renderStatus() {
   const liveLabel = "Ao Vivo";
 
   if (state.monitorCompact.view === "compact") {
-    pages.status.innerHTML = renderCompactMonitor(queues, waitingCalls, totals, lastReadLabel, trunkStatus, trunkTone, liveLabel);
+    monitorStatusContent.innerHTML = renderCompactMonitor(queues, waitingCalls, totals, lastReadLabel, trunkStatus, trunkTone, liveLabel);
     restoreCompactSettingsViewport(compactSettingsViewport);
-    restoreMonitorSpyAudio();
     return;
   }
 
-  pages.status.innerHTML = `
+  monitorStatusContent.innerHTML = `
     <div class="monitor-page">
       <section class="panel monitor-hero">
         <div>
@@ -3560,10 +3581,8 @@ function renderStatus() {
       </section>
     </div>
     ${state.activeTab === "status" ? renderMonitorCompactSettings(queues) : ""}
-    ${renderMonitorSpyModal()}
   `;
   restoreCompactSettingsViewport(compactSettingsViewport);
-  restoreMonitorSpyAudio();
 }
 
 function renderFlow() {
@@ -6688,17 +6707,16 @@ document.addEventListener("click", async (event) => {
     if (event.target.closest("[data-monitor-spy-close]") || event.target.closest("#monitorSpyCloseBtn") || event.target.closest("#monitorSpyCancelBtn")) {
       if (state.monitorSpy.session || state.monitorSpy.ua) await stopMonitorSpy();
       state.monitorSpy.open = false;
-      renderStatus();
-      iconRefresh();
+      state.monitorSpy.busy = false;
+      renderMonitorSpyPortal();
       return;
     }
 
-    if (monitorSpyModeButton && !state.monitorSpy.session) {
+    if (monitorSpyModeButton && !state.monitorSpy.session && !state.monitorSpy.busy) {
       state.monitorSpy.mode = monitorSpyMode(monitorSpyModeButton.dataset.monitorSpyMode);
       state.monitorSpy.output = "";
       state.monitorSpy.status = "Pronta";
-      renderStatus();
-      iconRefresh();
+      renderMonitorSpyPortal();
       return;
     }
 
@@ -6711,8 +6729,7 @@ document.addEventListener("click", async (event) => {
       const target = state.monitorSpy?.target || "";
       if (!target) {
         state.monitorSpy.output = "Informe o ramal monitorado.";
-        renderStatus();
-        iconRefresh();
+        renderMonitorSpyPortal();
         return;
       }
       const mode = monitorSpyMode(state.monitorSpy.mode);
@@ -6745,15 +6762,34 @@ document.addEventListener("click", async (event) => {
         target,
         mode: state.monitorSpy.session ? monitorSpyMode(state.monitorSpy.mode) : "listen",
         output: "",
-        status: state.monitorSpy.session ? "Ao vivo" : "Pronta",
+        status: state.monitorSpy.session ? "Ao vivo" : "Preparando",
+        busy: false,
         ua: state.monitorSpy.ua,
         registerer: state.monitorSpy.registerer,
         session: state.monitorSpy.session,
         sip: state.monitorSpy.sip,
         allowedModes: state.monitorSpy.allowedModes
       };
-      renderStatus();
-      iconRefresh();
+      renderMonitorSpyPortal();
+      const openedTarget = target;
+      prepareMonitorSpySoftphone()
+        .then(async () => {
+          if (!state.monitorSpy.open || state.monitorSpy.target !== openedTarget) {
+            if (!state.monitorSpy.session) await disposeMonitorSpySoftphone();
+            return;
+          }
+          if (!state.monitorSpy.busy && !state.monitorSpy.session) {
+            state.monitorSpy.status = "Pronta";
+            state.monitorSpy.output = "";
+            renderMonitorSpyPortal();
+          }
+        })
+        .catch((error) => {
+          if (!state.monitorSpy.open || state.monitorSpy.target !== openedTarget || state.monitorSpy.busy) return;
+          state.monitorSpy.status = "Falha";
+          state.monitorSpy.output = error.message;
+          renderMonitorSpyPortal();
+        });
       return;
     }
 
