@@ -309,20 +309,11 @@ function renderPjsip(config) {
     transportProtocol === "tls" ? "cert_file=/etc/asterisk/keys/asterisk.pem" : "",
     transportProtocol === "tls" ? "priv_key_file=/etc/asterisk/keys/asterisk.key" : ""
   ]);
-  const browserTransports = [
-    section("transport-ws", [
-      "type=transport",
-      "protocol=ws",
-      "bind=0.0.0.0:8088"
-    ]),
-    section("transport-wss", [
-      "type=transport",
-      "protocol=wss",
-      "bind=0.0.0.0:8089",
-      "cert_file=/etc/asterisk/keys/asterisk.pem",
-      "priv_key_file=/etc/asterisk/keys/asterisk.key"
-    ])
-  ].join("\n");
+  const browserTransports = section("transport-ws", [
+    "type=transport",
+    "protocol=ws",
+    "bind=0.0.0.0:8088"
+  ]);
 
   const extensions = config.extensions
     .map((ext) => {

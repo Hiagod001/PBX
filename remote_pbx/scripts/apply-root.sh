@@ -43,13 +43,20 @@ for config_file in "${CONFIG_FILES[@]}"; do
 done
 [ -f /etc/fail2ban/jail.d/asterisk.local ] && cp -a /etc/fail2ban/jail.d/asterisk.local "$BACKUP_DIR/fail2ban-asterisk.local"
 
+reload_asterisk_configs() {
+  /usr/sbin/asterisk -rx "module reload res_pjsip.so"
+  /usr/sbin/asterisk -rx "dialplan reload"
+  /usr/sbin/asterisk -rx "module reload app_queue.so"
+  /usr/sbin/asterisk -rx "voicemail reload"
+}
+
 restore_previous_config() {
   echo "Restaurando configuracao anterior do Asterisk..." >&2
   for config_file in "${CONFIG_FILES[@]}"; do
     [ -f "$BACKUP_DIR/$config_file" ] && install -m 0644 "$BACKUP_DIR/$config_file" "/etc/asterisk/$config_file"
   done
   [ -f "$BACKUP_DIR/fail2ban-asterisk.local" ] && install -m 0644 "$BACKUP_DIR/fail2ban-asterisk.local" /etc/fail2ban/jail.d/asterisk.local
-  /usr/sbin/asterisk -rx "core reload" >/dev/null 2>&1 || true
+  reload_asterisk_configs >/dev/null 2>&1 || systemctl restart asterisk || true
 }
 
 for config_file in "${CONFIG_FILES[@]}"; do
@@ -82,19 +89,17 @@ else
   chmod o+rx /var/spool/asterisk/monitor
 fi
 
-reload_output="$(/usr/sbin/asterisk -rx "core reload" 2>&1)" || {
+reload_output="$(reload_asterisk_configs 2>&1)" || {
   echo "$reload_output" >&2
   restore_previous_config
   exit 3
 }
-if printf '%s' "$reload_output" | grep -Eqi '(^|[^a-z])(error|failed|invalid|unable)([^a-z]|$)'; then
+if printf '%s' "$reload_output" | grep -Eqi 'no such command|not found|(^|[^a-z])(error|failed|invalid|unable)([^a-z]|$)'; then
   echo "$reload_output" >&2
   restore_previous_config
   exit 3
 fi
 
-/usr/sbin/asterisk -rx "module reload app_queue.so" >/dev/null 2>&1 || true
-/usr/sbin/asterisk -rx "voicemail reload" >/dev/null 2>&1 || true
 if [ "${PBX_RESTART_ASTERISK_ON_APPLY:-false}" = "true" ]; then
   systemctl restart asterisk
 fi

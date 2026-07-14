@@ -52,7 +52,13 @@ else
 fi
 
 sudo systemctl restart fail2ban || true
-sudo asterisk -rx "pjsip reload" || sudo systemctl restart asterisk
+if ! PJSIP_RELOAD_OUTPUT="$(sudo asterisk -rx "module reload res_pjsip.so" 2>&1)"; then
+  printf '%s\n' "$PJSIP_RELOAD_OUTPUT" >&2
+  sudo systemctl restart asterisk
+elif printf '%s' "$PJSIP_RELOAD_OUTPUT" | grep -Eqi 'no such command|not found|error|failed|invalid|unable'; then
+  printf '%s\n' "$PJSIP_RELOAD_OUTPUT" >&2
+  sudo systemctl restart asterisk
+fi
 sudo asterisk -rx "dialplan reload" || true
 sudo asterisk -rx "module reload app_queue.so" || true
 sudo asterisk -rx "voicemail reload" || true

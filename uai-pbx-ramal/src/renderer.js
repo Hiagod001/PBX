@@ -621,14 +621,31 @@ function waitForSipRegistration(registerer, generation, timeoutMs = SIP_REGISTER
   });
 }
 
+async function finishSipOperation(label, operation, timeoutMs = 3000) {
+  let timer = null;
+  try {
+    const finished = await Promise.race([
+      Promise.resolve(operation).then(() => true),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      })
+    ]);
+    if (!finished) sipLog(`${label} timed out after ${timeoutMs}ms`);
+  } catch (error) {
+    sipLog(`${label} failed error=${error.message || "unknown"}`);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function disposeSipStack(unregister = false) {
   const registerer = state.registerer;
   const userAgent = state.ua;
   state.sipGeneration += 1;
   state.registerer = null;
   state.ua = null;
-  if (unregister && registerer) await registerer.unregister().catch(() => null);
-  if (userAgent) await userAgent.stop().catch(() => null);
+  if (unregister && registerer) await finishSipOperation("unregister", registerer.unregister());
+  if (userAgent) await finishSipOperation("userAgent.stop", userAgent.stop());
 }
 
 async function startSoftphone() {

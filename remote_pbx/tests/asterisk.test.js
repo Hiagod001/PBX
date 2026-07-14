@@ -41,6 +41,8 @@ test("PJSIP keeps a warm worker pool for registration traffic", () => {
   assert.match(pjsip, /\[system\]/);
   assert.match(pjsip, /threadpool_initial_size=16/);
   assert.match(pjsip, /threadpool_max_size=64/);
+  assert.match(pjsip, /\[transport-ws\]/);
+  assert.doesNotMatch(pjsip, /\[transport-wss\]/);
 });
 
 test("queue dialplan refuses to return a call to its originating extension", () => {

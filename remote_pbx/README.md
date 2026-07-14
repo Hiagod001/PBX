@@ -87,7 +87,7 @@ Edite:
 
 ```dotenv
 ASTERISK_CONFIG_DIR=/etc/asterisk
-ASTERISK_RELOAD_CMD=asterisk -rx "core reload"
+ASTERISK_RELOAD_CMD=asterisk -rx "module reload res_pjsip.so"
 ```
 
 Depois use o botao **Gerar/Aplicar** no painel.
