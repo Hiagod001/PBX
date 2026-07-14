@@ -36,6 +36,8 @@ test("system and audit views keep technical detail progressive", () => {
   assert.match(appSource, /data-audit-filter="q"/);
   assert.match(appSource, /data-audit-filter="group"/);
   assert.match(appSource, /<details class="audit-technical-details">/);
+  assert.match(appSource, /Solicitacao SIP nao suportada foi recusada/);
+  assert.match(stylesSource, /\.system-event-main > strong,[\s\S]*?overflow-wrap: anywhere;/);
 });
 
 test("desktop sidebar cannot create a horizontal scrollbar", () => {

@@ -5210,6 +5210,9 @@ function logFriendlyMessage(message = "") {
   if (/registered|added contact/i.test(text)) return "Registro SIP realizado com sucesso.";
   if (/unregistered|removed contact/i.test(text)) return "Registro SIP desconectado.";
   if (/timeout|timed out/i.test(text)) return "Sem resposta no tempo esperado. Verifique rede, NAT ou firewall.";
+  if (/SecurityEvent=.*RequestNotSupported/i.test(text)) return "Solicitacao SIP nao suportada foi recusada.";
+  if (/SecurityEvent=/i.test(text)) return "Evento de seguranca SIP registrado.";
+  if (text.length > 140) return "Evento tecnico do Asterisk registrado.";
   return text || "-";
 }
 
