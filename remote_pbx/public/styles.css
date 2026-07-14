@@ -642,19 +642,20 @@ textarea {
 }
 
 .command-queue-card .compact-agent-name {
-  position: relative;
-  padding-left: 18px;
+  padding-left: 7px;
 }
 
-.command-queue-card .compact-agent-name .agent-state-dot {
-  position: absolute;
-  left: 6px;
-  top: 50%;
-  transform: translateY(-50%);
+.command-queue-card .compact-agent-name.agent-presence-cell.available {
+  background: #dff4e7;
+  color: #176b37;
+  box-shadow: inset 3px 0 #2f9e58;
+}
+
+.command-queue-card .compact-agent-name.agent-presence-cell.available strong {
+  color: #176b37;
 }
 
 .command-queue-card .compact-agent-name strong {
-  color: #526078;
   font-size: 0.69rem;
 }
 
@@ -758,6 +759,16 @@ html[data-theme="dark"] .command-queue-card .compact-agent-row:nth-child(even) {
 html[data-theme="dark"] .command-queue-card .compact-agent-name strong,
 html[data-theme="dark"] .command-queue-card .compact-agent-pause {
   color: var(--ink);
+}
+
+html[data-theme="dark"] .command-queue-card .compact-agent-name.agent-presence-cell.available {
+  background: #173c27;
+  color: #c2f1d0;
+  box-shadow: inset 3px 0 #43b96c;
+}
+
+html[data-theme="dark"] .command-queue-card .compact-agent-name.agent-presence-cell.available strong {
+  color: #c2f1d0;
 }
 
 @media (max-width: 1380px) {

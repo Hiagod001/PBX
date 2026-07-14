@@ -2897,6 +2897,27 @@ function monitorNumber(value) {
   return Number(value || 0).toLocaleString("pt-BR");
 }
 
+function uniqueMonitorAgentCounts(queues = []) {
+  const tonePriority = { unavailable: 0, available: 1, paused: 2, ringing: 3, busy: 4 };
+  const agents = new Map();
+
+  queues.forEach((queue, queueIndex) => {
+    (queue.agents || []).forEach((agent, agentIndex) => {
+      const number = String(agent.number || agent.interface || "").trim();
+      const key = number || `${queueIndex}:${agentIndex}`;
+      const tone = monitorStatusTone(agent.statusTone || agent.status);
+      const previous = agents.get(key);
+      if (!previous || tonePriority[tone] > tonePriority[previous]) agents.set(key, tone);
+    });
+  });
+
+  const counts = { available: 0, paused: 0, busy: 0, ringing: 0, unavailable: 0, agents: agents.size };
+  agents.forEach((tone) => {
+    counts[tone] += 1;
+  });
+  return counts;
+}
+
 function queueCompactId(queue, index = 0) {
   return String(queue.id || queue.number || queue.name || index);
 }
@@ -3183,23 +3204,27 @@ function renderStatus() {
         waiting: []
       }));
   const waitingCalls = status?.waitingCalls || queues.flatMap((queue) => (queue.waiting || []).map((call) => ({ ...call, queueName: queue.name })));
+  const uniqueAgentCounts = uniqueMonitorAgentCounts(queues);
   const totals = queues.reduce(
     (acc, queue) => {
-      const counts = queue.counts || {};
       acc.waiting += Number(queue.callsWaiting) || 0;
       acc.completed += Number(queue.completed) || 0;
       acc.abandoned += Number(queue.abandoned) || 0;
       acc.holdTime += Number(queue.holdTime) || 0;
       acc.talkTime += Number(queue.talkTime) || 0;
       acc.productivity += Number(queue.productivity) || 0;
-      acc.available += Number(counts.available) || 0;
-      acc.paused += Number(counts.paused) || 0;
-      acc.busy += (Number(counts.busy) || 0) + (Number(counts.ringing) || 0);
-      acc.unavailable += Number(counts.unavailable) || 0;
-      acc.agents += (queue.agents || []).length;
       return acc;
     },
-    { waiting: 0, completed: 0, abandoned: 0, holdTime: 0, talkTime: 0, productivity: 0, available: 0, paused: 0, busy: 0, unavailable: 0, agents: 0 }
+    {
+      waiting: 0,
+      completed: 0,
+      abandoned: 0,
+      holdTime: 0,
+      talkTime: 0,
+      productivity: 0,
+      ...uniqueAgentCounts,
+      busy: uniqueAgentCounts.busy + uniqueAgentCounts.ringing
+    }
   );
   const queueCount = Math.max(queues.length, 1);
 
@@ -3444,8 +3469,7 @@ function commandCenterQueueCards(queues = [], extensionFilter = "", searchValue 
           const pauseTime = tone === "paused" ? agent.pauseDurationLabel || (Number(agent.pauseSeconds) ? formatSeconds(agent.pauseSeconds) : "0s") : "-";
           return `
             <tr class="compact-agent-row ${tone}">
-              <td class="compact-agent-name">
-                <span class="agent-state-dot ${tone}"></span>
+              <td class="compact-agent-name agent-presence-cell ${tone}">
                 <strong>${escapeHtml(agent.name || agent.number || "-")}</strong>
                 <span>${escapeHtml(agent.number || "-")}</span>
                 ${pauseSummary ? `<small class="compact-agent-pause">${escapeHtml(pauseSummary)}</small>` : ""}
