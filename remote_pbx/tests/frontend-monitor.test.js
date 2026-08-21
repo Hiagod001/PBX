@@ -47,13 +47,21 @@ test("desktop sidebar cannot create a horizontal scrollbar", () => {
 });
 
 test("background refreshes preserve unfinished form input", () => {
+  assert.match(appSource, /function surfaceHasActiveEditor\(root\)/);
   assert.match(appSource, /function captureSurfaceDraft\(root\)/);
   assert.match(appSource, /function restoreSurfaceDraft\(root, snapshot\)/);
-  assert.match(appSource, /loadPbxStatus\(\{ preserveDraft: true \}\)/);
+  assert.match(appSource, /function renderSurfaceInBackground\(root, render\)/);
+  assert.match(appSource, /loadPbxStatus\(\{ background: true \}\)/);
   assert.match(appSource, /function renderDialerCampaignLiveData\(\)/);
   assert.match(appSource, /data-dialer-campaign-count/);
   assert.match(appSource, /data-dialer-campaign-rows/);
   assert.match(appSource, /loadDialerCampaigns\(\{ background: true \}\)/);
-  assert.match(appSource, /loadOverviewData\(state\.overview\.date, \{ preserveDraft: true \}\)/);
-  assert.match(appSource, /loadExtensionStatus\(\{ preserveDraft: true \}\)/);
+  assert.match(appSource, /loadOverviewData\(state\.overview\.date, \{ background: true \}\)/);
+  assert.match(appSource, /loadExtensionStatus\(\{ background: true \}\)/);
+  assert.match(appSource, /renderSurfaceInBackground\(pages\.overview, renderOverview\)/);
+  assert.match(appSource, /renderSurfaceInBackground\(extensionRoot, renderExtensionPortal\)/);
+  assert.match(appSource, /logs: renderLogs/);
+  const backgroundRenderers = appSource.match(/const backgroundRenderers = \{([\s\S]*?)\n    \};/);
+  assert.ok(backgroundRenderers);
+  assert.doesNotMatch(backgroundRenderers[1], /security|reports/);
 });

@@ -373,6 +373,11 @@ function $all(selector, root = document) {
   return Array.from(root.querySelectorAll(selector));
 }
 
+function surfaceHasActiveEditor(root) {
+  const active = document.activeElement;
+  return Boolean(root && active && root.contains(active) && active.matches("input, textarea, select, [contenteditable='true']"));
+}
+
 function captureSurfaceDraft(root) {
   if (!root) return null;
   const controls = $all("input, textarea, select", root);
@@ -420,6 +425,14 @@ function restoreSurfaceDraft(root, snapshot) {
     }
   }
   window.scrollTo(snapshot.scrollX, snapshot.scrollY);
+}
+
+function renderSurfaceInBackground(root, render) {
+  if (!root || surfaceHasActiveEditor(root)) return false;
+  const draft = captureSurfaceDraft(root);
+  render();
+  restoreSurfaceDraft(root, draft);
+  return true;
 }
 
 function iconRefresh() {
@@ -2357,14 +2370,19 @@ async function loadExtensionPortal() {
   }
 }
 
-async function loadExtensionStatus({ preserveDraft = false } = {}) {
+async function loadExtensionStatus({ preserveDraft = false, background = false } = {}) {
   if (!state.extensionSession) return;
   try {
     state.extensionStatus = await api("/api/extensions/status");
     syncExtensionPauseState();
-    const draft = preserveDraft ? captureSurfaceDraft($("#extensionView")) : null;
+    const extensionRoot = $("#extensionView");
+    if (background) {
+      renderSurfaceInBackground(extensionRoot, renderExtensionPortal);
+      return;
+    }
+    const draft = preserveDraft ? captureSurfaceDraft(extensionRoot) : null;
     renderExtensionPortal();
-    restoreSurfaceDraft($("#extensionView"), draft);
+    restoreSurfaceDraft(extensionRoot, draft);
   } catch (error) {
     if (isExtensionAuthError(error)) {
       await resetExtensionSessionAfterAuthError();
@@ -6189,7 +6207,7 @@ async function loadPreview(file) {
   iconRefresh();
 }
 
-async function loadOverviewData(date = state.overview.date || todayKey(), { preserveDraft = false } = {}) {
+async function loadOverviewData(date = state.overview.date || todayKey(), { preserveDraft = false, background = false } = {}) {
   const selectedDate = date || todayKey();
   state.overview.date = selectedDate;
   const params = new URLSearchParams({
@@ -6206,6 +6224,10 @@ async function loadOverviewData(date = state.overview.date || todayKey(), { pres
   ]);
   state.overview.calls = callsResponse.data || [];
   state.overview.dashboard = dashboardResponse.dashboard || {};
+  if (background) {
+    renderSurfaceInBackground(pages.overview, renderOverview);
+    return;
+  }
   const draft = preserveDraft ? captureSurfaceDraft(pages.overview) : null;
   renderOverview();
   restoreSurfaceDraft(pages.overview, draft);
@@ -6362,7 +6384,7 @@ async function loadAudit() {
   iconRefresh();
 }
 
-async function loadPbxStatus({ announce = false, preserveDraft = false } = {}) {
+async function loadPbxStatus({ announce = false, preserveDraft = false, background = false } = {}) {
   if (state.pbxStatusRefreshing) return;
   const renderLoadingState = !state.pbxStatus;
   state.pbxStatusRefreshing = true;
@@ -6385,6 +6407,17 @@ async function loadPbxStatus({ announce = false, preserveDraft = false } = {}) {
   state.pbxStatus = response;
   if (announce) setMessage("Monitoramento atualizado.", "ok");
   const activeRoot = pages[state.activeTab];
+  if (background) {
+    const backgroundRenderers = {
+      overview: renderOverview,
+      status: renderStatus,
+      logs: renderLogs
+    };
+    const render = backgroundRenderers[state.activeTab];
+    if (render) renderSurfaceInBackground(activeRoot, render);
+    iconRefresh();
+    return;
+  }
   const draft = preserveDraft ? captureSurfaceDraft(activeRoot) : null;
   renderOverview();
   renderStatus();
@@ -8498,13 +8531,13 @@ setInterval(updateOperationalClock, 1000);
 
 setInterval(() => {
   if (state.user && state.config && state.activeTab === "status") {
-    loadPbxStatus({ preserveDraft: true }).catch(() => {});
+    loadPbxStatus({ background: true }).catch(() => {});
   }
 }, MONITOR_REFRESH_MS);
 
 setInterval(() => {
   if (state.user && state.config && ["overview", "logs", "security", "reports"].includes(state.activeTab)) {
-    loadPbxStatus({ preserveDraft: true }).catch(() => {});
+    loadPbxStatus({ background: true }).catch(() => {});
   }
 }, BACKGROUND_STATUS_REFRESH_MS);
 
@@ -8516,21 +8549,20 @@ setInterval(() => {
 
 setInterval(() => {
   if (state.user && state.config && state.activeTab === "overview") {
-    loadOverviewData(state.overview.date, { preserveDraft: true }).catch(() => {});
+    loadOverviewData(state.overview.date, { background: true }).catch(() => {});
   }
 }, 30000);
 
 setInterval(() => {
   if (state.extensionSession) {
-    loadExtensionStatus({ preserveDraft: true }).catch(() => {});
+    loadExtensionStatus({ background: true }).catch(() => {});
   }
 }, MONITOR_REFRESH_MS);
 
 setInterval(() => {
   if (state.extensionSession && (currentExtensionPauseInfo().paused || isExtensionCallActive())) {
-    const draft = captureSurfaceDraft($("#extensionView"));
-    renderExtensionPortal();
-    restoreSurfaceDraft($("#extensionView"), draft);
+    const extensionRoot = $("#extensionView");
+    renderSurfaceInBackground(extensionRoot, renderExtensionPortal);
   }
 }, 1000);
 
