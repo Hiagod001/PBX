@@ -4834,6 +4834,13 @@ function renderDialerCampaignRows() {
     .join("");
 }
 
+function renderDialerCampaignLiveData() {
+  const count = $("[data-dialer-campaign-count]", pages.dialer);
+  const rows = $("[data-dialer-campaign-rows]", pages.dialer);
+  if (count) count.textContent = `${state.dialerCampaigns.length} campanhas`;
+  if (rows) rows.innerHTML = renderDialerCampaignRows();
+}
+
 function renderDialer() {
   if (!pages.dialer || !state.config) return;
   const editing = currentDialerFormCampaign();
@@ -4846,7 +4853,7 @@ function renderDialer() {
       <section class="panel">
         <div class="panel-header">
           <h3>${editing ? "Editar campanha" : "Nova campanha"}</h3>
-          <span class="badge">${state.dialerCampaigns.length} campanhas</span>
+          <span class="badge" data-dialer-campaign-count>${state.dialerCampaigns.length} campanhas</span>
         </div>
         <form id="dialerCampaignForm" class="field-grid dialer-form">
           <input type="hidden" name="id" value="${escapeHtml(editing?.id || "")}" />
@@ -4891,7 +4898,7 @@ function renderDialer() {
                 <th>Acoes</th>
               </tr>
             </thead>
-            <tbody>${renderDialerCampaignRows()}</tbody>
+            <tbody data-dialer-campaign-rows>${renderDialerCampaignRows()}</tbody>
           </table>
         </div>
       </section>
@@ -6411,16 +6418,19 @@ async function loadIvrAudios() {
   }
 }
 
-async function loadDialerCampaigns({ preserveDraft = false } = {}) {
+async function loadDialerCampaigns({ preserveDraft = false, background = false } = {}) {
   const response = await api("/api/dialer/campaigns");
   state.dialerCampaigns = response.campaigns || [];
   state.dialerDestinations = response.destinations || { queues: [], extensions: [] };
   state.dialerTrunks = response.trunks || ensureConfigTrunks().filter((trunk) => trunk.active !== false && trunk.sipServer);
   if (response.audios) state.ivrAudios = response.audios;
   if (state.activeTab === "dialer") {
-    const draft = preserveDraft ? captureSurfaceDraft(pages.dialer) : null;
-    renderDialer();
-    restoreSurfaceDraft(pages.dialer, draft);
+    if (background) renderDialerCampaignLiveData();
+    else {
+      const draft = preserveDraft ? captureSurfaceDraft(pages.dialer) : null;
+      renderDialer();
+      restoreSurfaceDraft(pages.dialer, draft);
+    }
     iconRefresh();
   }
 }
@@ -8500,7 +8510,7 @@ setInterval(() => {
 
 setInterval(() => {
   if (state.user && state.config && state.activeTab === "dialer") {
-    loadDialerCampaigns({ preserveDraft: true }).catch(() => {});
+    loadDialerCampaigns({ background: true }).catch(() => {});
   }
 }, 5000);
 

@@ -50,7 +50,10 @@ test("background refreshes preserve unfinished form input", () => {
   assert.match(appSource, /function captureSurfaceDraft\(root\)/);
   assert.match(appSource, /function restoreSurfaceDraft\(root, snapshot\)/);
   assert.match(appSource, /loadPbxStatus\(\{ preserveDraft: true \}\)/);
-  assert.match(appSource, /loadDialerCampaigns\(\{ preserveDraft: true \}\)/);
+  assert.match(appSource, /function renderDialerCampaignLiveData\(\)/);
+  assert.match(appSource, /data-dialer-campaign-count/);
+  assert.match(appSource, /data-dialer-campaign-rows/);
+  assert.match(appSource, /loadDialerCampaigns\(\{ background: true \}\)/);
   assert.match(appSource, /loadOverviewData\(state\.overview\.date, \{ preserveDraft: true \}\)/);
   assert.match(appSource, /loadExtensionStatus\(\{ preserveDraft: true \}\)/);
 });
