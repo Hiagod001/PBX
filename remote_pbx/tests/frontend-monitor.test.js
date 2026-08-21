@@ -45,3 +45,12 @@ test("desktop sidebar cannot create a horizontal scrollbar", () => {
   assert.match(stylesSource, /\.nav-tabs button span\s*\{[\s\S]*?text-overflow: ellipsis;/);
   assert.match(stylesSource, /\.app-shell:not\(\.sidebar-collapsed\) \.nav-tabs button::after\s*\{\s*content: none;/);
 });
+
+test("background refreshes preserve unfinished form input", () => {
+  assert.match(appSource, /function captureSurfaceDraft\(root\)/);
+  assert.match(appSource, /function restoreSurfaceDraft\(root, snapshot\)/);
+  assert.match(appSource, /loadPbxStatus\(\{ preserveDraft: true \}\)/);
+  assert.match(appSource, /loadDialerCampaigns\(\{ preserveDraft: true \}\)/);
+  assert.match(appSource, /loadOverviewData\(state\.overview\.date, \{ preserveDraft: true \}\)/);
+  assert.match(appSource, /loadExtensionStatus\(\{ preserveDraft: true \}\)/);
+});

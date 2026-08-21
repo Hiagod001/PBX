@@ -373,6 +373,55 @@ function $all(selector, root = document) {
   return Array.from(root.querySelectorAll(selector));
 }
 
+function captureSurfaceDraft(root) {
+  if (!root) return null;
+  const controls = $all("input, textarea, select", root);
+  const activeIndex = controls.indexOf(document.activeElement);
+  return {
+    controls: controls.map((control) => ({
+      tag: control.tagName,
+      type: control.type || "",
+      value: control.type === "file" ? null : control.value,
+      checked: Boolean(control.checked),
+      selectedValues: control.multiple ? Array.from(control.selectedOptions).map((option) => option.value) : null
+    })),
+    details: $all("details", root).map((detail) => detail.open),
+    activeIndex,
+    selectionStart: activeIndex >= 0 && typeof controls[activeIndex].selectionStart === "number" ? controls[activeIndex].selectionStart : null,
+    selectionEnd: activeIndex >= 0 && typeof controls[activeIndex].selectionEnd === "number" ? controls[activeIndex].selectionEnd : null,
+    scrollX: window.scrollX,
+    scrollY: window.scrollY
+  };
+}
+
+function restoreSurfaceDraft(root, snapshot) {
+  if (!root || !snapshot) return;
+  const controls = $all("input, textarea, select", root);
+  snapshot.controls.forEach((saved, index) => {
+    const control = controls[index];
+    if (!control || control.tagName !== saved.tag || (control.type || "") !== saved.type) return;
+    if (["checkbox", "radio"].includes(control.type)) control.checked = saved.checked;
+    else if (control.multiple && saved.selectedValues) {
+      const selected = new Set(saved.selectedValues);
+      Array.from(control.options).forEach((option) => {
+        option.selected = selected.has(option.value);
+      });
+    } else if (saved.value !== null) control.value = saved.value;
+  });
+  $all("details", root).forEach((detail, index) => {
+    if (snapshot.details[index] !== undefined) detail.open = snapshot.details[index];
+  });
+  const active = controls[snapshot.activeIndex];
+  if (active) {
+    active.focus({ preventScroll: true });
+    if (snapshot.selectionStart !== null && typeof active.setSelectionRange === "function") {
+      const length = String(active.value || "").length;
+      active.setSelectionRange(Math.min(snapshot.selectionStart, length), Math.min(snapshot.selectionEnd ?? snapshot.selectionStart, length));
+    }
+  }
+  window.scrollTo(snapshot.scrollX, snapshot.scrollY);
+}
+
 function iconRefresh() {
   if (window.lucide) window.lucide.createIcons();
 }
@@ -2308,12 +2357,14 @@ async function loadExtensionPortal() {
   }
 }
 
-async function loadExtensionStatus() {
+async function loadExtensionStatus({ preserveDraft = false } = {}) {
   if (!state.extensionSession) return;
   try {
     state.extensionStatus = await api("/api/extensions/status");
     syncExtensionPauseState();
+    const draft = preserveDraft ? captureSurfaceDraft($("#extensionView")) : null;
     renderExtensionPortal();
+    restoreSurfaceDraft($("#extensionView"), draft);
   } catch (error) {
     if (isExtensionAuthError(error)) {
       await resetExtensionSessionAfterAuthError();
@@ -6131,7 +6182,7 @@ async function loadPreview(file) {
   iconRefresh();
 }
 
-async function loadOverviewData(date = state.overview.date || todayKey()) {
+async function loadOverviewData(date = state.overview.date || todayKey(), { preserveDraft = false } = {}) {
   const selectedDate = date || todayKey();
   state.overview.date = selectedDate;
   const params = new URLSearchParams({
@@ -6148,7 +6199,9 @@ async function loadOverviewData(date = state.overview.date || todayKey()) {
   ]);
   state.overview.calls = callsResponse.data || [];
   state.overview.dashboard = dashboardResponse.dashboard || {};
+  const draft = preserveDraft ? captureSurfaceDraft(pages.overview) : null;
   renderOverview();
+  restoreSurfaceDraft(pages.overview, draft);
   iconRefresh();
 }
 
@@ -6302,7 +6355,7 @@ async function loadAudit() {
   iconRefresh();
 }
 
-async function loadPbxStatus({ announce = false } = {}) {
+async function loadPbxStatus({ announce = false, preserveDraft = false } = {}) {
   if (state.pbxStatusRefreshing) return;
   const renderLoadingState = !state.pbxStatus;
   state.pbxStatusRefreshing = true;
@@ -6324,11 +6377,14 @@ async function loadPbxStatus({ announce = false } = {}) {
 
   state.pbxStatus = response;
   if (announce) setMessage("Monitoramento atualizado.", "ok");
+  const activeRoot = pages[state.activeTab];
+  const draft = preserveDraft ? captureSurfaceDraft(activeRoot) : null;
   renderOverview();
   renderStatus();
   if (state.activeTab === "security") renderSecurity();
   if (state.activeTab === "reports") renderReports();
   if (state.activeTab === "logs") renderLogs();
+  restoreSurfaceDraft(activeRoot, draft);
   iconRefresh();
 }
 
@@ -6355,14 +6411,16 @@ async function loadIvrAudios() {
   }
 }
 
-async function loadDialerCampaigns() {
+async function loadDialerCampaigns({ preserveDraft = false } = {}) {
   const response = await api("/api/dialer/campaigns");
   state.dialerCampaigns = response.campaigns || [];
   state.dialerDestinations = response.destinations || { queues: [], extensions: [] };
   state.dialerTrunks = response.trunks || ensureConfigTrunks().filter((trunk) => trunk.active !== false && trunk.sipServer);
   if (response.audios) state.ivrAudios = response.audios;
   if (state.activeTab === "dialer") {
+    const draft = preserveDraft ? captureSurfaceDraft(pages.dialer) : null;
     renderDialer();
+    restoreSurfaceDraft(pages.dialer, draft);
     iconRefresh();
   }
 }
@@ -8430,37 +8488,39 @@ setInterval(updateOperationalClock, 1000);
 
 setInterval(() => {
   if (state.user && state.config && state.activeTab === "status") {
-    loadPbxStatus().catch(() => {});
+    loadPbxStatus({ preserveDraft: true }).catch(() => {});
   }
 }, MONITOR_REFRESH_MS);
 
 setInterval(() => {
   if (state.user && state.config && ["overview", "logs", "security", "reports"].includes(state.activeTab)) {
-    loadPbxStatus().catch(() => {});
+    loadPbxStatus({ preserveDraft: true }).catch(() => {});
   }
 }, BACKGROUND_STATUS_REFRESH_MS);
 
 setInterval(() => {
   if (state.user && state.config && state.activeTab === "dialer") {
-    loadDialerCampaigns().catch(() => {});
+    loadDialerCampaigns({ preserveDraft: true }).catch(() => {});
   }
 }, 5000);
 
 setInterval(() => {
   if (state.user && state.config && state.activeTab === "overview") {
-    loadOverviewData(state.overview.date).catch(() => {});
+    loadOverviewData(state.overview.date, { preserveDraft: true }).catch(() => {});
   }
 }, 30000);
 
 setInterval(() => {
   if (state.extensionSession) {
-    loadExtensionStatus().catch(() => {});
+    loadExtensionStatus({ preserveDraft: true }).catch(() => {});
   }
 }, MONITOR_REFRESH_MS);
 
 setInterval(() => {
   if (state.extensionSession && (currentExtensionPauseInfo().paused || isExtensionCallActive())) {
+    const draft = captureSurfaceDraft($("#extensionView"));
     renderExtensionPortal();
+    restoreSurfaceDraft($("#extensionView"), draft);
   }
 }, 1000);
 
