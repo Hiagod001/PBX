@@ -123,3 +123,8 @@ test("configuration save and apply use one serialized endpoint", () => {
   assert.match(serverSource, /await saveConfig\(previous\)\.catch/);
   assert.match(appSource, /api\("\/api\/config\/apply"/);
 });
+
+test("standalone Asterisk generator loads production environment secrets", () => {
+  const generator = fs.readFileSync(path.join(__dirname, "..", "scripts", "generate-configs.js"), "utf8");
+  assert.match(generator, /require\("dotenv"\)\.config\(\)/);
+});

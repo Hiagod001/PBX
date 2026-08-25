@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+require("dotenv").config();
+
 const { getConfig } = require("../src/store");
 const { generateAsteriskConfigs } = require("../src/asterisk");
 
