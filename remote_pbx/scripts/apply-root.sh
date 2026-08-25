@@ -53,14 +53,14 @@ reload_asterisk_configs() {
 restore_previous_config() {
   echo "Restaurando configuracao anterior do Asterisk..." >&2
   for config_file in "${CONFIG_FILES[@]}"; do
-    [ -f "$BACKUP_DIR/$config_file" ] && install -m 0644 "$BACKUP_DIR/$config_file" "/etc/asterisk/$config_file"
+    [ -f "$BACKUP_DIR/$config_file" ] && install -o root -g asterisk -m 0640 "$BACKUP_DIR/$config_file" "/etc/asterisk/$config_file"
   done
   [ -f "$BACKUP_DIR/fail2ban-asterisk.local" ] && install -m 0644 "$BACKUP_DIR/fail2ban-asterisk.local" /etc/fail2ban/jail.d/asterisk.local
   reload_asterisk_configs >/dev/null 2>&1 || systemctl restart asterisk || true
 }
 
 for config_file in "${CONFIG_FILES[@]}"; do
-  install -m 0644 "$GENERATED_DIR/$config_file" "/etc/asterisk/$config_file"
+  install -o root -g asterisk -m 0640 "$GENERATED_DIR/$config_file" "/etc/asterisk/$config_file"
 done
 install -m 0644 "$GENERATED_DIR/fail2ban-asterisk.local" /etc/fail2ban/jail.d/asterisk.local
 

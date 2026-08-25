@@ -138,6 +138,7 @@ const state = {
   extensionSession: null,
   extensionPortal: null,
   extensionStatus: null,
+  extensionStatusRefreshing: null,
   extensionCall: initialExtensionCallState(),
   config: null,
   theme: storedTheme(),
@@ -1177,7 +1178,7 @@ function refreshPhonePipIcons(pipWindow) {
   }
   if (pipWindow.document.querySelector("[data-pip-lucide]")) return;
   const script = pipWindow.document.createElement("script");
-  script.src = "https://unpkg.com/lucide@latest/dist/umd/lucide.min.js";
+  script.src = "/vendor/lucide.js?v=1.34.0";
   script.defer = true;
   script.dataset.pipLucide = "true";
   script.addEventListener("load", run);
@@ -2372,23 +2373,32 @@ async function loadExtensionPortal() {
 
 async function loadExtensionStatus({ preserveDraft = false, background = false } = {}) {
   if (!state.extensionSession) return;
+  if (state.extensionStatusRefreshing) return state.extensionStatusRefreshing;
+  const refresh = (async () => {
+    try {
+      state.extensionStatus = await api("/api/extensions/status");
+      syncExtensionPauseState();
+      const extensionRoot = $("#extensionView");
+      if (background) {
+        renderSurfaceInBackground(extensionRoot, renderExtensionPortal);
+        return;
+      }
+      const draft = preserveDraft ? captureSurfaceDraft(extensionRoot) : null;
+      renderExtensionPortal();
+      restoreSurfaceDraft(extensionRoot, draft);
+    } catch (error) {
+      if (isExtensionAuthError(error)) {
+        await resetExtensionSessionAfterAuthError();
+        return;
+      }
+      throw error;
+    }
+  })();
+  state.extensionStatusRefreshing = refresh;
   try {
-    state.extensionStatus = await api("/api/extensions/status");
-    syncExtensionPauseState();
-    const extensionRoot = $("#extensionView");
-    if (background) {
-      renderSurfaceInBackground(extensionRoot, renderExtensionPortal);
-      return;
-    }
-    const draft = preserveDraft ? captureSurfaceDraft(extensionRoot) : null;
-    renderExtensionPortal();
-    restoreSurfaceDraft(extensionRoot, draft);
-  } catch (error) {
-    if (isExtensionAuthError(error)) {
-      await resetExtensionSessionAfterAuthError();
-      return;
-    }
-    throw error;
+    return await refresh;
+  } finally {
+    if (state.extensionStatusRefreshing === refresh) state.extensionStatusRefreshing = null;
   }
 }
 
@@ -6189,12 +6199,11 @@ async function saveConfig() {
     setMessage(queueNumberError, "error");
     throw new Error(queueNumberError);
   }
-  const saveResponse = await api("/api/config", {
+  const applyResponse = await api("/api/config/apply", {
     method: "PUT",
     body: JSON.stringify(state.config)
   });
-  state.config = saveResponse.config;
-  const applyResponse = await api("/api/apply", { method: "POST", body: "{}" });
+  state.config = applyResponse.config;
   const detail = applyResponse.copied ? "copiados para o Asterisk" : "gerados em generated/asterisk";
   setMessage(`Configuracao salva. Arquivos ${detail}${applyResponse.reloaded ? " e reload executado" : ""}.`, "ok");
   renderAll();
@@ -6719,8 +6728,10 @@ document.addEventListener("submit", async (event) => {
       });
       state.user = response.user;
       renderShell();
-      await loadConfig();
-      await loadPbxStatus();
+      if (!state.user.mustChangePassword) {
+        await loadConfig();
+        await loadPbxStatus();
+      }
       return;
     }
 
@@ -6749,6 +6760,8 @@ document.addEventListener("submit", async (event) => {
       state.user = response.user;
       form.reset();
       renderShell();
+      await loadConfig();
+      await loadPbxStatus();
       setMessage("Senha administrativa atualizada.", "ok");
       return;
     }
@@ -8504,6 +8517,7 @@ async function boot() {
   renderShell();
   updateTopbarActions();
   if (state.user) {
+    if (state.user.mustChangePassword) return;
     await loadConfig();
     await loadPbxStatus();
     await loadOverviewData(state.overview.date);

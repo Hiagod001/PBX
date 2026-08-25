@@ -323,10 +323,10 @@ async function ensureStore() {
 
   if (!(await fs.pathExists(usersPath))) {
     const initialPassword = String(process.env.PBX_INITIAL_ADMIN_PASSWORD || "");
-    if (process.env.NODE_ENV === "production" && !initialPassword) {
+    if (!initialPassword) {
       throw new Error("Defina PBX_INITIAL_ADMIN_PASSWORD para criar o primeiro administrador.");
     }
-    const passwordHash = await bcrypt.hash(initialPassword || "admin123", 12);
+    const passwordHash = await bcrypt.hash(initialPassword, 12);
     await fs.writeJson(
       usersPath,
       {
@@ -388,11 +388,23 @@ async function getConfig() {
   return readConfigJson();
 }
 
+async function writeJsonAtomic(filePath, value) {
+  const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeJson(temporaryPath, value, { spaces: 2 });
+  await fs.move(temporaryPath, filePath, { overwrite: true });
+}
+
 async function saveConfig(config) {
   await ensureStore();
   const merged = normalizeConfig(config);
-  if (await db.ensureDatabase()) await db.saveConfig(merged);
-  await fs.writeJson(configPath, merged, { spaces: 2 });
+  const databaseEnabled = await db.ensureDatabase();
+  if (databaseEnabled) await db.saveConfig(merged);
+  try {
+    await writeJsonAtomic(configPath, merged);
+  } catch (error) {
+    if (!databaseEnabled) throw error;
+    console.warn(`[store] Configuracao salva no PostgreSQL, mas o espelho JSON falhou: ${error.message}`);
+  }
   return merged;
 }
 
@@ -408,8 +420,14 @@ async function getUsers() {
 
 async function saveUsers(users) {
   await ensureStore();
-  if (await db.ensureDatabase()) await db.saveUsers(users);
-  await fs.writeJson(usersPath, users, { spaces: 2 });
+  const databaseEnabled = await db.ensureDatabase();
+  if (databaseEnabled) await db.saveUsers(users);
+  try {
+    await writeJsonAtomic(usersPath, users);
+  } catch (error) {
+    if (!databaseEnabled) throw error;
+    console.warn(`[store] Usuarios salvos no PostgreSQL, mas o espelho JSON falhou: ${error.message}`);
+  }
 }
 
 async function readPresenceHistory() {

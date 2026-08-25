@@ -12,6 +12,15 @@ if ! [[ "$EXTENSION" =~ ^[0-9]{2,8}$ ]]; then
   exit 2
 fi
 
+channel_belongs_to_extension() {
+  local channel="$1"
+  /usr/sbin/asterisk -rx "core show channels concise" | awk -F'!' -v channel="$channel" -v ext="$EXTENSION" '
+    $1 == channel { requested_linked = $NF }
+    $1 ~ ("^(PJSIP/(web-)?" ext "[-/]|Local/" ext "@)") { owned[$NF] = 1; if ($1 == channel) direct = 1 }
+    END { exit !(direct || (requested_linked != "" && owned[requested_linked])) }
+  '
+}
+
 case "$ACTION" in
   queue-pause)
     /usr/sbin/asterisk -rx "queue pause member Local/${EXTENSION}@queue-member/n"
@@ -33,7 +42,7 @@ case "$ACTION" in
           done
       exit 0
     fi
-    if [[ "$CHANNEL" != *"$EXTENSION"* ]]; then
+    if ! channel_belongs_to_extension "$CHANNEL"; then
       echo "Canal invalido para este ramal." >&2
       exit 2
     fi
@@ -52,6 +61,10 @@ case "$ACTION" in
     TARGET="$(printf '%s' "${EXTRA:-}" | tr -cd '[:digit:]#*')"
     if [[ -z "$CHANNEL" || "$CHANNEL" == *'"'* || "$CHANNEL" == *';'* || "$CHANNEL" == *'`'* || ! "$TARGET" =~ ^[0-9#*]{2,20}$ ]]; then
       echo "Canal ou destino invalido." >&2
+      exit 2
+    fi
+    if [[ "$EXTENSION" != "00" ]] && ! channel_belongs_to_extension "$CHANNEL"; then
+      echo "Canal invalido para este ramal." >&2
       exit 2
     fi
     /usr/sbin/asterisk -rx "channel redirect ${CHANNEL} internal,${TARGET},1"

@@ -6,9 +6,9 @@ Painel administrativo Node.js para um PBX SIP empresarial com Asterisk como moto
 
 - URL local: `http://localhost:3090`
 - Usuario: `admin`
-- Senha: `admin123`
+- Senha: definida exclusivamente por `PBX_INITIAL_ADMIN_PASSWORD` na primeira inicializacao
 
-Troque a senha no painel antes de usar em producao.
+Nao existe senha inicial padrao. A conta criada exige troca imediata e, ate isso acontecer, somente logout, consulta da sessao e troca de senha ficam liberados.
 
 ## Rodar no Linux
 
@@ -23,17 +23,7 @@ Ou:
 ./scripts/start.sh
 ```
 
-O servidor web escuta em `0.0.0.0` por padrao. Nesta maquina, o acesso externo deve ser:
-
-```text
-http://131.0.112.23:3090
-```
-
-Se nao abrir de fora, libere a porta no firewall do Linux e no firewall do provedor/VPS:
-
-```bash
-./scripts/open-firewall-external.sh
-```
+Em producao, o servidor web escuta em `127.0.0.1` por padrao e deve ser publicado somente pelo proxy HTTPS existente. Mantenha a porta Node atual bloqueada para acesso externo e configure `PBX_TRUST_PROXY=loopback` quando o nginx estiver na mesma VM.
 
 Para parar um processo iniciado em segundo plano:
 

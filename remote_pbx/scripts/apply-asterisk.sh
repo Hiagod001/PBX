@@ -6,14 +6,14 @@ cd "$(dirname "$0")/.."
 npm run generate
 APP_USER="${PBX_APP_USER:-${SUDO_USER:-$(id -un)}}"
 
-sudo install -m 0644 generated/asterisk/pjsip.conf /etc/asterisk/pjsip.conf
-sudo install -m 0644 generated/asterisk/extensions.conf /etc/asterisk/extensions.conf
-sudo install -m 0644 generated/asterisk/queues.conf /etc/asterisk/queues.conf
-sudo install -m 0644 generated/asterisk/voicemail.conf /etc/asterisk/voicemail.conf
-sudo install -m 0644 generated/asterisk/cdr.conf /etc/asterisk/cdr.conf
-sudo install -m 0644 generated/asterisk/cdr_custom.conf /etc/asterisk/cdr_custom.conf
-sudo install -m 0644 generated/asterisk/rtp.conf /etc/asterisk/rtp.conf
-sudo install -m 0644 generated/asterisk/modules.conf /etc/asterisk/modules.conf
+sudo install -o root -g asterisk -m 0640 generated/asterisk/pjsip.conf /etc/asterisk/pjsip.conf
+sudo install -o root -g asterisk -m 0640 generated/asterisk/extensions.conf /etc/asterisk/extensions.conf
+sudo install -o root -g asterisk -m 0640 generated/asterisk/queues.conf /etc/asterisk/queues.conf
+sudo install -o root -g asterisk -m 0640 generated/asterisk/voicemail.conf /etc/asterisk/voicemail.conf
+sudo install -o root -g asterisk -m 0640 generated/asterisk/cdr.conf /etc/asterisk/cdr.conf
+sudo install -o root -g asterisk -m 0640 generated/asterisk/cdr_custom.conf /etc/asterisk/cdr_custom.conf
+sudo install -o root -g asterisk -m 0640 generated/asterisk/rtp.conf /etc/asterisk/rtp.conf
+sudo install -o root -g asterisk -m 0640 generated/asterisk/modules.conf /etc/asterisk/modules.conf
 sudo install -m 0644 generated/asterisk/fail2ban-asterisk.local /etc/fail2ban/jail.d/asterisk.local
 
 ASTERISK_SOUND_DIRS=(

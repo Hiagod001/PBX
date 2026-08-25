@@ -2,6 +2,7 @@ const fs = require("fs-extra");
 const path = require("path");
 const { generatedDir } = require("./store");
 const { validateConfig } = require("./validation");
+const { monitorSipPassword } = require("./runtime-secrets");
 
 const WEB_SIP_REGISTER_EXPIRES_SECONDS = 8 * 60 * 60;
 
@@ -75,10 +76,6 @@ function browserEndpoint(number) {
 
 function monitorEndpoint() {
   return clean(process.env.PBX_MONITOR_SIP_USER || "monitor-admin");
-}
-
-function monitorPassword() {
-  return clean(process.env.PBX_MONITOR_SIP_PASSWORD || "Monitor@12345");
 }
 
 function extensionContactExpression(number) {
@@ -425,11 +422,11 @@ function renderPjsip(config) {
     "type=auth",
     "auth_type=userpass",
     `username=${monitorEndpoint()}`,
-    `password=${monitorPassword()}`
+    `password=${clean(monitorSipPassword())}`
   ]) + section(monitorEndpoint(), [
     "type=aor",
-    "max_contacts=8",
-    "remove_existing=no",
+    "max_contacts=2",
+    "remove_existing=yes",
     "remove_unavailable=yes",
     `default_expiration=${WEB_SIP_REGISTER_EXPIRES_SECONDS}`,
     `maximum_expiration=${WEB_SIP_REGISTER_EXPIRES_SECONDS}`,
@@ -699,7 +696,7 @@ function renderExtensions(config) {
   lines.push("exten => s,1,NoOp(Gravacao condicional)");
   if (config.recording.enabled) {
     lines.push(' same => n,GotoIf($["${RECORDING_FILE}"!=""]?done)');
-    lines.push(` same => n,Set(RECORDING_FILE=\${STRFTIME(\${EPOCH},,%Y%m%d-%H%M%S)}-\${ARG1}-\${ARG2}.${clean(config.recording.format)})`);
+    lines.push(` same => n,Set(RECORDING_FILE=\${STRFTIME(\${EPOCH},,%Y%m%d-%H%M%S)}-\${FILTER(0-9A-Za-z_,\${UNIQUEID})}.${clean(config.recording.format)})`);
     lines.push(" same => n,Set(CDR(recordingfile)=${RECORDING_FILE})");
     lines.push(` same => n,MixMonitor(${clean(config.recording.path)}/\${RECORDING_FILE},b)`);
   }

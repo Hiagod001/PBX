@@ -5,6 +5,13 @@ function invalidCharacters(value) {
   return /[;\r\n\0]/.test(String(value || ""));
 }
 
+function validRecordingPath(value) {
+  const recordingPath = String(value || "").trim();
+  if (!recordingPath || recordingPath.length > 240) return false;
+  if (!/^\/[a-zA-Z0-9_./-]+$/.test(recordingPath)) return false;
+  return !recordingPath.split("/").includes("..");
+}
+
 function validateConfig(config) {
   const issues = [];
   const add = (message) => issues.push(message);
@@ -65,6 +72,10 @@ function validateConfig(config) {
       if (!safeIdPattern.test(String(condition.id || ""))) add(`Identificador de horario invalido na URA ${id}`);
     });
   });
+
+  if (!validRecordingPath(config?.recording?.path)) {
+    add("Caminho de gravacao invalido. Use um caminho absoluto sem espacos, delimitadores ou segmentos '..'.");
+  }
 
   if (issues.length) {
     const error = new Error(issues.slice(0, 8).join("; "));

@@ -31,12 +31,13 @@ const {
 } = require("./src/store");
 const { generateAsteriskConfigs } = require("./src/asterisk");
 const { validateConfig } = require("./src/validation");
+const { monitorSipPassword } = require("./src/runtime-secrets");
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const app = express();
 const port = Number(process.env.PORT) || 3090;
-const host = process.env.HOST || "0.0.0.0";
+const host = process.env.HOST || (process.env.NODE_ENV === "production" ? "127.0.0.1" : "0.0.0.0");
 const playbackAudioExtensions = new Set([".wav", ".gsm", ".ulaw", ".alaw", ".sln16", ".mp3"]);
 const browserRecordingExtensions = new Set([".wav", ".mp3", ".gsm"]);
 const extensionPresence = new Map();
@@ -53,6 +54,16 @@ let dialerStoreLock = Promise.resolve();
 let cdrImportRunning = false;
 let databaseBackupRunning = false;
 let logRotationRunning = false;
+let configMutationLock = Promise.resolve();
+let pbxStatusCache = { revision: "", expiresAt: 0, value: null, pending: null };
+let reportCallsCache = { revision: "", expiresAt: 0, value: null, pending: null };
+let recordingIndexCache = { key: "", expiresAt: 0, value: null, pending: null };
+
+function withConfigMutationLock(task) {
+  const current = configMutationLock.then(task, task);
+  configMutationLock = current.catch(() => {});
+  return current;
+}
 
 function databaseConnectionString() {
   return process.env.PBX_DATABASE_URL || process.env.DATABASE_URL || process.env.PG_CONNECTION_STRING || "";
@@ -85,8 +96,17 @@ function requestIsLoopback(req) {
   return address === "127.0.0.1" || address === "::1";
 }
 
+function trustedProxySetting() {
+  const configured = String(process.env.PBX_TRUST_PROXY || "").trim();
+  if (!configured) return false;
+  if (configured === "loopback") return "loopback";
+  return configured.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
 function enforceHttps(req, res, next) {
-  if (String(process.env.PBX_REQUIRE_HTTPS || "").toLowerCase() !== "true" || req.secure || requestIsLoopback(req)) return next();
+  const configured = String(process.env.PBX_REQUIRE_HTTPS || "").toLowerCase();
+  const required = configured === "true" || (process.env.NODE_ENV === "production" && configured !== "false");
+  if (!required || req.secure || requestIsLoopback(req)) return next();
   const publicUrl = String(process.env.PBX_PUBLIC_URL || "").replace(/\/$/, "");
   if ((req.method === "GET" || req.method === "HEAD") && publicUrl.startsWith("https://")) {
     return res.redirect(308, `${publicUrl}${req.originalUrl}`);
@@ -123,7 +143,8 @@ function startMaintenanceJobs() {
     setInterval(importCdr, Math.max(cdrInterval, 15000)).unref();
   }
 
-  if (databaseConnectionString() && Number(process.env.PBX_BACKUP_INTERVAL_HOURS || 24) > 0) {
+  const backupIntervalHours = Number(process.env.PBX_BACKUP_INTERVAL_HOURS || 24);
+  if (databaseConnectionString() && Number.isFinite(backupIntervalHours) && backupIntervalHours > 0) {
     const backupDatabase = async () => {
       if (databaseBackupRunning) return;
       databaseBackupRunning = true;
@@ -137,7 +158,7 @@ function startMaintenanceJobs() {
       }
     };
     setTimeout(backupDatabase, 30000).unref();
-    setInterval(backupDatabase, 60 * 60 * 1000).unref();
+    setInterval(backupDatabase, Math.max(backupIntervalHours, 1 / 60) * 60 * 60 * 1000).unref();
   }
 
   const rotateLogs = async () => {
@@ -387,9 +408,46 @@ const upload = multer({
   limits: { fileSize: 20 * 1024 * 1024 }
 });
 
-function requireAuth(req, res, next) {
-  if (req.session && req.session.user) return next();
-  return res.status(401).json({ error: "Nao autenticado" });
+function authFingerprint(user) {
+  const value = {
+    username: user?.username || "",
+    passwordHash: user?.passwordHash || "",
+    role: user?.role || "user",
+    extension: user?.extension || "",
+    departments: user?.departments || [],
+    allowedExtensions: user?.allowedExtensions || [],
+    permissions: user?.permissions || {},
+    mustChangePassword: Boolean(user?.mustChangePassword)
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function extensionFingerprint(extension) {
+  return crypto.createHash("sha256").update(JSON.stringify({
+    number: String(extension?.number || ""),
+    secret: String(extension?.secret || "")
+  })).digest("hex");
+}
+
+function rejectSession(req, res, message) {
+  req.session?.destroy(() => {});
+  res.clearCookie("pbx.sid");
+  return res.status(401).json({ error: message });
+}
+
+async function requireAuth(req, res, next) {
+  if (!req.session?.user) return res.status(401).json({ error: "Nao autenticado" });
+  const users = await getUsers();
+  const current = (users.users || []).find((candidate) => candidate.username === req.session.user.username);
+  if (!current || req.session.userAuthFingerprint !== authFingerprint(current)) {
+    return rejectSession(req, res, "Sessao expirada apos alteracao de acesso. Entre novamente.");
+  }
+  req.session.user = publicUser(current);
+  const passwordChangeRoutes = new Set(["/api/me", "/api/logout", "/api/change-password"]);
+  if (current.mustChangePassword && !passwordChangeRoutes.has(req.path)) {
+    return res.status(403).json({ error: "Troque a senha inicial antes de acessar o sistema", mustChangePassword: true });
+  }
+  return next();
 }
 
 function userRole(req) {
@@ -410,9 +468,15 @@ function regenerateSession(req) {
   return new Promise((resolve, reject) => req.session.regenerate((error) => (error ? reject(error) : resolve())));
 }
 
-function requireExtensionAuth(req, res, next) {
-  if (req.session && req.session.extension) return next();
-  return res.status(401).json({ error: "Ramal nao autenticado" });
+async function requireExtensionAuth(req, res, next) {
+  if (!req.session?.extension) return res.status(401).json({ error: "Ramal nao autenticado" });
+  const config = await getConfig();
+  const current = (config.extensions || []).find((candidate) => String(candidate.number) === String(req.session.extension.number));
+  if (!current || req.session.extensionAuthFingerprint !== extensionFingerprint(current)) {
+    return rejectSession(req, res, "Sessao do ramal expirada apos alteracao de credencial. Entre novamente.");
+  }
+  req.session.extension = publicExtension(current);
+  return next();
 }
 
 function publicUser(user) {
@@ -490,7 +554,7 @@ function monitorSipSettings(req) {
   return {
     uri: `sip:${monitorUser}@${sipDomain}`,
     authorizationUsername: monitorUser,
-    password: process.env.PBX_MONITOR_SIP_PASSWORD || "Monitor@12345",
+    password: monitorSipPassword(),
     displayName: "Monitor PBX",
     domain: sipDomain,
     wsServer
@@ -1277,7 +1341,7 @@ async function readRegistrationLogs() {
   return parseRegistrationLogs(raw);
 }
 
-async function readPbxStatus(config) {
+async function readPbxStatusFresh(config) {
   const [endpointOutput, registrationOutput, queueOutput, channelOutput, logs, manualPauses, idleByExtension] = await Promise.all([
     runAsteriskRead("endpoints"),
     runAsteriskRead("registrations"),
@@ -1550,8 +1614,30 @@ async function readPbxStatus(config) {
   };
 }
 
-async function readReports() {
-  const config = await getConfig();
+async function readPbxStatus(config, { fresh = false } = {}) {
+  const revision = configRevision(config);
+  const now = Date.now();
+  const ttl = Math.max(250, Number(process.env.PBX_STATUS_CACHE_MS || 750));
+  if (!fresh && pbxStatusCache.revision === revision) {
+    if (pbxStatusCache.pending) return pbxStatusCache.pending;
+    if (pbxStatusCache.value && pbxStatusCache.expiresAt > now) return pbxStatusCache.value;
+  }
+  const pending = readPbxStatusFresh(config);
+  pbxStatusCache = { revision, expiresAt: 0, value: null, pending };
+  try {
+    const value = await pending;
+    if (pbxStatusCache.pending === pending) {
+      pbxStatusCache = { revision, expiresAt: Date.now() + ttl, value, pending: null };
+    }
+    return value;
+  } catch (error) {
+    if (pbxStatusCache.pending === pending) pbxStatusCache = { revision: "", expiresAt: 0, value: null, pending: null };
+    throw error;
+  }
+}
+
+async function readReports(sourceConfig = null) {
+  const config = sourceConfig || await getConfig();
   const calls = await readPbxReportCalls(config, { skipRecordingScan: true });
   return calls.slice(-200).reverse().map((call) => ({
     callerId: call.callerId,
@@ -1573,7 +1659,11 @@ async function readReports() {
     uniqueId: call.uniqueId,
     userField: call.userField,
     protocol: call.protocol || "",
-    sequence: call.sequence
+    sequence: call.sequence,
+    extension: call.extension,
+    extensionName: call.extensionName,
+    department: call.department,
+    type: call.type
   }));
 }
 
@@ -1692,17 +1782,20 @@ function extensionNumbers(config) {
   return new Set((config.extensions || []).map((extension) => String(extension.number)));
 }
 
-function inferReportExtension(call, config) {
+function reportChannelExtensionCandidates(call) {
+  return [call.channel, call.dstchannel, call.lastdata]
+    .flatMap((value) => [...String(value || "").matchAll(/(?:PJSIP|SIP|Local)\/(?:web-)?([^/@,\s-]+)/gi)].map((match) => match[1]));
+}
+
+function inferReportExtension(call, config, type = inferReportType(call, config)) {
   const extensions = extensionNumbers(config);
-  const candidates = [
-    call.src,
-    call.dst,
-    (String(call.channel || "").match(/PJSIP\/([^-/]+)/) || [])[1],
-    (String(call.dstchannel || "").match(/PJSIP\/([^-/]+)/) || [])[1],
-    (String(call.lastdata || "").match(/PJSIP\/([^@,&/]+)/) || [])[1],
-    (String(call.lastdata || "").match(/\b(\d{2,8})@default\b/) || [])[1]
-  ].filter(Boolean).map(String);
-  return candidates.find((candidate) => extensions.has(candidate)) || candidates.find((candidate) => /^\d{2,8}$/.test(candidate)) || "";
+  const topology = reportChannelExtensionCandidates(call);
+  const candidates = type === "inbound"
+    ? [call.dst, ...topology]
+    : type === "outbound"
+      ? [call.src, ...topology]
+      : [call.src, call.dst, ...topology];
+  return candidates.filter(Boolean).map(String).find((candidate) => extensions.has(candidate)) || "";
 }
 
 function inferReportType(call, config) {
@@ -1716,10 +1809,10 @@ function inferReportType(call, config) {
   const dstChannelName = String(call.dstchannel || "").toLowerCase();
   const lastData = String(call.lastdata || "").toLowerCase();
   const channel = `${channelName} ${dstChannelName} ${lastData}`;
-  if (extensions.has(src) && extensions.has(dst)) return "internal";
-  if (!extensions.has(src) && /(^|\/)trunk-|trunk-operadora|operadora/.test(channelName)) return "inbound";
-  if (/inbound|entrada|ivr-|ringgroup|queue|support|from-trunk|trunk/.test(context) && !extensions.has(src)) return "inbound";
+  if (/(^|\/)trunk-|trunk-operadora|operadora/.test(channelName)) return "inbound";
+  if (/inbound|entrada|ivr-|ringgroup|queue|support|from-trunk|trunk/.test(context)) return "inbound";
   if (/trunk-operadora|@trunk|from-internal|outbound|saida/.test(channel) || (extensions.has(src) && !extensions.has(dst))) return "outbound";
+  if (extensions.has(src) && extensions.has(dst)) return "internal";
   if (extensions.has(src) || extensions.has(dst)) return extensions.has(src) && extensions.has(dst) ? "internal" : extensions.has(src) ? "outbound" : "inbound";
   return "inbound";
 }
@@ -1856,7 +1949,7 @@ function mapCdrColumns(columns, index, config) {
 
   const status = normalizeReportStatus(raw.disposition);
   const type = inferReportType(raw, config);
-  const extension = inferReportExtension(raw, config);
+  const extension = inferReportExtension(raw, config, type);
   const protocol = extractCallProtocol(raw.userfield) || extractCallProtocol(raw.accountcode);
   const destination = reportDestinationForType(raw, type, extension);
   const extensionInfo = (config.extensions || []).find((item) => item.number === extension) || {};
@@ -2203,15 +2296,11 @@ function collapseReportCallLegs(calls) {
   });
 }
 
-async function readPbxReportCalls(config, options = {}) {
+async function readPbxReportCallsFresh(config) {
   const databaseRows = await getReportCdrRows();
   if (databaseRows.length) {
     const calls = collapseReportCallLegs(databaseRows.map((row, index) => mapDbCdrRow(row, index, config)));
     await attachCallProtocols(calls);
-    if (!options.skipRecordingScan) {
-      const recordingIndex = await buildRecordingIndex(config);
-      calls.forEach((call) => attachRecordingState(call, recordingIndex));
-    }
     return calls;
   }
 
@@ -2232,16 +2321,33 @@ async function readPbxReportCalls(config, options = {}) {
   }
   const calls = collapseReportCallLegs(mappedCalls);
   await attachCallProtocols(calls);
+  return calls;
+}
 
+async function readPbxReportCalls(config, options = {}) {
+  const revision = configRevision(config);
+  const now = Date.now();
+  if (reportCallsCache.revision !== revision || reportCallsCache.expiresAt <= now) {
+    if (!reportCallsCache.pending || reportCallsCache.revision !== revision) {
+      const pending = readPbxReportCallsFresh(config);
+      reportCallsCache = { revision, expiresAt: 0, value: null, pending };
+      pending.then((value) => {
+        if (reportCallsCache.pending === pending) reportCallsCache = { revision, expiresAt: Date.now() + 2000, value, pending: null };
+      }).catch(() => {
+        if (reportCallsCache.pending === pending) reportCallsCache = { revision: "", expiresAt: 0, value: null, pending: null };
+      });
+    }
+  }
+  const baseCalls = reportCallsCache.pending ? await reportCallsCache.pending : reportCallsCache.value || [];
+  const calls = structuredClone(baseCalls);
   if (!options.skipRecordingScan) {
     const recordingIndex = await buildRecordingIndex(config);
     calls.forEach((call) => attachRecordingState(call, recordingIndex));
   }
-
   return calls;
 }
 
-async function buildRecordingIndex(config) {
+async function buildRecordingIndexFresh(config) {
   const roots = [
     process.env.ASTERISK_RECORDING_PATH,
     config.recording?.path,
@@ -2262,6 +2368,25 @@ async function buildRecordingIndex(config) {
 
   for (const root of [...new Set(roots)]) await walk(root);
   return files;
+}
+
+async function buildRecordingIndex(config) {
+  const key = JSON.stringify([process.env.ASTERISK_RECORDING_PATH || "", config.recording?.path || ""]);
+  const now = Date.now();
+  if (recordingIndexCache.key === key) {
+    if (recordingIndexCache.pending) return recordingIndexCache.pending;
+    if (recordingIndexCache.value && recordingIndexCache.expiresAt > now) return recordingIndexCache.value;
+  }
+  const pending = buildRecordingIndexFresh(config);
+  recordingIndexCache = { key, expiresAt: 0, value: null, pending };
+  try {
+    const value = await pending;
+    if (recordingIndexCache.pending === pending) recordingIndexCache = { key, expiresAt: Date.now() + 5000, value, pending: null };
+    return value;
+  } catch (error) {
+    if (recordingIndexCache.pending === pending) recordingIndexCache = { key: "", expiresAt: 0, value: null, pending: null };
+    throw error;
+  }
 }
 
 function attachRecordingState(call, recordingIndex) {
@@ -2324,6 +2449,42 @@ function userCanMonitorExtension(req, config, extensionNumber) {
   if (!extension) return false;
   if ((scope.extensions || []).map(String).includes(target)) return true;
   return (scope.departments || []).map(String).includes(String(extension.department || ""));
+}
+
+function allowedExtensionNumbers(config, scope) {
+  if (scope.all) return new Set((config.extensions || []).map((extension) => String(extension.number)));
+  const explicit = new Set((scope.extensions || []).map(String));
+  const departments = new Set((scope.departments || []).map(String));
+  return new Set((config.extensions || [])
+    .filter((extension) => explicit.has(String(extension.number)) || departments.has(String(extension.department || "")))
+    .map((extension) => String(extension.number)));
+}
+
+function configForReportScope(config, scope) {
+  const allowed = allowedExtensionNumbers(config, scope);
+  if (scope.all) return config;
+  return { ...config, extensions: (config.extensions || []).filter((extension) => allowed.has(String(extension.number))) };
+}
+
+function pbxStatusForScope(status, config, scope) {
+  if (scope.all) return status;
+  const allowed = allowedExtensionNumbers(config, scope);
+  const matchesAllowedExtension = (channel) => {
+    const joined = [channel.channel, channel.extension, channel.callerId, channel.data].join(" ");
+    return [...allowed].some((number) => new RegExp(`(?:PJSIP|SIP|Local)/(?:web-)?${number}(?:[-/@]|\\b)|\\b${number}\\b`, "i").test(joined));
+  };
+  const queues = (status.queues || [])
+    .map((queue) => ({ ...queue, agents: (queue.agents || []).filter((agent) => allowed.has(String(agent.number))) }))
+    .filter((queue) => queue.agents.length);
+  return {
+    ...status,
+    extensions: (status.extensions || []).filter((extension) => allowed.has(String(extension.number))),
+    queues,
+    waitingCalls: queues.flatMap((queue) => (queue.waiting || []).map((call) => ({ ...call, queueName: queue.name }))),
+    activeChannels: (status.activeChannels || []).filter(matchesAllowedExtension),
+    trunk: null,
+    logs: []
+  };
 }
 
 function applyReportScope(calls, scope) {
@@ -2696,7 +2857,8 @@ function callExportRows(calls) {
 }
 
 function csvEscape(value) {
-  const text = String(value ?? "");
+  let text = String(value ?? "");
+  if (/^[\t\r]/.test(text) || /^[\s]*[=+\-@]/.test(text)) text = `'${text}`;
   return /[",\n;]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
@@ -2860,6 +3022,23 @@ function activeChannelsForMonitor(status, extensionNumber, channelName = "") {
     .filter((channel, index, list) => channel.channel && list.findIndex((item) => item.channel === channel.channel) === index);
 }
 
+function channelsOwnedByExtension(status, config, extensionNumber) {
+  const target = String(extensionNumber || "");
+  const configured = extensionNumbers(config);
+  const direct = (status.activeChannels || []).filter((channel) => activeChannelExtensionCandidates(channel, configured).includes(target));
+  const relatedIds = new Set(direct.flatMap((channel) => [channel.uniqueId, channel.linkedId]).filter(Boolean));
+  return (status.activeChannels || [])
+    .filter((channel) => direct.includes(channel) || relatedIds.has(channel.uniqueId) || relatedIds.has(channel.linkedId))
+    .filter((channel, index, list) => channel.channel && list.findIndex((item) => item.channel === channel.channel) === index);
+}
+
+function ownedChannelForRequest(status, config, extensionNumber, requestedChannel = "") {
+  const owned = channelsOwnedByExtension(status, config, extensionNumber);
+  const requested = String(requestedChannel || "").trim();
+  if (!requested) return owned[0] || null;
+  return owned.find((channel) => channel.channel === requested) || null;
+}
+
 async function reportDataForRequest(req, { includeRecordings = true } = {}) {
   const config = await getConfig();
   const scope = userReportScope(req, config);
@@ -2870,13 +3049,13 @@ async function reportDataForRequest(req, { includeRecordings = true } = {}) {
   return { config, scope, filters, calls: filtered };
 }
 
-async function readInboundCallLogs() {
+async function readInboundCallLogs(config, scope) {
   const [calls, rawMessages] = await Promise.all([
-    readReports(),
+    readReports(config),
     readLogTail(process.env.ASTERISK_MESSAGES_LOG || "/var/log/asterisk/messages.log", 500)
   ]);
 
-  const inboundCdr = calls.filter((call) => /inbound|ivr-main|ringgroup|support/.test(call.context || ""));
+  const inboundCdr = applyReportScope(calls, scope).filter((call) => call.type === "inbound" || /inbound|ivr-main|ringgroup|support/.test(call.context || ""));
   const rejected = rawMessages
     .split("\n")
     .filter((line) => /trunk-operadora: Call|inbound-trunk|extension 's' rejected|rejected because extension not found/i.test(line))
@@ -2896,7 +3075,7 @@ async function readInboundCallLogs() {
       };
     });
 
-  return { cdr: inboundCdr, rejected };
+  return { cdr: inboundCdr, rejected: scope.all ? rejected : [] };
 }
 
 function normalizeDigits(value) {
@@ -3064,9 +3243,24 @@ async function readOutboundDiagnostics(config, extensionNumber, rawNumber) {
   };
 }
 
-app.set("trust proxy", 1);
+app.set("trust proxy", trustedProxySetting());
 app.use(enforceHttps);
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "blob:"],
+      mediaSrc: ["'self'", "blob:"],
+      connectSrc: ["'self'", "ws:", "wss:"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      frameAncestors: ["'self'"],
+      upgradeInsecureRequests: null
+    }
+  }
+}));
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev", {
   skip: (req) => req.path === "/api/pbx-status" || req.path === "/api/extensions/status"
 }));
@@ -3082,7 +3276,7 @@ app.use(
     cookie: {
       httpOnly: true,
       sameSite: "lax",
-      secure: "auto",
+      secure: process.env.NODE_ENV === "production" ? true : "auto",
       maxAge: 1000 * 60 * 60 * 8
     }
   })
@@ -3097,6 +3291,17 @@ app.use(
     legacyHeaders: false
   })
 );
+app.use(
+  "/api/login",
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 20,
+    keyGenerator: (req) => `account:${String(req.body?.username || "").trim().toLowerCase() || "unknown"}`,
+    skipSuccessfulRequests: true,
+    standardHeaders: true,
+    legacyHeaders: false
+  })
+);
 
 app.use(
   "/api/extensions/login",
@@ -3107,8 +3312,28 @@ app.use(
     legacyHeaders: false
   })
 );
+app.use(
+  "/api/extensions/login",
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 30,
+    keyGenerator: (req) => `extension:${String(req.body?.extension || "").trim() || "unknown"}`,
+    skipSuccessfulRequests: true,
+    standardHeaders: true,
+    legacyHeaders: false
+  })
+);
 
 app.use(express.static(path.join(__dirname, "public")));
+
+const expensiveApiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 180,
+  keyGenerator: (req) => `session:${req.session?.user?.username || req.sessionID || "anonymous"}`,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+app.use(["/api/pbx/reports", "/api/pbx/recordings", "/api/pbx-status", "/api/reports", "/api/inbound-calls"], expensiveApiLimiter);
 
 app.post("/api/login", async (req, res) => {
   const { username, password } = req.body || {};
@@ -3121,6 +3346,7 @@ app.post("/api/login", async (req, res) => {
 
   await regenerateSession(req);
   req.session.user = publicUser(user);
+  req.session.userAuthFingerprint = authFingerprint(user);
   return res.json({ user: req.session.user });
 });
 
@@ -3131,8 +3357,17 @@ app.post("/api/logout", requireAuth, (req, res) => {
   });
 });
 
-app.get("/api/me", (req, res) => {
-  res.json({ user: req.session.user || null });
+app.get("/api/me", async (req, res) => {
+  if (!req.session?.user) return res.json({ user: null });
+  const users = await getUsers();
+  const current = (users.users || []).find((candidate) => candidate.username === req.session.user.username);
+  if (!current || req.session.userAuthFingerprint !== authFingerprint(current)) {
+    req.session.destroy(() => {});
+    res.clearCookie("pbx.sid");
+    return res.json({ user: null });
+  }
+  req.session.user = publicUser(current);
+  return res.json({ user: req.session.user });
 });
 
 app.post("/api/extensions/login", async (req, res) => {
@@ -3146,6 +3381,7 @@ app.post("/api/extensions/login", async (req, res) => {
 
   await regenerateSession(req);
   req.session.extension = publicExtension(matched);
+  req.session.extensionAuthFingerprint = extensionFingerprint(matched);
   return res.json({ extension: req.session.extension });
 });
 
@@ -3156,8 +3392,17 @@ app.post("/api/extensions/logout", requireExtensionAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/extensions/me", (req, res) => {
-  res.json({ extension: req.session.extension || null });
+app.get("/api/extensions/me", async (req, res) => {
+  if (!req.session?.extension) return res.json({ extension: null });
+  const config = await getConfig();
+  const current = (config.extensions || []).find((candidate) => String(candidate.number) === String(req.session.extension.number));
+  if (!current || req.session.extensionAuthFingerprint !== extensionFingerprint(current)) {
+    req.session.destroy(() => {});
+    res.clearCookie("pbx.sid");
+    return res.json({ extension: null });
+  }
+  req.session.extension = publicExtension(current);
+  return res.json({ extension: req.session.extension });
 });
 
 app.get("/api/extensions/portal", requireExtensionAuth, async (req, res) => {
@@ -3236,8 +3481,10 @@ app.post("/api/extensions/transfer", requireExtensionAuth, async (req, res) => {
   if (!dialTarget) return res.status(400).json({ error: "Informe um ramal ou fila de destino valido" });
 
   const status = await readPbxStatus(config);
-  const extensionStatus = extensionStatusFromPbx(status, req.session.extension.number);
-  const channel = String(req.body?.channel || extensionStatus.active?.[0]?.channel || "").trim();
+  const requestedChannel = String(req.body?.channel || "").trim();
+  const ownedChannel = ownedChannelForRequest(status, config, req.session.extension.number, requestedChannel);
+  if (requestedChannel && !ownedChannel) return res.status(403).json({ error: "Canal fora da chamada ativa deste ramal" });
+  const channel = String(ownedChannel?.channel || "").trim();
   if (!channel) return res.status(400).json({ error: "Nenhuma chamada ativa encontrada para transferir" });
 
   try {
@@ -3256,11 +3503,14 @@ app.post("/api/extensions/action", requireExtensionAuth, async (req, res) => {
   const pauseReason = action === "queue-pause" ? normalizePauseReason(reason) : reason;
 
   try {
-    if (action === "hangup" && !channel) {
+    if (action === "hangup") {
       const config = await getConfig();
       const status = await readPbxStatus(config);
-      const extensionStatus = extensionStatusFromPbx(status, req.session.extension.number);
-      channel = extensionStatus.active?.[0]?.channel || "";
+      const requestedChannel = String(channel || "").trim();
+      const ownedChannel = ownedChannelForRequest(status, config, req.session.extension.number, requestedChannel);
+      if (requestedChannel && !ownedChannel) return res.status(403).json({ error: "Canal fora da chamada ativa deste ramal" });
+      channel = ownedChannel?.channel || "";
+      if (!channel) return res.status(400).json({ error: "Nenhuma chamada ativa encontrada para encerrar" });
     }
     const output = await runAsteriskControl(action, req.session.extension.number, { reason: pauseReason, channel });
     let pause = null;
@@ -3289,6 +3539,7 @@ app.post("/api/change-password", requireAuth, async (req, res) => {
   user.updatedAt = new Date().toISOString();
   await saveUsers(users);
   req.session.user = publicUser(user);
+  req.session.userAuthFingerprint = authFingerprint(user);
   res.json({ user: req.session.user });
 });
 
@@ -3372,18 +3623,37 @@ app.get("/api/monitor/sip", requireAuth, requireSupervisor, async (req, res) => 
   });
 });
 
-app.put("/api/config", requireAuth, requireAdmin, async (req, res) => {
-  const previous = await getConfig();
-  const incoming = { ...(req.body || {}) };
-  const expectedRevision = String(incoming._revision || "");
-  delete incoming._revision;
-  if (expectedRevision && expectedRevision !== configRevision(previous)) {
-    return res.status(409).json({ error: "A configuracao mudou em outra sessao. Recarregue a pagina antes de salvar novamente." });
+async function applyAsteriskConfig(config, existingFiles = null) {
+  const generatedFiles = existingFiles || await generateAsteriskConfigs(config);
+  const result = { generatedFiles, copied: false, reloaded: false, output: "" };
+  if (process.env.ASTERISK_APPLY_CMD) {
+    const { stdout, stderr } = await execAsync(process.env.ASTERISK_APPLY_CMD);
+    result.copied = true;
+    result.reloaded = true;
+    result.output = `${stdout || ""}${stderr || ""}`.trim();
+  } else {
+    if (process.env.ASTERISK_CONFIG_DIR) {
+      await fs.ensureDir(process.env.ASTERISK_CONFIG_DIR);
+      await Promise.all(
+        generatedFiles
+          .filter((file) => file.endsWith(".conf"))
+          .map((file) => fs.copy(file, path.join(process.env.ASTERISK_CONFIG_DIR, path.basename(file))))
+      );
+      result.copied = true;
+    }
+    if (process.env.ASTERISK_RELOAD_CMD) {
+      const { stdout, stderr } = await execAsync(process.env.ASTERISK_RELOAD_CMD);
+      result.reloaded = true;
+      result.output = `${stdout || ""}${stderr || ""}`.trim();
+    }
   }
-  validateConfig(incoming);
-  const saved = await saveConfig(incoming);
+  result.syncedPauses = await syncStoredQueuePauses();
+  return result;
+}
+
+function configUpdateAudit(req, previous, saved, incoming) {
   const sections = Object.keys(incoming).filter((key) => JSON.stringify(previous?.[key]) !== JSON.stringify(saved?.[key]));
-  await writeSystemAuditEvent(req, "config-update", {
+  return writeSystemAuditEvent(req, "config-update", {
     label: "Atualizou configuracao",
     summary: sections.length ? `Secoes alteradas: ${sections.join(", ")}` : "Nenhuma alteracao detectada",
     sections,
@@ -3391,42 +3661,64 @@ app.put("/api/config", requireAuth, requireAdmin, async (req, res) => {
     after: Object.fromEntries(sections.map((key) => [key, saved?.[key] ?? null])),
     changes: auditDiff(previous, saved, sections)
   });
-  const files = await generateAsteriskConfigs(saved);
-  res.json({ config: withConfigRevision(saved), generatedFiles: files });
+}
+
+app.put("/api/config", requireAuth, requireAdmin, async (req, res) => {
+  const response = await withConfigMutationLock(async () => {
+    const previous = await getConfig();
+    const incoming = { ...(req.body || {}) };
+    const expectedRevision = String(incoming._revision || "");
+    delete incoming._revision;
+    if (expectedRevision && expectedRevision !== configRevision(previous)) {
+      const error = new Error("A configuracao mudou em outra sessao. Recarregue a pagina antes de salvar novamente.");
+      error.status = 409;
+      throw error;
+    }
+    validateConfig(incoming);
+    const files = await generateAsteriskConfigs(incoming);
+    const saved = await saveConfig(incoming);
+    await configUpdateAudit(req, previous, saved, incoming);
+    return { config: withConfigRevision(saved), generatedFiles: files };
+  });
+  res.json(response);
 });
 
 app.post("/api/apply", requireAuth, requireAdmin, async (_req, res) => {
-  const config = await getConfig();
-  const generatedFiles = await generateAsteriskConfigs(config);
-  const result = { generatedFiles, copied: false, reloaded: false, output: "" };
-
-  if (process.env.ASTERISK_APPLY_CMD) {
-    const { stdout, stderr } = await execAsync(process.env.ASTERISK_APPLY_CMD);
-    result.copied = true;
-    result.reloaded = true;
-    result.output = `${stdout || ""}${stderr || ""}`.trim();
-    result.syncedPauses = await syncStoredQueuePauses();
-    return res.json(result);
-  }
-
-  if (process.env.ASTERISK_CONFIG_DIR) {
-    await fs.ensureDir(process.env.ASTERISK_CONFIG_DIR);
-    await Promise.all(
-      generatedFiles
-        .filter((file) => file.endsWith(".conf"))
-        .map((file) => fs.copy(file, path.join(process.env.ASTERISK_CONFIG_DIR, path.basename(file))))
-    );
-    result.copied = true;
-  }
-
-  if (process.env.ASTERISK_RELOAD_CMD) {
-    const { stdout, stderr } = await execAsync(process.env.ASTERISK_RELOAD_CMD);
-    result.reloaded = true;
-    result.output = `${stdout || ""}${stderr || ""}`.trim();
-  }
-
-  result.syncedPauses = await syncStoredQueuePauses();
+  const result = await withConfigMutationLock(async () => applyAsteriskConfig(await getConfig()));
   res.json(result);
+});
+
+app.put("/api/config/apply", requireAuth, requireAdmin, async (req, res) => {
+  const response = await withConfigMutationLock(async () => {
+    const previous = await getConfig();
+    const incoming = { ...(req.body || {}) };
+    const expectedRevision = String(incoming._revision || "");
+    delete incoming._revision;
+    if (expectedRevision && expectedRevision !== configRevision(previous)) {
+      const error = new Error("A configuracao mudou em outra sessao. Recarregue a pagina antes de salvar novamente.");
+      error.status = 409;
+      throw error;
+    }
+    validateConfig(incoming);
+    const files = await generateAsteriskConfigs(incoming);
+    let saved = null;
+    try {
+      saved = await saveConfig(incoming);
+      const applied = await applyAsteriskConfig(saved, files);
+      await configUpdateAudit(req, previous, saved, incoming);
+      pbxStatusCache = { revision: "", expiresAt: 0, value: null, pending: null };
+      return { config: withConfigRevision(saved), ...applied };
+    } catch (error) {
+      if (saved) {
+        await saveConfig(previous).catch(() => null);
+        await applyAsteriskConfig(previous).catch(() => null);
+      } else {
+        await generateAsteriskConfigs(previous).catch(() => null);
+      }
+      throw error;
+    }
+  });
+  res.json(response);
 });
 
 app.get("/api/pbx/reports/calls", requireAuth, async (req, res) => {
@@ -3496,15 +3788,17 @@ app.get("/api/pbx/reports/charts", requireAuth, async (req, res) => {
 
 app.get("/api/pbx/reports/presence", requireAuth, async (req, res) => {
   const config = await getConfig();
+  const scope = userReportScope(req, config);
   const filters = parseReportFilters(req.query || {});
-  const summary = await presenceSummaryForFilters(config, filters);
+  const summary = await presenceSummaryForFilters(configForReportScope(config, scope), filters);
   res.json({ summary, filters });
 });
 
 app.get("/api/pbx/reports/pauses", requireAuth, async (req, res) => {
   const config = await getConfig();
+  const scope = userReportScope(req, config);
   const filters = parseReportFilters(req.query || {});
-  const result = await pauseSummaryForFilters(config, filters);
+  const result = await pauseSummaryForFilters(configForReportScope(config, scope), filters);
   res.json({ ...result, filters });
 });
 
@@ -3526,10 +3820,16 @@ app.post("/api/pbx/monitor/action", requireAuth, requireSupervisor, async (req, 
 
   try {
     if (action === "transfer-waiting") {
+      if (!userCanInterveneLiveCalls(req)) return res.status(403).json({ error: "Sem permissao para intervir em chamadas" });
       const extension = (config.extensions || []).find((item) => String(item.number) === target);
       const queue = (config.queues || []).find((item) => String(item.id) === target || String(item.number) === target);
       const dialTarget = extension?.number || queue?.number || "";
       if (!channel || !dialTarget) return res.status(400).json({ error: "Informe canal e ramal/fila de destino validos" });
+      const status = await readPbxStatus(config);
+      const channelEntry = (status.activeChannels || []).find((item) => item.channel === channel);
+      const owners = channelEntry ? activeChannelExtensionCandidates(channelEntry, extensionNumbers(config)) : [];
+      const inScope = userRole(req) === "admin" || owners.some((number) => userCanMonitorExtension(req, config, number));
+      if (!inScope) return res.status(403).json({ error: "Canal fora do escopo permitido para este supervisor" });
       const output = await runAsteriskControl("redirect", "00", { channel, target: dialTarget });
       await writeSystemAuditEvent(req, "monitor-transfer-waiting", {
         label: "Transferiu chamada em espera",
@@ -3543,10 +3843,16 @@ app.post("/api/pbx/monitor/action", requireAuth, requireSupervisor, async (req, 
     }
 
     if (action === "hangup-channel") {
+      if (!userCanInterveneLiveCalls(req)) return res.status(403).json({ error: "Sem permissao para intervir em chamadas" });
+      if (!target || !userCanMonitorExtension(req, config, target)) {
+        return res.status(403).json({ error: "Ramal fora do escopo permitido para este supervisor" });
+      }
       const status = await readPbxStatus(config);
-      const relatedChannels = activeChannelsForMonitor(status, target, channel);
-      const activeChannel = relatedChannels[0] || activeChannelForMonitor(status, target, channel);
-      const channelToHangup = String(activeChannel?.channel || channel || "").trim();
+      const requestedChannel = String(channel || "").trim();
+      const activeChannel = ownedChannelForRequest(status, config, target, requestedChannel);
+      if (requestedChannel && !activeChannel) return res.status(403).json({ error: "Canal fora da chamada ativa do ramal informado" });
+      const relatedChannels = channelsOwnedByExtension(status, config, target);
+      const channelToHangup = String(activeChannel?.channel || relatedChannels[0]?.channel || "").trim();
       const outputs = [];
       const channelsToHangup = relatedChannels.length ? relatedChannels.map((item) => item.channel) : channelToHangup ? [channelToHangup] : [];
       if (channelsToHangup.length) {
@@ -3720,17 +4026,21 @@ app.get("/api/pbx/reports/export/pdf", requireAuth, async (req, res) => {
   res.send(pdf);
 });
 
-app.get("/api/reports", requireAuth, async (_req, res) => {
-  res.json({ calls: await readReports() });
-});
-
-app.get("/api/inbound-calls", requireAuth, async (_req, res) => {
-  res.json(await readInboundCallLogs());
-});
-
-app.get("/api/pbx-status", requireAuth, async (_req, res) => {
+app.get("/api/reports", requireAuth, async (req, res) => {
   const config = await getConfig();
-  res.json(await readPbxStatus(config));
+  const scope = userReportScope(req, config);
+  res.json({ calls: applyReportScope(await readReports(config), scope) });
+});
+
+app.get("/api/inbound-calls", requireAuth, async (req, res) => {
+  const config = await getConfig();
+  res.json(await readInboundCallLogs(config, userReportScope(req, config)));
+});
+
+app.get("/api/pbx-status", requireAuth, async (req, res) => {
+  const config = await getConfig();
+  const status = await readPbxStatus(config);
+  res.json(pbxStatusForScope(status, config, userReportScope(req, config)));
 });
 
 app.get("/api/registration-logs", requireAuth, requireAdmin, async (_req, res) => {
@@ -3771,12 +4081,14 @@ app.delete("/api/ivr-audios/:file", requireAuth, requireAdmin, async (req, res) 
   if (!(await fs.pathExists(filePath))) return res.status(404).json({ error: "Audio nao encontrado" });
 
   const playback = playbackNameFromFilename(file);
-  const config = await getConfig();
-  const clearedReferences = clearDeletedIvrAudioReferences(config, playback);
-
-  await fs.remove(filePath);
-  const saved = clearedReferences ? await saveConfig(config) : config;
-  if (clearedReferences) await generateAsteriskConfigs(saved);
+  const { saved, clearedReferences } = await withConfigMutationLock(async () => {
+    const config = await getConfig();
+    const references = clearDeletedIvrAudioReferences(config, playback);
+    await fs.remove(filePath);
+    const next = references ? await saveConfig(config) : config;
+    if (references) await generateAsteriskConfigs(next);
+    return { saved: next, clearedReferences: references };
+  });
 
   await writeSystemAuditEvent(req, "ivr-audio-delete", {
     label: "Excluiu audio da URA",
@@ -3954,7 +4266,11 @@ module.exports = {
     requireAdmin,
     requireSupervisor,
     applyReportFilters,
+    csvEscape,
+    inferReportExtension,
+    inferReportType,
     parseReportFilters,
+    pbxStatusForScope,
     recordingDownloadName,
     sanitizeAuditValue,
     userCanInterveneLiveCalls,

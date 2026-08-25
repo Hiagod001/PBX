@@ -1,0 +1,125 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const { defaultConfig } = require("../src/store");
+const { renderExtensions } = require("../src/asterisk");
+const { validateConfig } = require("../src/validation");
+const { monitorSipPassword } = require("../src/runtime-secrets");
+const { _test } = require("../server");
+
+function reportConfig() {
+  const config = structuredClone(defaultConfig);
+  config.extensions = [
+    { ...config.extensions[0], number: "505", name: "Origem coincidente", department: "Cobranca" },
+    { ...config.extensions[0], number: "701", name: "Atendente", department: "Suporte" }
+  ];
+  return config;
+}
+
+test("inbound caller id equal to an extension does not steal call ownership", () => {
+  const config = reportConfig();
+  const call = {
+    src: "505",
+    dst: "85",
+    dcontext: "from-trunk",
+    channel: "PJSIP/trunk-operadora-0001",
+    dstchannel: "PJSIP/701-0002",
+    lastdata: "Queue(85)"
+  };
+  const type = _test.inferReportType(call, config);
+  assert.equal(type, "inbound");
+  assert.equal(_test.inferReportExtension(call, config, type), "701");
+});
+
+test("CSV export neutralizes spreadsheet formulas", () => {
+  assert.equal(_test.csvEscape("=HYPERLINK(\"https://example.invalid\")"), "\"'=HYPERLINK(\"\"https://example.invalid\"\")\"");
+  assert.equal(_test.csvEscape("  +SUM(1,1)"), "\"'  +SUM(1,1)\"");
+  assert.equal(_test.csvEscape("551199999999"), "551199999999");
+});
+
+test("PBX status is projected to the authorized extension scope", () => {
+  const config = reportConfig();
+  const status = {
+    extensions: [{ number: "505" }, { number: "701" }],
+    queues: [{ id: "85", agents: [{ number: "505" }, { number: "701" }], waiting: [{ callerId: "3199999999" }] }],
+    activeChannels: [{ channel: "PJSIP/505-1" }, { channel: "PJSIP/701-2" }],
+    waitingCalls: [],
+    trunk: { server: "carrier.invalid" },
+    logs: [{ message: "diagnostic" }]
+  };
+  const scoped = _test.pbxStatusForScope(status, config, { all: false, extensions: ["701"], departments: [] });
+  assert.deepEqual(scoped.extensions.map((item) => item.number), ["701"]);
+  assert.deepEqual(scoped.queues[0].agents.map((item) => item.number), ["701"]);
+  assert.deepEqual(scoped.activeChannels.map((item) => item.channel), ["PJSIP/701-2"]);
+  assert.equal(scoped.trunk, null);
+  assert.deepEqual(scoped.logs, []);
+});
+
+test("recording path rejects Asterisk delimiters and traversal", () => {
+  const comma = structuredClone(defaultConfig);
+  comma.recording.path = "/var/spool/asterisk/monitor,command";
+  assert.throws(() => validateConfig(comma), /Caminho de gravacao invalido/);
+
+  const traversal = structuredClone(defaultConfig);
+  traversal.recording.path = "/var/spool/asterisk/monitor/../tmp";
+  assert.throws(() => validateConfig(traversal), /Caminho de gravacao invalido/);
+});
+
+test("generated recording filename uses only server-controlled unique id", () => {
+  const dialplan = renderExtensions(structuredClone(defaultConfig));
+  const recordingLine = dialplan.split("\n").find((line) => line.includes("Set(RECORDING_FILE="));
+  assert.match(recordingLine, /FILTER\(0-9A-Za-z_,\$\{UNIQUEID\}\)/);
+  assert.doesNotMatch(recordingLine, /ARG1|ARG2/);
+});
+
+test("production monitor endpoint refuses missing and former default secrets", () => {
+  const previousEnvironment = process.env.NODE_ENV;
+  const previousPassword = process.env.PBX_MONITOR_SIP_PASSWORD;
+  try {
+    process.env.NODE_ENV = "production";
+    delete process.env.PBX_MONITOR_SIP_PASSWORD;
+    assert.throws(() => monitorSipPassword(), /PBX_MONITOR_SIP_PASSWORD/);
+    process.env.PBX_MONITOR_SIP_PASSWORD = "Monitor@12345";
+    assert.throws(() => monitorSipPassword(), /PBX_MONITOR_SIP_PASSWORD/);
+  } finally {
+    if (previousEnvironment === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousEnvironment;
+    if (previousPassword === undefined) delete process.env.PBX_MONITOR_SIP_PASSWORD;
+    else process.env.PBX_MONITOR_SIP_PASSWORD = previousPassword;
+  }
+});
+
+test("frontend vendors icons locally and serializes extension refreshes", () => {
+  const appSource = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+  const indexSource = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+  assert.doesNotMatch(`${appSource}\n${indexSource}`, /unpkg\.com|lucide@latest/);
+  assert.match(appSource, /if \(state\.extensionStatusRefreshing\) return state\.extensionStatusRefreshing/);
+  assert.ok(fs.statSync(path.join(__dirname, "..", "public", "vendor", "lucide.js")).size > 100000);
+});
+
+test("backup schedule uses the configured hour value", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  assert.match(source, /Math\.max\(backupIntervalHours, 1 \/ 60\) \* 60 \* 60 \* 1000/);
+  assert.doesNotMatch(source, /setInterval\(backupDatabase, 60 \* 60 \* 1000\)/);
+});
+
+test("security defaults remove bootstrap credentials and protect generated Asterisk files", () => {
+  const storeSource = fs.readFileSync(path.join(__dirname, "..", "src", "store.js"), "utf8");
+  const serverSource = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const applyRoot = fs.readFileSync(path.join(__dirname, "..", "scripts", "apply-root.sh"), "utf8");
+  assert.doesNotMatch(storeSource, /admin123/);
+  assert.match(serverSource, /contentSecurityPolicy:/);
+  assert.match(serverSource, /app\.set\("trust proxy", trustedProxySetting\(\)\)/);
+  assert.match(applyRoot, /install -o root -g asterisk -m 0640/);
+});
+
+test("configuration save and apply use one serialized endpoint", () => {
+  const serverSource = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const appSource = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+  assert.match(serverSource, /app\.put\("\/api\/config\/apply"/);
+  assert.match(serverSource, /withConfigMutationLock/);
+  assert.match(serverSource, /await saveConfig\(previous\)\.catch/);
+  assert.match(appSource, /api\("\/api\/config\/apply"/);
+});
