@@ -437,7 +437,13 @@ function renderSurfaceInBackground(root, render) {
 }
 
 function iconRefresh() {
-  if (window.lucide) window.lucide.createIcons();
+  const lucide = window.lucide;
+  if (!lucide?.createIcons || !lucide.icons) return;
+  try {
+    lucide.createIcons({ icons: lucide.icons });
+  } catch (error) {
+    console.warn("Nao foi possivel atualizar os icones da interface.", error);
+  }
 }
 
 function applyTheme(theme = state.theme) {
@@ -1169,7 +1175,10 @@ function refreshPhonePipIcons(pipWindow) {
   if (!pipWindow || pipWindow.closed) return;
   const run = () => {
     try {
-      pipWindow.lucide?.createIcons?.();
+      const lucide = pipWindow.lucide;
+      if (lucide?.createIcons && lucide.icons) {
+        lucide.createIcons({ icons: lucide.icons });
+      }
     } catch (_error) {}
   };
   if (pipWindow.lucide) {

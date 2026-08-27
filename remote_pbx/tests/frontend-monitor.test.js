@@ -46,6 +46,13 @@ test("desktop sidebar cannot create a horizontal scrollbar", () => {
   assert.match(stylesSource, /\.app-shell:not\(\.sidebar-collapsed\) \.nav-tabs button::after\s*\{\s*content: none;/);
 });
 
+test("lucide refresh supplies the local icon catalog without blocking page rendering", () => {
+  assert.match(appSource, /lucide\.createIcons\(\{ icons: lucide\.icons \}\)/);
+  assert.doesNotMatch(appSource, /\.createIcons\(\);/);
+  assert.match(appSource, /console\.warn\("Nao foi possivel atualizar os icones da interface\."/);
+  assert.match(indexSource, /app\.js\?v=20260827-icons/);
+});
+
 test("background refreshes preserve unfinished form input", () => {
   assert.match(appSource, /function surfaceHasActiveEditor\(root\)/);
   assert.match(appSource, /function captureSurfaceDraft\(root\)/);
