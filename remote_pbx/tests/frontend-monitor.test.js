@@ -46,8 +46,13 @@ test("desktop sidebar cannot create a horizontal scrollbar", () => {
   assert.match(stylesSource, /\.app-shell:not\(\.sidebar-collapsed\) \.nav-tabs button::after\s*\{\s*content: none;/);
 });
 
-test("light and dark themes share semantic contrast tokens", () => {
-  assert.match(indexSource, /styles\.css\?v=20260828-theme-contrast/);
+test("light and dark themes share the Flow-inspired PBX palette", () => {
+  assert.match(indexSource, /styles\.css\?v=20260828-flow-palette/);
+  assert.match(stylesSource, /--sidebar: #111113;/);
+  assert.match(stylesSource, /--accent: #991b1b;/);
+  assert.match(stylesSource, /--page: #09090b;/);
+  assert.match(stylesSource, /--surface: #18181b;/);
+  assert.match(stylesSource, /--muted: #a1a1aa;/);
   assert.match(stylesSource, /--success-ink:/);
   assert.match(stylesSource, /--warning-soft:/);
   assert.match(stylesSource, /--danger-ink:/);

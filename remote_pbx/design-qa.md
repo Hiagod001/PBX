@@ -66,6 +66,20 @@ The supplied user permissions defect crop and the updated compact implementation
 8. The user access editor was reorganized into Operacao, Telefonia, and Governanca groups, with recordings/security isolated as complementary permissions.
 9. The final before/after comparison confirmed the oversized checkbox defect is removed and the compact permission hierarchy remains readable at 390 x 844.
 
+## Flow-Inspired Palette QA
+
+- Reference: authenticated FlowISP reports at `http://localhost:3000/dashboard/reports`.
+- Scope: color system only; existing PBX layout, interactions, and responsive behavior were preserved.
+- The dark theme now follows the reference hierarchy with a near-black page, zinc sidebar and panels, restrained borders, white primary text, and gray secondary text.
+- Dark wine-red replaces the Flow cyan as the PBX brand accent for actions, active navigation, and queue headers.
+- The light theme uses the equivalent zinc-neutral hierarchy while preserving the same red PBX identity.
+- Semantic telephony colors remain distinct for healthy, attention, failure, availability, pause, and active-call states.
+- Monitor, users, and system screens were checked in production with no overlap, cropped control, unreadable state, or browser console error.
+- `npm run check`: passed.
+- `npm test`: 34 of 34 passed.
+- P0/P1/P2: none.
+- P3: none required for this color-only change.
+
 ## Final Result
 
 final result: passed
