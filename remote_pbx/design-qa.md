@@ -82,4 +82,19 @@ The supplied user permissions defect crop and the updated compact implementation
 
 ## Final Result
 
+## Flow Visual Refinement QA
+
+- Source tokens: `C:\Users\Acer Aspire5\Documents\New project 2\apps\web\src\app\globals.css`.
+- Dark comparison: `04-flow-overview-dark.png` against `14-pbx-monitor-dark-refined.png`.
+- Light comparison: `03-flow-tasks-light.png` against `15-pbx-monitor-light-refined.png`.
+- Final strategic view: `24-pbx-overview-dark-final.png`.
+- Production routes checked in both themes: Overview, Monitor, Recordings, IVR, System, and Users.
+- Light theme now uses the Flow pale blue-gray page, light sidebar, soft surfaces, darker text, and a wine-tinted active state.
+- Dark theme uses the Flow near-black and zinc hierarchy throughout; legacy navy inputs, bright panel borders, and white strategic-chart surfaces were removed.
+- Queue headers and navigation use red as a restrained PBX identity detail instead of a full high-saturation block.
+- All checked routes reported zero page-level horizontal overflow and no browser console errors.
+- `npm run check`: passed.
+- `npm test`: 34 of 34 passed.
+- P0/P1/P2/P3: none.
+
 final result: passed

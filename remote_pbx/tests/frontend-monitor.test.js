@@ -46,9 +46,10 @@ test("desktop sidebar cannot create a horizontal scrollbar", () => {
   assert.match(stylesSource, /\.app-shell:not\(\.sidebar-collapsed\) \.nav-tabs button::after\s*\{\s*content: none;/);
 });
 
-test("light and dark themes share the Flow-inspired PBX palette", () => {
-  assert.match(indexSource, /styles\.css\?v=20260828-flow-palette/);
-  assert.match(stylesSource, /--sidebar: #111113;/);
+test("light and dark themes share the refined Flow-inspired PBX system", () => {
+  assert.match(indexSource, /styles\.css\?v=20260828-flow-refined-3/);
+  assert.match(stylesSource, /--sidebar: #e5ebf3;/);
+  assert.match(stylesSource, /html\[data-theme="dark"\][\s\S]*?--sidebar: #111113;/);
   assert.match(stylesSource, /--accent: #991b1b;/);
   assert.match(stylesSource, /--page: #09090b;/);
   assert.match(stylesSource, /--surface: #18181b;/);
@@ -60,6 +61,11 @@ test("light and dark themes share the Flow-inspired PBX palette", () => {
   assert.match(stylesSource, /html\[data-theme="dark"\][\s\S]*?--muted-strong:/);
   assert.match(stylesSource, /input::placeholder,[\s\S]*?color: var\(--placeholder\);/);
   assert.match(stylesSource, /\.system-event-row\.error \.system-event-icon[\s\S]*?var\(--danger-soft\)/);
+  assert.match(stylesSource, /\.nav-tabs button\.active,[\s\S]*?background: var\(--nav-active-bg\);/);
+  assert.match(stylesSource, /\.command-queue-card header,[\s\S]*?background: var\(--surface-elevated\);/);
+  assert.match(stylesSource, /\.command-search input,[\s\S]*?background: var\(--control-bg\);/);
+  assert.match(stylesSource, /\.tab-page \.table-wrap th[\s\S]*?background: var\(--table-head\);/);
+  assert.match(stylesSource, /\.strategy-distribution-row > svg[\s\S]*?background: var\(--surface-elevated\);/);
 });
 
 test("lucide refresh supplies the local icon catalog without blocking page rendering", () => {
