@@ -47,7 +47,7 @@ test("desktop sidebar cannot create a horizontal scrollbar", () => {
 });
 
 test("light and dark themes share the refined Flow-inspired PBX system", () => {
-  assert.match(indexSource, /styles\.css\?v=20260828-flow-refined-3/);
+  assert.match(indexSource, /styles\.css\?v=20260828-overview-width-2/);
   assert.match(stylesSource, /--sidebar: #e5ebf3;/);
   assert.match(stylesSource, /html\[data-theme="dark"\][\s\S]*?--sidebar: #111113;/);
   assert.match(stylesSource, /--accent: #991b1b;/);
@@ -66,6 +66,12 @@ test("light and dark themes share the refined Flow-inspired PBX system", () => {
   assert.match(stylesSource, /\.command-search input,[\s\S]*?background: var\(--control-bg\);/);
   assert.match(stylesSource, /\.tab-page \.table-wrap th[\s\S]*?background: var\(--table-head\);/);
   assert.match(stylesSource, /\.strategy-distribution-row > svg[\s\S]*?background: var\(--surface-elevated\);/);
+});
+
+test("strategic overview fills the available workspace width", () => {
+  assert.match(stylesSource, /\.strategy-overview\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);[\s\S]*?width: 100%;/);
+  assert.match(stylesSource, /\.strategy-overview > \*\s*\{[\s\S]*?grid-column: 1;[\s\S]*?width: 100%;/);
+  assert.match(stylesSource, /\.command-center\.strategy-overview > \*\s*\{[\s\S]*?grid-column: 1 \/ -1;[\s\S]*?width: 100%;/);
 });
 
 test("lucide refresh supplies the local icon catalog without blocking page rendering", () => {

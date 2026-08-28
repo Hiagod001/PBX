@@ -1888,7 +1888,14 @@ html[data-theme="dark"] .command-queue-card .compact-agent-name.agent-presence-c
 
 .strategy-overview {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
+  width: 100%;
+}
+
+.strategy-overview > * {
+  grid-column: 1;
+  width: 100%;
 }
 
 .strategy-toolbar {
@@ -6689,6 +6696,17 @@ html:not([data-theme="dark"]) .command-queue-card .compact-agent-row.available >
   html[data-theme="dark"] .sidebar {
     background: var(--sidebar);
   }
+}
+
+/* The strategic dashboard is a single full-width track, not the legacy 12-column form grid. */
+.command-center.strategy-overview {
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+}
+
+.command-center.strategy-overview > * {
+  grid-column: 1 / -1;
+  width: 100%;
 }
 
 /* Shell overrides stay last so legacy page styles cannot dilute the command center. */
