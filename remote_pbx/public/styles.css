@@ -38,6 +38,19 @@
   --surface-soft: #f8f9fb;
   --table-head: #f5f7f9;
   --nav-text: #d6dce4;
+  --muted-strong: #475467;
+  --placeholder: #667085;
+  --control-disabled: #eef2f5;
+  --success-ink: #13743e;
+  --success-soft: #e7f6ee;
+  --warning-ink: #7a4b00;
+  --warning-soft: #fff3d6;
+  --danger-ink: #a61b1f;
+  --danger-soft: #fde9ea;
+  --info-ink: #155e95;
+  --info-soft: #eaf4ff;
+  --neutral-ink: #536174;
+  --neutral-soft: #eef2f5;
   --green: #20a05a;
   --amber: #ed8b00;
   --red-700: #c81018;
@@ -2246,18 +2259,31 @@ html[data-theme="dark"] .command-queue-card .compact-agent-name.agent-presence-c
 html[data-theme="dark"] {
   color-scheme: dark;
   --accent: #b91c1c;
-  --accent-dark: #fca5a5;
+  --accent-dark: #ffb4b8;
   --accent-soft: #2a1010;
   --ink: #f4f7fb;
-  --muted: #a7b0bf;
-  --subtle: #778295;
-  --line: #263242;
-  --line-strong: #3a4658;
+  --muted: #b8c2d0;
+  --subtle: #9aa7b8;
+  --line: #344153;
+  --line-strong: #4a586d;
   --page: #0f141b;
   --surface: #151c25;
   --surface-soft: #1d2632;
   --table-head: #1b2430;
   --nav-text: #c5cedb;
+  --muted-strong: #d5dce6;
+  --placeholder: #9aa7b8;
+  --control-disabled: #202a37;
+  --success-ink: #75e3aa;
+  --success-soft: #163326;
+  --warning-ink: #ffd17a;
+  --warning-soft: #38280f;
+  --danger-ink: #ff9b91;
+  --danger-soft: #3a1719;
+  --info-ink: #93c5fd;
+  --info-soft: #142b45;
+  --neutral-ink: #c3ccd8;
+  --neutral-soft: #25303d;
   --tooltip-bg: #e5e7eb;
   --warning-bg: #2a1f16;
   --warning-line: #8a5b22;
@@ -6646,6 +6672,146 @@ body {
   .command-queue-card .compact-monitor-table {
     min-width: 640px;
   }
+}
+
+/* Theme consistency layer. Keep this last so every legacy screen uses the same contrast model. */
+input::placeholder,
+textarea::placeholder {
+  color: var(--placeholder);
+  opacity: 1;
+}
+
+input[readonly],
+input:disabled,
+select:disabled,
+textarea:disabled {
+  border-color: var(--line);
+  background: var(--control-disabled);
+  color: var(--muted-strong);
+  opacity: 1;
+}
+
+button:disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+
+select option {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.topbar-status,
+.topbar-meta,
+.command-kpi span {
+  color: var(--muted-strong);
+}
+
+.command-kpi.neutral > svg {
+  color: var(--neutral-ink);
+}
+
+.positive-value {
+  color: var(--success-ink);
+}
+
+.negative-value {
+  color: var(--danger-ink);
+}
+
+.badge.ok,
+.strategy-rate.good {
+  background: var(--success-soft);
+  color: var(--success-ink);
+}
+
+.badge.warn,
+.strategy-rate.attention {
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+}
+
+.badge.error,
+.strategy-rate.critical {
+  background: var(--danger-soft);
+  color: var(--danger-ink);
+}
+
+.strategy-rate.neutral,
+.strategy-rank {
+  background: var(--neutral-soft);
+  color: var(--neutral-ink);
+}
+
+.strategy-insight {
+  background: var(--surface);
+}
+
+.strategy-insight > svg {
+  background: var(--neutral-soft);
+  color: var(--neutral-ink);
+}
+
+.strategy-insight.success > svg,
+.governance-kpi.ok > svg,
+.system-event-row.ok .system-event-icon,
+.audit-event-icon.ok,
+.recording-type-icon.outbound {
+  background: var(--success-soft);
+  color: var(--success-ink);
+}
+
+.governance-kpi.warn > svg,
+.system-event-row.warn .system-event-icon,
+.audit-event-icon.warn {
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+}
+
+.strategy-insight.danger > svg,
+.system-event-row.error .system-event-icon {
+  background: var(--danger-soft);
+  color: var(--danger-ink);
+}
+
+.audit-event-icon.info,
+.recording-type-icon.inbound {
+  background: var(--info-soft);
+  color: var(--info-ink);
+}
+
+.governance-empty svg {
+  color: var(--success-ink);
+}
+
+.chart-row div {
+  background: var(--neutral-soft);
+}
+
+html[data-theme="dark"] .nav-group {
+  color: #aab4c2;
+}
+
+html[data-theme="dark"] .command-queue-card,
+html[data-theme="dark"] .command-queue-card .compact-monitor-table th,
+html[data-theme="dark"] .command-queue-card .compact-monitor-table td {
+  border-color: var(--line);
+}
+
+html[data-theme="dark"] .command-kpi > svg,
+html[data-theme="dark"] .strategy-insight.accent > svg,
+html[data-theme="dark"] .user-permission-group-title svg,
+html[data-theme="dark"] .user-avatar,
+html[data-theme="dark"] .help-icon,
+html[data-theme="dark"] .ivr-node-icon,
+html[data-theme="dark"] .segmented-control button.active,
+html[data-theme="dark"] .system-event-main summary,
+html[data-theme="dark"] .audit-technical-details summary {
+  color: var(--accent-dark);
+}
+
+html[data-theme="dark"] .tab-page .user-permission-option input[type="checkbox"]:disabled {
+  opacity: 0.9;
 }
 
 @media (max-width: 480px) {

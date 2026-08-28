@@ -46,6 +46,17 @@ test("desktop sidebar cannot create a horizontal scrollbar", () => {
   assert.match(stylesSource, /\.app-shell:not\(\.sidebar-collapsed\) \.nav-tabs button::after\s*\{\s*content: none;/);
 });
 
+test("light and dark themes share semantic contrast tokens", () => {
+  assert.match(indexSource, /styles\.css\?v=20260828-theme-contrast/);
+  assert.match(stylesSource, /--success-ink:/);
+  assert.match(stylesSource, /--warning-soft:/);
+  assert.match(stylesSource, /--danger-ink:/);
+  assert.match(stylesSource, /--placeholder:/);
+  assert.match(stylesSource, /html\[data-theme="dark"\][\s\S]*?--muted-strong:/);
+  assert.match(stylesSource, /input::placeholder,[\s\S]*?color: var\(--placeholder\);/);
+  assert.match(stylesSource, /\.system-event-row\.error \.system-event-icon[\s\S]*?var\(--danger-soft\)/);
+});
+
 test("lucide refresh supplies the local icon catalog without blocking page rendering", () => {
   assert.match(appSource, /lucide\.createIcons\(\{ icons: lucide\.icons \}\)/);
   assert.doesNotMatch(appSource, /\.createIcons\(\);/);
