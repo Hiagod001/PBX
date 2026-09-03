@@ -1,5 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const { _test } = require("../server");
 const { renderModules } = require("../src/asterisk");
@@ -8,6 +10,12 @@ test("loads the Asterisk modules required by call files and DTMF events", () => 
   const modules = renderModules();
   assert.match(modules, /^load = pbx_spool\.so$/m);
   assert.match(modules, /^load = app_userevent\.so$/m);
+});
+
+test("grants the application read-only access to archived call results", () => {
+  const helper = fs.readFileSync(path.join(__dirname, "..", "scripts", "asterisk-control-root.sh"), "utf8");
+  assert.match(helper, /setfacl -m "u:\$\{APP_USER\}:r--" "\$TMP"/);
+  assert.doesNotMatch(helper, /chmod\s+0?644\s+"\$TMP"/);
 });
 
 test("normalizes and deduplicates dialer numbers", () => {
