@@ -118,10 +118,36 @@ test("security defaults remove bootstrap credentials and protect generated Aster
 test("configuration save and apply use one serialized endpoint", () => {
   const serverSource = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
   const appSource = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
-  assert.match(serverSource, /app\.put\("\/api\/config\/apply"/);
+  assert.match(serverSource, /app\.patch\("\/api\/config\/apply"/);
   assert.match(serverSource, /withConfigMutationLock/);
   assert.match(serverSource, /await saveConfig\(previous\)\.catch/);
-  assert.match(appSource, /api\("\/api\/config\/apply"/);
+  assert.match(appSource, /method: "PATCH"/);
+  assert.match(appSource, /_sectionRevisions/);
+  assert.doesNotMatch(appSource.match(/async function saveConfig\(\)[\s\S]*?\n}\n/)[0], /renderAll\(\)/);
+});
+
+test("independent configuration sections can be merged without overwriting other modules", () => {
+  const previous = structuredClone(defaultConfig);
+  const nextIvr = { ...previous.ivr, name: "URA isolada" };
+  const merged = _test.mergeConfigSections(previous, { ivr: nextIvr });
+  assert.deepEqual(merged.keys, ["ivr"]);
+  assert.equal(merged.config.ivr.name, "URA isolada");
+  assert.deepEqual(merged.config.trunks, previous.trunks);
+
+  const revisions = _test.configSectionRevisions(previous);
+  assert.doesNotThrow(() => _test.assertSectionRevisions(previous, ["ivr"], "revision-antiga", revisions));
+  assert.throws(
+    () => _test.assertSectionRevisions(previous, ["ivr"], "revision-antiga", { ...revisions, ivr: "obsoleta" }),
+    /mudaram em outra sessao/
+  );
+});
+
+test("Asterisk apply is cross-process locked and skips unchanged files and audio conversions", () => {
+  const applyRoot = fs.readFileSync(path.join(__dirname, "..", "scripts", "apply-root.sh"), "utf8");
+  assert.match(applyRoot, /flock -w/);
+  assert.match(applyRoot, /cmp -s "\$GENERATED_DIR\/\$config_file"/);
+  assert.match(applyRoot, /PBX_APPLY_RELOADED=0/);
+  assert.match(applyRoot, /-nt "\$audio_file"/);
 });
 
 test("standalone Asterisk generator loads production environment secrets", () => {

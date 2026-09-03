@@ -2,6 +2,10 @@ const MONITOR_REFRESH_MS = 1000;
 const BACKGROUND_STATUS_REFRESH_MS = 15000;
 const WEB_SIP_REGISTER_EXPIRES_SECONDS = 8 * 60 * 60;
 const PAUSE_REASONS = ["Cafezinho", "Almoço", "Treinamento", "Atendimento presencial"];
+const CONFIG_SECTION_KEYS = [
+  "company", "trunk", "trunks", "extensions", "inboundRoutes", "ivr", "ringGroups",
+  "queues", "outboundRules", "outbound", "businessHours", "recording", "voicemail", "security"
+];
 
 function storedTheme() {
   try {
@@ -141,6 +145,7 @@ const state = {
   extensionStatusRefreshing: null,
   extensionCall: initialExtensionCallState(),
   config: null,
+  configBaseline: null,
   theme: storedTheme(),
   sidebarCollapsed: storedSidebarCollapsed(),
   activeTab: "overview",
@@ -487,6 +492,14 @@ async function api(path, options = {}) {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401 && state.user && !String(path).startsWith("/api/extensions/")) {
+      state.user = null;
+      state.config = null;
+      state.configBaseline = null;
+      renderShell();
+      const loginMessage = $("#loginMessage");
+      if (loginMessage) loginMessage.textContent = "Sua sessao expirou. Entre novamente para continuar.";
+    }
     const error = new Error(data.error || "Falha na requisicao");
     error.detail = data.detail;
     error.data = data;
@@ -3085,6 +3098,7 @@ function updateTopbarActions() {
 
 async function loadConfig() {
   state.config = await api("/api/config");
+  state.configBaseline = JSON.parse(JSON.stringify(state.config));
   renderAll();
 }
 
@@ -6201,6 +6215,23 @@ function collectConfig() {
   return cfg;
 }
 
+function setConfigSaveBusy(busy) {
+  $all("#saveBtn, #saveIvrFullscreenBtn").forEach((button) => {
+    if (busy) {
+      button.dataset.idleHtml = button.innerHTML;
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      button.innerHTML = `<i data-lucide="loader-circle"></i>Salvando...`;
+    } else {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+      if (button.dataset.idleHtml) button.innerHTML = button.dataset.idleHtml;
+      delete button.dataset.idleHtml;
+    }
+  });
+  iconRefresh();
+}
+
 async function saveConfig() {
   collectConfig();
   const queueNumberError = validateQueueDialNumbers();
@@ -6208,14 +6239,37 @@ async function saveConfig() {
     setMessage(queueNumberError, "error");
     throw new Error(queueNumberError);
   }
-  const applyResponse = await api("/api/config/apply", {
-    method: "PUT",
-    body: JSON.stringify(state.config)
-  });
-  state.config = applyResponse.config;
-  const detail = applyResponse.copied ? "copiados para o Asterisk" : "gerados em generated/asterisk";
-  setMessage(`Configuracao salva. Arquivos ${detail}${applyResponse.reloaded ? " e reload executado" : ""}.`, "ok");
-  renderAll();
+
+  const baseline = state.configBaseline || {};
+  const sections = Object.fromEntries(
+    CONFIG_SECTION_KEYS
+      .filter((key) => JSON.stringify(state.config?.[key]) !== JSON.stringify(baseline?.[key]))
+      .map((key) => [key, state.config[key]])
+  );
+  if (!Object.keys(sections).length) {
+    setMessage("Nenhuma alteracao para salvar.", "ok");
+    return;
+  }
+
+  setConfigSaveBusy(true);
+  setMessage("Validando e aplicando somente os modulos alterados...");
+  try {
+    const applyResponse = await api("/api/config/apply", {
+      method: "PATCH",
+      body: JSON.stringify({
+        _revision: baseline._revision || state.config?._revision || "",
+        _sectionRevisions: baseline._sectionRevisions || state.config?._sectionRevisions || {},
+        sections
+      })
+    });
+    state.config = applyResponse.config;
+    state.configBaseline = JSON.parse(JSON.stringify(applyResponse.config));
+    const detail = applyResponse.reloaded ? "salva e aplicada ao Asterisk" : "salva; o Asterisk ja estava atualizado";
+    const elapsed = Number(applyResponse.durationMs) > 0 ? ` em ${(Number(applyResponse.durationMs) / 1000).toFixed(1)}s` : "";
+    setMessage(`Configuracao ${detail}${elapsed}.`, "ok");
+  } finally {
+    setConfigSaveBusy(false);
+  }
 }
 
 async function loadPreview(file) {
@@ -7298,10 +7352,6 @@ document.addEventListener("click", async (event) => {
 
     if (event.target.closest("#saveIvrFullscreenBtn")) {
       await saveConfig();
-      state.ivrFullscreen = false;
-      openIvrBuilder(state.ivrEditingMenuId || "main");
-      renderIvr();
-      iconRefresh();
       return;
     }
 
@@ -7314,6 +7364,7 @@ document.addEventListener("click", async (event) => {
       await api("/api/logout", { method: "POST", body: "{}" });
       state.user = null;
       state.config = null;
+      state.configBaseline = null;
       renderShell();
       return;
     }

@@ -519,8 +519,60 @@ function configRevision(config) {
   return crypto.createHash("sha256").update(JSON.stringify(config || {})).digest("hex").slice(0, 16);
 }
 
+const configurableSections = Object.freeze([
+  "company",
+  "trunk",
+  "trunks",
+  "extensions",
+  "inboundRoutes",
+  "ivr",
+  "ringGroups",
+  "queues",
+  "outboundRules",
+  "outbound",
+  "businessHours",
+  "recording",
+  "voicemail",
+  "security"
+]);
+
+function configSectionRevisions(config) {
+  return Object.fromEntries(configurableSections.map((key) => [key, configRevision(config?.[key])]));
+}
+
 function withConfigRevision(config, sourceConfig = config) {
-  return { ...(config || {}), _revision: configRevision(sourceConfig) };
+  return {
+    ...(config || {}),
+    _revision: configRevision(sourceConfig),
+    _sectionRevisions: configSectionRevisions(sourceConfig)
+  };
+}
+
+function stripConfigMetadata(input) {
+  const clean = { ...(input || {}) };
+  delete clean._revision;
+  delete clean._sectionRevisions;
+  return clean;
+}
+
+function mergeConfigSections(previous, sections) {
+  if (!sections || typeof sections !== "object" || Array.isArray(sections)) {
+    const error = new Error("Informe ao menos um modulo de configuracao para salvar.");
+    error.status = 400;
+    throw error;
+  }
+  const keys = Object.keys(sections);
+  const invalid = keys.filter((key) => !configurableSections.includes(key));
+  if (invalid.length) {
+    const error = new Error(`Modulos de configuracao invalidos: ${invalid.join(", ")}`);
+    error.status = 400;
+    throw error;
+  }
+  if (!keys.length) return { config: previous, keys };
+  return {
+    config: { ...previous, ...Object.fromEntries(keys.map((key) => [key, sections[key]])) },
+    keys
+  };
 }
 
 function browserSipSettings(req, extension) {
@@ -3628,9 +3680,9 @@ async function applyAsteriskConfig(config, existingFiles = null) {
   const result = { generatedFiles, copied: false, reloaded: false, output: "" };
   if (process.env.ASTERISK_APPLY_CMD) {
     const { stdout, stderr } = await execAsync(process.env.ASTERISK_APPLY_CMD);
-    result.copied = true;
-    result.reloaded = true;
     result.output = `${stdout || ""}${stderr || ""}`.trim();
+    result.copied = /PBX_APPLY_CHANGED=1/.test(result.output) || !/PBX_APPLY_CHANGED=0/.test(result.output);
+    result.reloaded = /PBX_APPLY_RELOADED=1/.test(result.output) || !/PBX_APPLY_RELOADED=0/.test(result.output);
   } else {
     if (process.env.ASTERISK_CONFIG_DIR) {
       await fs.ensureDir(process.env.ASTERISK_CONFIG_DIR);
@@ -3663,12 +3715,50 @@ function configUpdateAudit(req, previous, saved, incoming) {
   });
 }
 
+function assertSectionRevisions(previous, keys, expectedRevision, expectedSections = {}) {
+  const currentRevision = configRevision(previous);
+  if (expectedRevision === currentRevision) return;
+
+  const currentSections = configSectionRevisions(previous);
+  const conflicts = keys.filter((key) => !expectedSections[key] || expectedSections[key] !== currentSections[key]);
+  if (!conflicts.length) return;
+
+  const error = new Error(`Os modulos ${conflicts.join(", ")} mudaram em outra sessao. Recarregue os dados antes de salvar novamente.`);
+  error.status = 409;
+  error.conflicts = conflicts;
+  throw error;
+}
+
+async function saveAndApplyConfig(req, previous, incoming) {
+  const startedAt = Date.now();
+  const files = await generateAsteriskConfigs(incoming);
+  let saved = null;
+  try {
+    saved = await saveConfig(incoming);
+    const applied = await applyAsteriskConfig(saved, files);
+    await configUpdateAudit(req, previous, saved, incoming);
+    pbxStatusCache = { revision: "", expiresAt: 0, value: null, pending: null };
+    return {
+      config: withConfigRevision(saved),
+      ...applied,
+      durationMs: Date.now() - startedAt
+    };
+  } catch (error) {
+    if (saved) {
+      await saveConfig(previous).catch(() => null);
+      await applyAsteriskConfig(previous).catch(() => null);
+    } else {
+      await generateAsteriskConfigs(previous).catch(() => null);
+    }
+    throw error;
+  }
+}
+
 app.put("/api/config", requireAuth, requireAdmin, async (req, res) => {
   const response = await withConfigMutationLock(async () => {
     const previous = await getConfig();
-    const incoming = { ...(req.body || {}) };
-    const expectedRevision = String(incoming._revision || "");
-    delete incoming._revision;
+    const expectedRevision = String(req.body?._revision || "");
+    const incoming = stripConfigMetadata(req.body);
     if (expectedRevision && expectedRevision !== configRevision(previous)) {
       const error = new Error("A configuracao mudou em outra sessao. Recarregue a pagina antes de salvar novamente.");
       error.status = 409;
@@ -3691,32 +3781,29 @@ app.post("/api/apply", requireAuth, requireAdmin, async (_req, res) => {
 app.put("/api/config/apply", requireAuth, requireAdmin, async (req, res) => {
   const response = await withConfigMutationLock(async () => {
     const previous = await getConfig();
-    const incoming = { ...(req.body || {}) };
-    const expectedRevision = String(incoming._revision || "");
-    delete incoming._revision;
+    const expectedRevision = String(req.body?._revision || "");
+    const incoming = stripConfigMetadata(req.body);
     if (expectedRevision && expectedRevision !== configRevision(previous)) {
       const error = new Error("A configuracao mudou em outra sessao. Recarregue a pagina antes de salvar novamente.");
       error.status = 409;
       throw error;
     }
     validateConfig(incoming);
-    const files = await generateAsteriskConfigs(incoming);
-    let saved = null;
-    try {
-      saved = await saveConfig(incoming);
-      const applied = await applyAsteriskConfig(saved, files);
-      await configUpdateAudit(req, previous, saved, incoming);
-      pbxStatusCache = { revision: "", expiresAt: 0, value: null, pending: null };
-      return { config: withConfigRevision(saved), ...applied };
-    } catch (error) {
-      if (saved) {
-        await saveConfig(previous).catch(() => null);
-        await applyAsteriskConfig(previous).catch(() => null);
-      } else {
-        await generateAsteriskConfigs(previous).catch(() => null);
-      }
-      throw error;
-    }
+    return saveAndApplyConfig(req, previous, incoming);
+  });
+  res.json(response);
+});
+
+app.patch("/api/config/apply", requireAuth, requireAdmin, async (req, res) => {
+  const response = await withConfigMutationLock(async () => {
+    const previous = await getConfig();
+    const expectedRevision = String(req.body?._revision || "");
+    const expectedSections = req.body?._sectionRevisions || {};
+    const { config: incoming, keys } = mergeConfigSections(previous, req.body?.sections);
+    if (!keys.length) return { config: withConfigRevision(previous), copied: false, reloaded: false, unchanged: true, durationMs: 0 };
+    assertSectionRevisions(previous, keys, expectedRevision, expectedSections);
+    validateConfig(incoming);
+    return saveAndApplyConfig(req, previous, incoming);
   });
   res.json(response);
 });
@@ -4234,6 +4321,7 @@ app.use((error, req, res, _next) => {
   const status = Number(error.status || error.statusCode) || 500;
   res.status(status).json({
     error: status >= 500 ? "Falha interna ao processar a solicitacao" : error.message,
+    ...(Array.isArray(error.conflicts) ? { conflicts: error.conflicts } : {}),
     ...(process.env.NODE_ENV === "development" ? { detail: error.message } : {})
   });
 });
@@ -4263,6 +4351,9 @@ module.exports = {
   _test: {
     configForUser,
     configRevision,
+    configSectionRevisions,
+    mergeConfigSections,
+    assertSectionRevisions,
     requireAdmin,
     requireSupervisor,
     applyReportFilters,
