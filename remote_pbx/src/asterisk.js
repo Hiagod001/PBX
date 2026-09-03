@@ -207,6 +207,8 @@ function renderDialerContext(lines) {
   lines.push(" same => n,Set(CDR(direction)=dialer)");
   lines.push(" same => n,Set(CDR(campaign)=${DIALER_CAMPAIGN_ID})");
   lines.push(" same => n,Set(CDR(trunk)=${TRUNK_ENDPOINT})");
+  lines.push(" same => n,Set(CDR(accountcode)=${DIALER_ATTEMPT_ID})");
+  lines.push(" same => n,Set(CDR(userfield)=dialer:${DIALER_ATTEMPT_ID}:answered:${DIALER_TARGET})");
   lines.push(" same => n,Set(TIMEOUT(response)=${DIALER_TIMEOUT})");
   lines.push(" same => n,Background(${DIALER_AUDIO})");
   lines.push(" same => n,WaitExten(${DIALER_TIMEOUT})");
@@ -215,7 +217,7 @@ function renderDialerContext(lines) {
   lines.push(" same => n,GotoIf($[\"${EXTEN}\"=\"${DIALER_DIGIT}\"]?accepted,1)");
   lines.push(" same => n,Hangup()");
   lines.push("exten => accepted,1,NoOp(Discador aceito ${DIALER_CAMPAIGN_ID} ${DIALER_TARGET})");
-  lines.push(" same => n,Set(CDR(userfield)=dialer:${DIALER_CAMPAIGN_ID}:accepted:${DIALER_TARGET})");
+  lines.push(" same => n,Set(CDR(userfield)=dialer:${DIALER_ATTEMPT_ID}:accepted:${DIALER_TARGET})");
   lines.push(" same => n,UserEvent(DialerAccept,Campaign:${DIALER_CAMPAIGN_ID},Number:${DIALER_TARGET},Digit:${DIALER_DIGIT})");
   lines.push(" same => n,GotoIf($[\"${DIALER_DEST_TYPE}\"=\"queue\"]?queue)");
   lines.push(" same => n,GotoIf($[\"${DIALER_DEST_TYPE}\"=\"extension\"]?extension)");

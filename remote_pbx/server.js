@@ -48,6 +48,8 @@ const extensionPausePath = path.join(__dirname, "data", "extension-pauses.json")
 const extensionPauseHistoryPath = path.join(__dirname, "data", "extension-pause-history.json");
 const dialerCampaignsPath = path.join(__dirname, "data", "dialer-campaigns.json");
 const dialerOutgoingDir = path.join(__dirname, "data", "dialer-outgoing");
+const dialerSpoolDir = process.env.ASTERISK_DIALER_SPOOL_DIR || "/var/spool/asterisk/outgoing";
+const dialerArchiveDir = process.env.ASTERISK_DIALER_ARCHIVE_DIR || "/var/spool/asterisk/outgoing_done";
 const pauseReasons = new Set(["Cafezinho", "Almoço", "Treinamento", "Atendimento presencial"]);
 let protocolCounterLock = Promise.resolve();
 let dialerStoreLock = Promise.resolve();
@@ -723,6 +725,11 @@ function dialerId() {
   return `camp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function dialerAttemptId(campaignId, number, attempt) {
+  const value = `${campaignId}|${number}|${attempt}|${Date.now()}|${crypto.randomBytes(8).toString("hex")}`;
+  return `dlr-${crypto.createHash("sha256").update(value).digest("hex").slice(0, 24)}`;
+}
+
 function normalizeDialerNumber(value) {
   const number = String(value || "").replace(/[^\d]/g, "");
   if (number.length < 8 || number.length > 20) return "";
@@ -732,7 +739,7 @@ function normalizeDialerNumber(value) {
 function normalizeDialerNumbers(value) {
   const raw = Array.isArray(value) ? value.join("\n") : String(value || "");
   const numbers = raw
-    .split(/[\s,;]+/)
+    .split(/[\r\n,;]+/)
     .map(normalizeDialerNumber)
     .filter(Boolean);
   return [...new Set(numbers)];
@@ -829,7 +836,11 @@ function normalizeDialerCampaign(input = {}, previous = null, config = {}) {
         attempts: Number(old.attempts || 0),
         lastAttemptAt: old.lastAttemptAt || "",
         lastResult: old.lastResult || "",
-        trunkId: old.trunkId || ""
+        trunkId: old.trunkId || "",
+        attemptId: old.attemptId || "",
+        callFile: old.callFile || "",
+        nextAttemptAt: old.nextAttemptAt || "",
+        completedAt: old.completedAt || ""
       };
     })
   };
@@ -837,11 +848,19 @@ function normalizeDialerCampaign(input = {}, previous = null, config = {}) {
 
 function dialerStats(campaign) {
   const rows = campaign.numbers || [];
+  const count = (...statuses) => rows.filter((item) => statuses.includes(item.status)).length;
+  const completed = count("accepted", "answered", "no_answer", "busy", "failed", "canceled");
   return {
     total: rows.length,
-    pending: rows.filter((item) => item.status === "pending").length,
-    dialed: rows.filter((item) => ["queued", "dialed"].includes(item.status)).length,
-    failed: rows.filter((item) => item.status === "failed").length,
+    pending: count("pending"),
+    inProgress: count("queued"),
+    accepted: count("accepted"),
+    answered: count("answered"),
+    noAnswer: count("no_answer", "canceled"),
+    busy: count("busy"),
+    failed: count("failed"),
+    completed,
+    dialed: completed + count("queued"),
     byTrunk: rows.reduce((acc, item) => {
       if (item.trunkId) acc[item.trunkId] = (acc[item.trunkId] || 0) + 1;
       return acc;
@@ -851,6 +870,22 @@ function dialerStats(campaign) {
 
 function publicDialerCampaign(campaign) {
   return { ...campaign, stats: dialerStats(campaign), numberText: (campaign.numbers || []).map((item) => item.number).join("\n") };
+}
+
+function dialerAuditSnapshot(campaign) {
+  if (!campaign) return null;
+  return {
+    id: campaign.id,
+    name: campaign.name,
+    status: campaign.status,
+    totalNumbers: (campaign.numbers || []).length,
+    destinationType: campaign.destinationType,
+    destination: campaign.destination,
+    trunkIds: campaign.trunkIds || [],
+    maxConcurrent: campaign.maxConcurrent,
+    retryAttempts: campaign.retryAttempts,
+    intervalSeconds: campaign.intervalSeconds
+  };
 }
 
 async function readDialerCampaigns() {
@@ -884,6 +919,7 @@ function dialerCallFileContent(config, campaign, lead) {
   return [
     `Channel: PJSIP/${lead.number}@${trunk}`,
     `CallerID: ${callerId}`,
+    `Account: ${asteriskCallFileValue(lead.attemptId)}`,
     "MaxRetries: 0",
     "RetryTime: 60",
     "WaitTime: 45",
@@ -892,6 +928,7 @@ function dialerCallFileContent(config, campaign, lead) {
     "Priority: 1",
     `Setvar: DIALER_CAMPAIGN_ID=${asteriskCallFileValue(campaign.id)}`,
     `Setvar: DIALER_TARGET=${asteriskCallFileValue(lead.number)}`,
+    `Setvar: DIALER_ATTEMPT_ID=${asteriskCallFileValue(lead.attemptId)}`,
     `Setvar: DIALER_TRUNK=${asteriskCallFileValue(trunk)}`,
     `Setvar: DIALER_AUDIO=${asteriskCallFileValue(campaign.audio)}`,
     `Setvar: DIALER_DIGIT=${asteriskCallFileValue(campaign.digit)}`,
@@ -905,10 +942,75 @@ function dialerCallFileContent(config, campaign, lead) {
 
 async function enqueueDialerCall(config, campaign, lead) {
   await fs.ensureDir(dialerOutgoingDir);
-  const file = `${campaign.id}-${lead.number}-${Date.now()}.call`.replace(/[^a-zA-Z0-9_.-]/g, "-");
+  const file = `${lead.attemptId}.call`;
   const filePath = path.join(dialerOutgoingDir, file);
   await fs.writeFile(filePath, dialerCallFileContent(config, campaign, lead), "utf8");
   await runAsteriskControl("dialer-call", "700", { file: filePath });
+  return file;
+}
+
+function parseDialerArchiveStatus(content) {
+  return (String(content || "").match(/^Status:\s*([^\r\n]+)/im) || [])[1]?.trim().toLowerCase() || "";
+}
+
+function dialerResultFromReport(report, archiveStatus = "") {
+  const userField = String(report?.userField || report?.userfield || "").toLowerCase();
+  if (userField.includes(":accepted:")) return { status: "accepted", label: "Cliente aceitou e foi encaminhado", retryable: false };
+  const status = normalizeReportStatus(report?.dialstatus || report?.disposition || "");
+  if (status === "busy") return { status: "busy", label: "Ocupado", retryable: true };
+  if (["no_answer", "canceled", "rejected"].includes(status) || archiveStatus === "expired") {
+    return { status: status === "canceled" ? "canceled" : "no_answer", label: status === "canceled" ? "Cancelada" : "Nao atendeu", retryable: true };
+  }
+  if (status === "failed") return { status: "failed", label: "Falha ao completar", retryable: true };
+  if (status === "answered" || archiveStatus === "completed") return { status: "answered", label: "Atendida sem aceite", retryable: false };
+  return { status: "failed", label: "Falha ao completar", retryable: true };
+}
+
+function reportMatchesDialerAttempt(report, attemptId) {
+  if (!attemptId) return false;
+  return String(report?.accountCode || report?.accountcode || "") === attemptId || String(report?.userField || report?.userfield || "").includes(attemptId);
+}
+
+function finishDialerLead(campaign, lead, result, now = Date.now()) {
+  lead.completedAt = new Date(now).toISOString();
+  lead.callFile = "";
+  lead.lastResult = result.label;
+  if (result.retryable && Number(lead.attempts || 0) < Number(campaign.retryAttempts || 1)) {
+    lead.status = "pending";
+    lead.nextAttemptAt = new Date(now + Number(campaign.intervalSeconds || 8) * 1000).toISOString();
+    lead.lastResult = `${result.label}; nova tentativa agendada`;
+    return;
+  }
+  lead.status = result.status;
+  lead.nextAttemptAt = "";
+}
+
+async function reconcileDialerCampaigns(config, campaigns) {
+  const queued = campaigns.flatMap((campaign) => (campaign.numbers || []).filter((lead) => lead.status === "queued").map((lead) => ({ campaign, lead })));
+  if (!queued.length) return;
+  let reports = null;
+  for (const { campaign, lead } of queued) {
+    const callFile = path.basename(String(lead.callFile || ""));
+    if (!callFile || callFile !== lead.callFile) {
+      finishDialerLead(campaign, lead, { status: "failed", label: "Rastreamento da chamada invalido", retryable: true });
+      continue;
+    }
+    const archivedPath = path.join(dialerArchiveDir, callFile);
+    if (!(await fs.pathExists(archivedPath))) {
+      const activePath = path.join(dialerSpoolDir, callFile);
+      const startedAt = Date.parse(lead.lastAttemptAt || "") || Date.now();
+      if (!(await fs.pathExists(activePath)) && Date.now() - startedAt > 6 * 60 * 60 * 1000) {
+        finishDialerLead(campaign, lead, { status: "failed", label: "Resultado da chamada nao localizado", retryable: true });
+      }
+      continue;
+    }
+    const archiveStat = await fs.stat(archivedPath).catch(() => null);
+    const archiveStatus = parseDialerArchiveStatus(await fs.readFile(archivedPath, "utf8").catch(() => ""));
+    if (!reports) reports = await readReports(config).catch(() => []);
+    const report = reports.find((item) => reportMatchesDialerAttempt(item, lead.attemptId));
+    if (!report && archiveStatus === "completed" && archiveStat && Date.now() - archiveStat.mtimeMs < 5000) continue;
+    finishDialerLead(campaign, lead, dialerResultFromReport(report, archiveStatus));
+  }
 }
 
 async function tickDialerCampaigns() {
@@ -917,12 +1019,17 @@ async function tickDialerCampaigns() {
   if (!config) return;
   await updateDialerCampaigns(async (campaigns) => {
     const now = Date.now();
+    await reconcileDialerCampaigns(config, campaigns);
     for (const campaign of campaigns) {
       if (campaign.status !== "running") continue;
       if (campaign.nextDialAt && new Date(campaign.nextDialAt).getTime() > now) continue;
-      const batch = (campaign.numbers || []).filter((lead) => lead.status === "pending" && Number(lead.attempts || 0) < Number(campaign.retryAttempts || 1)).slice(0, Number(campaign.maxConcurrent) || 1);
+      const active = (campaign.numbers || []).filter((lead) => lead.status === "queued").length;
+      const availableSlots = Math.max(0, Number(campaign.maxConcurrent || 1) - active);
+      const batch = (campaign.numbers || [])
+        .filter((lead) => lead.status === "pending" && Number(lead.attempts || 0) < Number(campaign.retryAttempts || 1) && (!lead.nextAttemptAt || Date.parse(lead.nextAttemptAt) <= now))
+        .slice(0, availableSlots);
       if (!batch.length) {
-        campaign.status = "done";
+        if (!(campaign.numbers || []).some((lead) => ["pending", "queued"].includes(lead.status))) campaign.status = "done";
         campaign.updatedAt = new Date().toISOString();
         continue;
       }
@@ -934,12 +1041,16 @@ async function tickDialerCampaigns() {
           const trunkIndex = Number(campaign.nextTrunkIndex || 0) % trunks.length;
           lead.trunkId = trunks[trunkIndex];
           campaign.nextTrunkIndex = (trunkIndex + 1) % trunks.length;
-          await enqueueDialerCall(config, campaign, lead);
-          lead.status = "dialed";
-          lead.lastResult = `Chamada enviada pelo tronco ${lead.trunkId}`;
+          lead.attemptId = dialerAttemptId(campaign.id, lead.number, Number(lead.attempts || 0) + 1);
+          lead.callFile = await enqueueDialerCall(config, campaign, lead);
+          lead.status = "queued";
+          lead.nextAttemptAt = "";
+          lead.lastResult = `Chamada em andamento pelo tronco ${lead.trunkId}`;
         } catch (error) {
           lead.status = Number(lead.attempts || 0) + 1 >= Number(campaign.retryAttempts || 1) ? "failed" : "pending";
           lead.lastResult = error.message || "Falha ao enviar chamada";
+          lead.nextAttemptAt = lead.status === "pending" ? new Date(Date.now() + Number(campaign.intervalSeconds || 8) * 1000).toISOString() : "";
+          lead.callFile = "";
         }
         lead.attempts = Number(lead.attempts || 0) + 1;
         lead.lastAttemptAt = new Date().toISOString();
@@ -4236,9 +4347,16 @@ app.post("/api/dialer/campaigns", requireAuth, requireAdmin, async (req, res) =>
   const audios = await listIvrAudios();
   const id = safeDialerText(req.body?.id || "", 50);
   let savedCampaign = null;
+  let previousCampaign = null;
 
   await updateDialerCampaigns(async (campaigns) => {
     const previous = id ? campaigns.find((item) => item.id === id) : null;
+    previousCampaign = previous || null;
+    if (previous && (previous.status === "running" || (previous.numbers || []).some((lead) => lead.status === "queued"))) {
+      const error = new Error("Pause a campanha e aguarde as chamadas em andamento antes de editar.");
+      error.status = 409;
+      throw error;
+    }
     const campaign = normalizeDialerCampaign(req.body || {}, previous, config);
     if (!campaign.audio || !audios.some((audio) => audio.playback === campaign.audio)) throw new Error("Selecione um audio valido para a campanha.");
     if (!dialerDestinationExists(config, campaign.destinationType, campaign.destination)) throw new Error("Selecione uma fila ou ramal valido para receber os atendimentos.");
@@ -4246,6 +4364,13 @@ app.post("/api/dialer/campaigns", requireAuth, requireAdmin, async (req, res) =>
     if (!campaign.numbers.length) throw new Error("Adicione pelo menos um numero para discar.");
     savedCampaign = campaign;
     return previous ? campaigns.map((item) => (item.id === previous.id ? campaign : item)) : [campaign, ...campaigns];
+  });
+
+  await writeSystemAuditEvent(req, previousCampaign ? "dialer-campaign-update" : "dialer-campaign-create", {
+    label: previousCampaign ? "Atualizou campanha do discador" : "Criou campanha do discador",
+    summary: `${savedCampaign.name}: ${(savedCampaign.numbers || []).length} numero(s)`,
+    before: dialerAuditSnapshot(previousCampaign),
+    after: dialerAuditSnapshot(savedCampaign)
   });
 
   res.json({ campaign: publicDialerCampaign(savedCampaign), campaigns: (await readDialerCampaigns()).map(publicDialerCampaign) });
@@ -4266,6 +4391,11 @@ app.post("/api/dialer/campaigns/:id/start", requireAuth, requireAdmin, async (re
     })
   );
   if (!campaign) return res.status(404).json({ error: "Campanha nao encontrada." });
+  await writeSystemAuditEvent(req, "dialer-campaign-start", {
+    label: "Iniciou campanha do discador",
+    summary: campaign.name,
+    after: dialerAuditSnapshot(campaign)
+  });
   res.json({ campaign: publicDialerCampaign(campaign), campaigns: (await readDialerCampaigns()).map(publicDialerCampaign) });
 });
 
@@ -4279,6 +4409,11 @@ app.post("/api/dialer/campaigns/:id/pause", requireAuth, requireAdmin, async (re
     })
   );
   if (!campaign) return res.status(404).json({ error: "Campanha nao encontrada." });
+  await writeSystemAuditEvent(req, "dialer-campaign-pause", {
+    label: "Pausou campanha do discador",
+    summary: campaign.name,
+    after: dialerAuditSnapshot(campaign)
+  });
   res.json({ campaign: publicDialerCampaign(campaign), campaigns: (await readDialerCampaigns()).map(publicDialerCampaign) });
 });
 
@@ -4287,17 +4422,27 @@ app.post("/api/dialer/campaigns/:id/reset", requireAuth, requireAdmin, async (re
   await updateDialerCampaigns(async (campaigns) =>
     campaigns.map((item) => {
       if (item.id !== req.params.id) return item;
+      if ((item.numbers || []).some((lead) => lead.status === "queued")) {
+        const error = new Error("Aguarde as chamadas em andamento terminarem antes de reiniciar a lista.");
+        error.status = 409;
+        throw error;
+      }
       campaign = {
         ...item,
         status: "draft",
         nextDialAt: "",
         updatedAt: new Date().toISOString(),
-        numbers: (item.numbers || []).map((lead) => ({ ...lead, status: "pending", attempts: 0, lastAttemptAt: "", lastResult: "" }))
+        numbers: (item.numbers || []).map((lead) => ({ ...lead, status: "pending", attempts: 0, lastAttemptAt: "", lastResult: "", trunkId: "", attemptId: "", callFile: "", nextAttemptAt: "", completedAt: "" }))
       };
       return campaign;
     })
   );
   if (!campaign) return res.status(404).json({ error: "Campanha nao encontrada." });
+  await writeSystemAuditEvent(req, "dialer-campaign-reset", {
+    label: "Reiniciou lista do discador",
+    summary: campaign.name,
+    after: dialerAuditSnapshot(campaign)
+  });
   res.json({ campaign: publicDialerCampaign(campaign), campaigns: (await readDialerCampaigns()).map(publicDialerCampaign) });
 });
 
@@ -4305,9 +4450,20 @@ app.delete("/api/dialer/campaigns/:id", requireAuth, requireAdmin, async (req, r
   let removed = null;
   await updateDialerCampaigns(async (campaigns) => {
     removed = campaigns.find((item) => item.id === req.params.id) || null;
+    if (removed && (removed.numbers || []).some((lead) => lead.status === "queued")) {
+      const error = new Error("Pause a campanha e aguarde as chamadas em andamento antes de excluir.");
+      error.status = 409;
+      throw error;
+    }
     return campaigns.filter((item) => item.id !== req.params.id);
   });
   if (!removed) return res.status(404).json({ error: "Campanha nao encontrada." });
+  await writeSystemAuditEvent(req, "dialer-campaign-delete", {
+    label: "Excluiu campanha do discador",
+    summary: removed.name,
+    before: dialerAuditSnapshot(removed),
+    after: { deleted: true, id: removed.id }
+  });
   res.json({ ok: true, campaigns: (await readDialerCampaigns()).map(publicDialerCampaign) });
 });
 
@@ -4366,6 +4522,15 @@ module.exports = {
     sanitizeAuditValue,
     userCanInterveneLiveCalls,
     userCanMonitorExtension,
-    userRole
+    userRole,
+    dialerAttemptId,
+    dialerAuditSnapshot,
+    dialerCallFileContent,
+    dialerResultFromReport,
+    dialerStats,
+    finishDialerLead,
+    normalizeDialerNumbers,
+    parseDialerArchiveStatus,
+    reportMatchesDialerAttempt
   }
 };

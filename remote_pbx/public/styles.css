@@ -3051,6 +3051,35 @@ button svg {
   background: var(--accent);
 }
 
+.dialer-result-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(92px, 1fr));
+  gap: 4px 10px;
+  min-width: 210px;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.dialer-result-list span {
+  white-space: nowrap;
+}
+
+.dialer-result-list strong {
+  color: var(--ink);
+}
+
+.dialer-result-list .success strong {
+  color: var(--green);
+}
+
+.dialer-result-list .warning strong {
+  color: var(--warning-ink);
+}
+
+.dialer-result-list .danger strong {
+  color: var(--danger-ink);
+}
+
 .queue-config-card {
   display: grid;
   gap: 14px;

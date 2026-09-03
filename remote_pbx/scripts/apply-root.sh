@@ -107,7 +107,7 @@ if [ "$FAIL2BAN_CHANGED" -eq 1 ]; then
   install -m 0644 "$GENERATED_DIR/fail2ban-asterisk.local" /etc/fail2ban/jail.d/asterisk.local
 fi
 
-mkdir -p /var/spool/asterisk/monitor /var/log/asterisk/cdr-custom "${ASTERISK_SOUND_DIRS[@]}"
+mkdir -p /var/spool/asterisk/monitor /var/spool/asterisk/outgoing_done /var/log/asterisk/cdr-custom "${ASTERISK_SOUND_DIRS[@]}"
 if compgen -G "$IVR_AUDIO_DIR/*" > /dev/null; then
   for sound_dir in "${ASTERISK_SOUND_DIRS[@]}"; do
     for audio_file in "$IVR_AUDIO_DIR"/*; do
@@ -128,14 +128,18 @@ if compgen -G "$IVR_AUDIO_DIR/*" > /dev/null; then
   done
 fi
 chown -R asterisk:asterisk /var/spool/asterisk/monitor /var/log/asterisk/cdr-custom "${ASTERISK_SOUND_DIRS[@]}"
+chown asterisk:asterisk /var/spool/asterisk/outgoing_done
 if command -v setfacl >/dev/null 2>&1 && id "$APP_USER" >/dev/null 2>&1; then
   setfacl -m "u:${APP_USER}:--x" /var/spool/asterisk
   setfacl -m "u:${APP_USER}:r-x" /var/spool/asterisk/monitor
   setfacl -R -m "u:${APP_USER}:r-X" /var/spool/asterisk/monitor
   setfacl -d -m "u:${APP_USER}:r-X" /var/spool/asterisk/monitor
+  setfacl -m "u:${APP_USER}:r-x" /var/spool/asterisk/outgoing /var/spool/asterisk/outgoing_done
+  setfacl -d -m "u:${APP_USER}:r-X" /var/spool/asterisk/outgoing_done
 else
   chmod o+x /var/spool/asterisk
   chmod o+rx /var/spool/asterisk/monitor
+  chmod o+rx /var/spool/asterisk/outgoing /var/spool/asterisk/outgoing_done
 fi
 
 reload_output="$(reload_asterisk_configs 2>&1)" || {

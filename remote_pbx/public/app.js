@@ -4837,7 +4837,18 @@ function dialerTrunkSummary(campaign) {
 function dialerProgress(stats = {}) {
   const total = Number(stats.total || 0);
   if (!total) return 0;
-  return Math.round(((Number(stats.dialed || 0) + Number(stats.failed || 0)) / total) * 100);
+  return Math.round((Number(stats.completed || 0) / total) * 100);
+}
+
+function dialerResultSummary(stats = {}) {
+  return `
+    <div class="dialer-result-list">
+      <span class="success"><strong>${Number(stats.accepted || 0)}</strong> aceitas</span>
+      <span><strong>${Number(stats.answered || 0)}</strong> sem aceite</span>
+      <span class="warning"><strong>${Number(stats.noAnswer || 0) + Number(stats.busy || 0)}</strong> sem contato</span>
+      <span class="danger"><strong>${Number(stats.failed || 0)}</strong> falhas</span>
+    </div>
+  `;
 }
 
 function currentDialerFormCampaign() {
@@ -4846,7 +4857,7 @@ function currentDialerFormCampaign() {
 
 function renderDialerCampaignRows() {
   if (!state.dialerCampaigns.length) {
-    return `<tr><td colspan="11" class="empty-table-cell">Nenhuma campanha criada.</td></tr>`;
+    return `<tr><td colspan="9" class="empty-table-cell">Nenhuma campanha criada.</td></tr>`;
   }
   return state.dialerCampaigns
     .map((campaign) => {
@@ -4867,10 +4878,11 @@ function renderDialerCampaignRows() {
           <td>${escapeHtml(campaign.digit || "1")}</td>
           <td>${escapeHtml(destinationLabel(campaign.destinationType, campaign.destination))}</td>
           <td><small>${escapeHtml(dialerTrunkSummary(campaign))}</small></td>
-          <td>${Number(stats.total || 0)}</td>
-          <td>${Number(stats.pending || 0)}</td>
-          <td>${Number(stats.dialed || 0)}</td>
-          <td>${Number(stats.failed || 0)}</td>
+          <td>
+            <strong>${Number(stats.total || 0)}</strong>
+            <small>${Number(stats.pending || 0)} pendentes | ${Number(stats.inProgress || 0)} em andamento</small>
+          </td>
+          <td>${dialerResultSummary(stats)}</td>
           <td>
             <div class="table-actions">
               <button class="icon-btn" type="button" data-edit-dialer="${escapeHtml(campaign.id)}" title="Editar campanha"><i data-lucide="pencil"></i></button>
@@ -4942,10 +4954,8 @@ function renderDialer() {
                 <th>Tecla</th>
                 <th>Destino</th>
                 <th>Troncos</th>
-                <th>Total</th>
-                <th>Pendentes</th>
-                <th>Discados</th>
-                <th>Falhas</th>
+                <th>Lista</th>
+                <th>Resultados</th>
                 <th>Acoes</th>
               </tr>
             </thead>
