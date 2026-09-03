@@ -70,6 +70,14 @@ fi
 
 reload_asterisk_configs() {
   local changed=" ${CHANGED_FILES[*]} "
+  if [[ "$changed" == *" modules.conf "* ]]; then
+    if ! /usr/sbin/asterisk -rx "module show like pbx_spool.so" | grep -q '^pbx_spool\.so'; then
+      /usr/sbin/asterisk -rx "module load pbx_spool.so"
+    fi
+    if ! /usr/sbin/asterisk -rx "module show like app_userevent.so" | grep -q '^app_userevent\.so'; then
+      /usr/sbin/asterisk -rx "module load app_userevent.so"
+    fi
+  fi
   if [[ "$changed" == *" pjsip.conf "* || "$changed" == *" rtp.conf "* || "$changed" == *" http.conf "* || "$changed" == *" modules.conf "* ]]; then
     /usr/sbin/asterisk -rx "module reload res_pjsip.so"
   fi

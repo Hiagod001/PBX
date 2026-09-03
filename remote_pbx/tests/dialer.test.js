@@ -2,6 +2,13 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const { _test } = require("../server");
+const { renderModules } = require("../src/asterisk");
+
+test("loads the Asterisk modules required by call files and DTMF events", () => {
+  const modules = renderModules();
+  assert.match(modules, /^load = pbx_spool\.so$/m);
+  assert.match(modules, /^load = app_userevent\.so$/m);
+});
 
 test("normalizes and deduplicates dialer numbers", () => {
   assert.deepEqual(_test.normalizeDialerNumbers("(31) 99999-0000\n31999990000;123"), ["31999990000"]);
