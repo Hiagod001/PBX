@@ -117,7 +117,7 @@ case "$ACTION" in
       exit 2
     fi
     DEST="/var/spool/asterisk/outgoing/$(basename "$CALLFILE")"
-    TMP="$(mktemp /var/spool/asterisk/outgoing/.dialer.XXXXXX)"
+    TMP="$(mktemp /var/spool/asterisk/.dialer.XXXXXX)"
     APP_USER="$(stat -c %U "$APP_DIR")"
     install -o asterisk -g asterisk -m 0640 "$CALLFILE" "$TMP"
     if command -v setfacl >/dev/null 2>&1 && id "$APP_USER" >/dev/null 2>&1; then

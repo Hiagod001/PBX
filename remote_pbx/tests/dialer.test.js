@@ -14,6 +14,8 @@ test("loads the Asterisk modules required by call files and DTMF events", () => 
 
 test("grants the application read-only access to archived call results", () => {
   const helper = fs.readFileSync(path.join(__dirname, "..", "scripts", "asterisk-control-root.sh"), "utf8");
+  assert.match(helper, /mktemp \/var\/spool\/asterisk\/\.dialer\.XXXXXX/);
+  assert.doesNotMatch(helper, /mktemp \/var\/spool\/asterisk\/outgoing\//);
   assert.match(helper, /setfacl -m "u:\$\{APP_USER\}:r--" "\$TMP"/);
   assert.doesNotMatch(helper, /chmod\s+0?644\s+"\$TMP"/);
 });
