@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { defaultConfig } = require("../src/store");
+const { defaultConfig, normalizeConfig } = require("../src/store");
 const { renderExtensions } = require("../src/asterisk");
 const { validateConfig } = require("../src/validation");
 const { monitorSipPassword } = require("../src/runtime-secrets");
@@ -140,6 +140,21 @@ test("independent configuration sections can be merged without overwriting other
     () => _test.assertSectionRevisions(previous, ["ivr"], "revision-antiga", { ...revisions, ivr: "obsoleta" }),
     /mudaram em outra sessao/
   );
+});
+
+test("legacy main trunk data updates its matching trunk without replacing another provider", () => {
+  const config = structuredClone(defaultConfig);
+  config.outbound.defaultTrunk = "trunk-operadora";
+  config.trunk = { ...config.trunk, id: "trunk-operadora", sipUser: "principal" };
+  config.trunks = [
+    { ...config.trunk, id: "trunk-2", name: "Operadora dois", sipUser: "secundario" },
+    { ...config.trunk, id: "trunk-operadora", name: "Operadora principal", sipUser: "principal" }
+  ];
+
+  const normalized = normalizeConfig(config);
+  assert.equal(normalized.trunks[0].id, "trunk-operadora");
+  assert.equal(normalized.trunks.find((trunk) => trunk.id === "trunk-2").sipUser, "secundario");
+  assert.equal(normalized.trunks.find((trunk) => trunk.id === "trunk-operadora").sipUser, "principal");
 });
 
 test("Asterisk apply is cross-process locked and skips unchanged files and audio conversions", () => {

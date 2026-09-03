@@ -53,11 +53,22 @@ function normalizeTrunks(config = {}) {
   const base = Array.isArray(config.trunks) && config.trunks.length ? config.trunks : [{ ...(config.trunk || {}), id: "trunk-operadora", name: "Operadora principal" }];
   const trunks = base.map((item, index) => normalizeTrunk(item, index));
   if (config.trunk && Object.keys(config.trunk).length) {
-    const main = normalizeTrunk({ ...config.trunk, id: trunks[0]?.id || "trunk-operadora", name: trunks[0]?.name || "Operadora principal" }, 0);
-    if (trunks.length) trunks[0] = { ...trunks[0], ...main };
-    else trunks.push(main);
+    const legacyId = normalizeTrunkId(config.trunk.id || config.outbound?.defaultTrunk || "trunk-operadora");
+    const legacyIndex = trunks.findIndex((trunk) => trunk.id === legacyId);
+    const current = legacyIndex >= 0 ? trunks[legacyIndex] : null;
+    const main = normalizeTrunk({ ...config.trunk, id: legacyId, name: config.trunk.name || current?.name || "Operadora principal" }, Math.max(legacyIndex, 0));
+    if (legacyIndex >= 0) trunks[legacyIndex] = { ...current, ...main };
+    else trunks.unshift(main);
   }
-  return trunks;
+  const defaultId = normalizeTrunkId(config.outbound?.defaultTrunk || config.trunk?.id || "trunk-operadora");
+  return trunks
+    .map((trunk, index) => ({ trunk, index }))
+    .sort((left, right) => {
+      if (left.trunk.id === defaultId) return -1;
+      if (right.trunk.id === defaultId) return 1;
+      return left.index - right.index;
+    })
+    .map(({ trunk }) => trunk);
 }
 
 const defaultConfig = {
@@ -484,6 +495,7 @@ module.exports = {
   presenceHistoryPath,
   auditLogPath,
   defaultConfig,
+  normalizeConfig,
   ensureStore,
   getConfig,
   saveConfig,
