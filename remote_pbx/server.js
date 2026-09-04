@@ -51,6 +51,12 @@ const dialerOutgoingDir = path.join(__dirname, "data", "dialer-outgoing");
 const dialerSpoolDir = process.env.ASTERISK_DIALER_SPOOL_DIR || "/var/spool/asterisk/outgoing";
 const dialerArchiveDir = process.env.ASTERISK_DIALER_ARCHIVE_DIR || "/var/spool/asterisk/outgoing_done";
 const pauseReasons = new Set(["Cafezinho", "Almoço", "Treinamento", "Atendimento presencial"]);
+const spaRoutes = new Set([
+  "/", "/resume", "/resumo", "/overview", "/reports", "/relatorios", "/monitor", "/status",
+  "/trunk", "/troncos", "/extensions", "/ramais", "/routes", "/rotas", "/routing", "/ura", "/ivr",
+  "/dialer", "/discador", "/audios", "/queues", "/filas", "/logs", "/security", "/seguranca",
+  "/audit", "/auditoria", "/users", "/usuarios"
+]);
 let protocolCounterLock = Promise.resolve();
 let dialerStoreLock = Promise.resolve();
 let cdrImportRunning = false;
@@ -2024,6 +2030,11 @@ function inferRecordingName(call) {
   return "";
 }
 
+function parseIvrOutcome(userField) {
+  const match = String(userField || "").match(/^ivr:([a-zA-Z0-9_.-]+):([0-9#*]|timeout|invalid|maxattempts)$/);
+  return match ? { menu: match[1], option: match[2] } : { menu: "", option: "" };
+}
+
 function mapCdrColumns(columns, index, config) {
   const isAsteriskCsv = hasLikelyCdrDate(columns[9]) && !hasLikelyCdrDate(columns[8]);
   const raw = isAsteriskCsv
@@ -2114,6 +2125,7 @@ function mapCdrColumns(columns, index, config) {
   const type = inferReportType(raw, config);
   const extension = inferReportExtension(raw, config, type);
   const protocol = extractCallProtocol(raw.userfield) || extractCallProtocol(raw.accountcode);
+  const ivrOutcome = parseIvrOutcome(raw.userfield);
   const destination = reportDestinationForType(raw, type, extension);
   const extensionInfo = (config.extensions || []).find((item) => item.number === extension) || {};
   const started = parseFlexibleDate(raw.start || raw.calldate);
@@ -2171,6 +2183,8 @@ function mapCdrColumns(columns, index, config) {
     trunk: raw.trunk || inferTrunk(raw, config),
     did: raw.did || inferDid(raw, type),
     queue: raw.queue || inferQueue(raw, config),
+    ivrMenu: ivrOutcome.menu,
+    ivrOption: ivrOutcome.option,
     protocol,
     direction: raw.direction || type,
     dialstatus: raw.dialstatus || "",
@@ -2716,6 +2730,8 @@ function parseReportFilters(query) {
     uniqueId: String(query.uniqueId || ""),
     callerId: String(query.callerId || ""),
     department: String(query.department || ""),
+    ivrMenu: String(query.ivrMenu || ""),
+    ivrOption: String(query.ivrOption || ""),
     q: String(query.q || query.search || "")
   };
 }
@@ -2759,6 +2775,8 @@ function applyReportFilters(calls, filters) {
     if (!includesText(call.uniqueId, filters.uniqueId)) return false;
     if (!includesText(call.callerId, filters.callerId)) return false;
     if (!includesText(call.department, filters.department)) return false;
+    if (!includesText(call.ivrMenu, filters.ivrMenu)) return false;
+    if (!includesText(call.ivrOption, filters.ivrOption)) return false;
     if (general) {
       const haystack = [
         call.startedAt,
@@ -2775,7 +2793,9 @@ function applyReportFilters(calls, filters) {
         call.protocol,
         call.uniqueId,
         call.linkedId,
-        call.userField
+        call.userField,
+        call.ivrMenu,
+        call.ivrOption
       ].join(" ").toLowerCase();
       if (!haystack.includes(general)) return false;
     }
@@ -3012,6 +3032,8 @@ function callExportRows(calls) {
     "Tempo espera": call.waitsecLabel,
     "Tronco SIP": call.trunk,
     Fila: call.queue,
+    "Menu URA": call.ivrMenu,
+    "Opcao URA": call.ivrOption,
     DID: call.did,
     "Caller ID": call.callerId,
     "Unique ID": call.uniqueId,
@@ -4467,8 +4489,16 @@ app.delete("/api/dialer/campaigns/:id", requireAuth, requireAdmin, async (req, r
   res.json({ ok: true, campaigns: (await readDialerCampaigns()).map(publicDialerCampaign) });
 });
 
-app.get("*", (_req, res) => {
+app.use("/api", (_req, res) => {
+  res.status(404).json({ error: "Rota de API nao encontrada." });
+});
+
+app.get(Array.from(spaRoutes), (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+app.use((_req, res) => {
+  res.status(404).json({ error: "Pagina nao encontrada." });
 });
 
 app.use((error, req, res, _next) => {
@@ -4531,6 +4561,8 @@ module.exports = {
     finishDialerLead,
     normalizeDialerNumbers,
     parseDialerArchiveStatus,
-    reportMatchesDialerAttempt
+    reportMatchesDialerAttempt,
+    parseIvrOutcome,
+    spaRoutes
   }
 };

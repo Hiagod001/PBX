@@ -5613,6 +5613,8 @@ function renderReports() {
           <label>Unique ID<input data-report-filter="uniqueId" value="${escapeHtml(filters.uniqueId || "")}" /></label>
           <label>Caller ID<input data-report-filter="callerId" value="${escapeHtml(filters.callerId || "")}" /></label>
           <label>Grupo/departamento<input data-report-filter="department" value="${escapeHtml(filters.department || "")}" /></label>
+          <label>Menu URA<input data-report-filter="ivrMenu" value="${escapeHtml(filters.ivrMenu || "")}" placeholder="Ex.: main" /></label>
+          <label>Opcao URA<input data-report-filter="ivrOption" value="${escapeHtml(filters.ivrOption || "")}" placeholder="Digito, timeout ou invalid" /></label>
           </div>
         </div>
         <div class="filter-actions">

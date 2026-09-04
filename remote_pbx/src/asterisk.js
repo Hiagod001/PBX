@@ -87,10 +87,17 @@ function queueDialNumber(queue, index = 0) {
   return clean(queue.number || queue.extension || (600 + index));
 }
 
+function queueMaxWait(queue) {
+  return Math.min(Math.max(Number(queue.maxWait) || 300, 1), 86400);
+}
+
 function renderIvrContext(lines, config, menu, contextId, { answer = false } = {}) {
-  const ivrResponseTimeout = Math.min(Math.max(Number(config.ivr.timeoutSeconds) || 20, 5), 60);
-  const ivrMaxAttempts = Math.min(Math.max(Number(config.ivr.menuRepeat) || 3, 1), 10);
+  const ivrResponseTimeout = Math.min(Math.max(Number(menu.timeoutSeconds ?? config.ivr.timeoutSeconds) || 20, 5), 60);
+  const ivrMaxAttempts = Math.min(Math.max(Number(menu.menuRepeat ?? config.ivr.menuRepeat) || 3, 1), 10);
+  const timeoutAudio = menu.timeoutAudio === undefined ? config.ivr.timeoutAudio : menu.timeoutAudio;
+  const invalidAudio = menu.invalidAudio === undefined ? config.ivr.invalidAudio : menu.invalidAudio;
   const contextName = `ivr-${clean(contextId || "main")}`;
+  const cdrMenuId = clean(contextId || "main");
 
   lines.push("", `[${contextName}]`);
   lines.push(`exten => s,1,NoOp(URA ${clean(menu.name || contextId || "main")})`);
@@ -124,6 +131,7 @@ function renderIvrContext(lines, config, menu, contextId, { answer = false } = {
   }
   (menu.options || []).filter((option) => clean(option.digit) && clean(option.destination)).forEach((option) => {
     lines.push(`exten => ${clean(option.digit)},1,NoOp(URA ${clean(option.label)})`);
+    lines.push(` same => n,Set(CDR(userfield)=ivr:${cdrMenuId}:${clean(option.digit)})`);
     if (clean(option.announcement)) {
       lines.push(` same => n,Playback(${clean(option.announcement)})`);
     }
@@ -132,16 +140,19 @@ function renderIvrContext(lines, config, menu, contextId, { answer = false } = {
     lines.push(" same => n,Hangup()");
   });
   lines.push("exten => t,1,NoOp(URA timeout)");
-  if (clean(config.ivr.timeoutAudio)) {
-    lines.push(` same => n,Playback(${clean(config.ivr.timeoutAudio)})`);
+  lines.push(` same => n,Set(CDR(userfield)=ivr:${cdrMenuId}:timeout)`);
+  if (clean(timeoutAudio)) {
+    lines.push(` same => n,Playback(${clean(timeoutAudio)})`);
   }
   lines.push(` same => n,Goto(${contextName},s,prompt)`);
   lines.push("exten => i,1,NoOp(URA invalida)");
-  if (clean(config.ivr.invalidAudio)) {
-    lines.push(` same => n,Playback(${clean(config.ivr.invalidAudio)})`);
+  lines.push(` same => n,Set(CDR(userfield)=ivr:${cdrMenuId}:invalid)`);
+  if (clean(invalidAudio)) {
+    lines.push(` same => n,Playback(${clean(invalidAudio)})`);
   }
   lines.push(` same => n,Goto(${contextName},s,prompt)`);
   lines.push("exten => maxattempts,1,NoOp(URA encerrada apos tentativas sem opcao valida)");
+  lines.push(` same => n,Set(CDR(userfield)=ivr:${cdrMenuId}:maxattempts)`);
   lines.push(" same => n,Hangup()");
 }
 
@@ -222,8 +233,7 @@ function renderDialerContext(lines) {
   lines.push(" same => n,GotoIf($[\"${DIALER_DEST_TYPE}\"=\"queue\"]?queue)");
   lines.push(" same => n,GotoIf($[\"${DIALER_DEST_TYPE}\"=\"extension\"]?extension)");
   lines.push(" same => n,Hangup()");
-  lines.push(" same => n(queue),Set(CDR(queue)=${DIALER_DESTINATION})");
-  lines.push(" same => n,Queue(${DIALER_DESTINATION},tT)");
+  lines.push(" same => n(queue),Gosub(queue-${DIALER_DESTINATION},s,1)");
   lines.push(" same => n,Hangup()");
   lines.push(" same => n(extension),Dial(${PJSIP_DIAL_CONTACTS(${DIALER_DESTINATION})}&${PJSIP_DIAL_CONTACTS(web-${DIALER_DESTINATION})},60,tT)");
   lines.push(" same => n,Hangup()");
@@ -678,9 +688,10 @@ function renderExtensions(config) {
 
   config.ringGroups.forEach((group) => {
     const members = group.members.map((member) => extensionContactExpression(member)).join("&");
+    const timeout = Math.min(Math.max(Number(group.timeout) || 25, 5), 300);
     lines.push("", `[ringgroup-${clean(group.id)}]`);
     lines.push("exten => s,1,NoOp(" + clean(group.name) + ")");
-    lines.push(` same => n,Dial(${members},${Math.max(Number(group.timeout) || 25, 60)},tT)`);
+    lines.push(` same => n,Dial(${members},${timeout},tT)`);
     lines.push(` same => n,${destinationDialplan("extension", group.fallback)}`);
     lines.push(" same => n,Return()");
   });
@@ -689,7 +700,7 @@ function renderExtensions(config) {
     lines.push("", `[queue-${clean(queue.id)}]`);
     lines.push(`exten => s,1,NoOp(Fila ${clean(queue.name || queue.id)})`);
     lines.push(` same => n,Set(CDR(queue)=${clean(queue.id)})`);
-    lines.push(` same => n,Queue(${clean(queue.id)},tT)`);
+    lines.push(` same => n,Queue(${clean(queue.id)},tT,,,${queueMaxWait(queue)})`);
     lines.push(` same => n,${destinationDialplan("extension", queue.fallback)}`);
     lines.push(" same => n,Return()");
   });
