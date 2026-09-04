@@ -299,7 +299,7 @@ const defaultConfig = {
     path: "/var/spool/asterisk/monitor"
   },
   voicemail: {
-    enabled: true,
+    enabled: false,
     emailDomain: "empresa.local",
     defaultPin: "123456"
   },
@@ -382,12 +382,13 @@ function normalizeConfig(config) {
     ivr: { ...defaultConfig.ivr, ...(config.ivr || {}) },
     recording: { ...defaultConfig.recording, ...(config.recording || {}) },
     businessHours: { ...defaultConfig.businessHours, ...(config.businessHours || {}) },
-    voicemail: { ...defaultConfig.voicemail, ...(config.voicemail || {}) },
+    voicemail: { ...defaultConfig.voicemail, ...(config.voicemail || {}), enabled: false },
     security: { ...defaultConfig.security, ...(config.security || {}) },
     outboundRules: mergeOutboundRules(config),
     extensions: (config.extensions || defaultConfig.extensions).map((extension) => ({
       ...extensionTemplate,
-      ...extension
+      ...extension,
+      voicemail: false
     }))
   };
 }

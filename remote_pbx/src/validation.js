@@ -73,6 +73,35 @@ function validateConfig(config) {
     });
   });
 
+  const finalDestinations = [...queues, ...(config?.ringGroups || [])];
+  finalDestinations.forEach((item) => {
+    if (item.fallbackType === "queue" && !queueIds.includes(String(item.fallback))) add(`Fila de destino final nao encontrada: ${item.fallback}`);
+    if (item.fallbackType && !["none", "queue", "extension"].includes(item.fallbackType)) add(`Tipo de destino final invalido: ${item.fallbackType}`);
+  });
+  queues.forEach((queue) => {
+    const visited = new Set();
+    let current = queue;
+    while (current?.fallbackType === "queue") {
+      if (visited.has(current.id)) {
+        add(`Ciclo no destino final da fila ${queue.id}. Escolha outra fila ou Nenhum.`);
+        break;
+      }
+      visited.add(current.id);
+      current = queues.find((item) => item.id === current.fallback);
+    }
+  });
+
+  const routes = Array.isArray(config?.inboundRoutes) ? config.inboundRoutes : [];
+  unique(routes.map((route) => route.id), "Identificador de rota de entrada");
+  const routeMatches = [];
+  routes.forEach((route) => {
+    if (!safeIdPattern.test(String(route.id || ""))) add("Identificador de rota de entrada invalido");
+    if (route.trunkId && !trunkIds.includes(route.trunkId)) add(`Tronco da rota ${route.name || route.id} nao encontrado`);
+    if (!/^\+?\d{1,32}$/.test(String(route.did || "")) && route.did) add(`DID invalido na rota ${route.name || route.id}. Use apenas o numero recebido.`);
+    if (route.active !== false) routeMatches.push(`${route.trunkId || trunkIds[0]}:${route.did || "*"}`);
+  });
+  unique(routeMatches, "Numero de entrada no mesmo tronco");
+
   if (!validRecordingPath(config?.recording?.path)) {
     add("Caminho de gravacao invalido. Use um caminho absoluto sem espacos, delimitadores ou segmentos '..'.");
   }

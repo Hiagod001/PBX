@@ -15,10 +15,10 @@ function section(name, body) {
 }
 
 function destinationDialplan(type, destination) {
+  if (!destination || type === "none" || type === "voicemail") return "Hangup()";
   if (type === "extension" && clean(destination) === "700") return "Goto(internal,700,1)";
   if (type === "queue") return `Gosub(queue-${clean(destination)},s,1)`;
   if (type === "ringGroup") return `Gosub(ringgroup-${clean(destination)},s,1)`;
-  if (type === "voicemail") return `VoiceMail(${clean(destination)}@default,u)`;
   if (type === "ivr") return `Goto(ivr-${clean(destination)},s,1)`;
   if (type === "trunk") return `Goto(inbound-route-trunk-${clean(destination)},s,1)`;
   if (type === "timeCondition") return `Goto(time-condition-${clean(destination)},s,1)`;
@@ -91,6 +91,27 @@ function queueMaxWait(queue) {
   return Math.min(Math.max(Number(queue.maxWait) || 300, 1), 86400);
 }
 
+function finalDestinationDialplan(item) {
+  return destinationDialplan(item.fallbackType || (item.fallback ? "extension" : "none"), item.fallback);
+}
+
+function renderInboundDispatch(lines, config, context, id, fallbackContext) {
+  const firstTrunkId = trunkId(configuredTrunks(config)[0]);
+  const routes = (config.inboundRoutes || []).filter((route) => route.active !== false && (route.trunkId || firstTrunkId) === id);
+  const defaultRoute = routes.find((route) => !clean(route.did));
+  const fallback = defaultRoute && !(defaultRoute.id === "main" && !defaultRoute.trunkId) ? `inbound-route-${clean(defaultRoute.id)}` : fallbackContext;
+  lines.push("", `[${context}]`);
+  routes.filter((route) => clean(route.did)).forEach((route) => {
+    const target = route.id === "main" && !route.trunkId ? fallbackContext : `inbound-route-${clean(route.id)}`;
+    lines.push(`exten => ${clean(route.did)},1,Set(__INBOUND_DID=\${EXTEN})`);
+    lines.push(` same => n,Goto(${target},s,1)`);
+  });
+  ["s", "_X!", "_+X!"].forEach((pattern) => {
+    lines.push(`exten => ${pattern},1,Set(__INBOUND_DID=\${EXTEN})`);
+    lines.push(` same => n,Goto(${fallback},s,1)`);
+  });
+}
+
 function renderIvrContext(lines, config, menu, contextId, { answer = false } = {}) {
   const ivrResponseTimeout = Math.min(Math.max(Number(menu.timeoutSeconds ?? config.ivr.timeoutSeconds) || 20, 5), 60);
   const ivrMaxAttempts = Math.min(Math.max(Number(menu.menuRepeat ?? config.ivr.menuRepeat) || 3, 1), 10);
@@ -126,7 +147,7 @@ function renderIvrContext(lines, config, menu, contextId, { answer = false } = {
   lines.push("exten => audio-failed,1,NoOp(Audio da URA nao foi reproduzido)");
   lines.push(` same => n,WaitExten(${ivrResponseTimeout})`);
   lines.push(" same => n,Goto(t,1)");
-  if (config.ivr.allowDirectDial) {
+  if (menu.allowDirectDial ?? config.ivr.allowDirectDial) {
     lines.push("include => internal");
   }
   (menu.options || []).filter((option) => clean(option.digit) && clean(option.destination)).forEach((option) => {
@@ -198,6 +219,7 @@ function renderInboundDestinationContext(lines, config, contextId, routeName, tr
   lines.push(`exten => s,1,NoOp(${clean(routeName || `Entrada ${safeContextId}`)})`);
   lines.push(" same => n,Set(CDR(direction)=inbound)");
   lines.push(` same => n,Set(CDR(did)=${clean(did || "s")})`);
+  lines.push(' same => n,ExecIf($["${INBOUND_DID}"!="" & "${INBOUND_DID}"!="s"]?Set(CDR(did)=${INBOUND_DID}))');
   lines.push(` same => n,Set(CDR(trunk)=${clean(trunkName || "trunk-operadora")})`);
   lines.push(" same => n,Gosub(record-call,s,1(${CALLERID(num)},${CDR(did)}))");
   if (config.businessHours.enabled) {
@@ -536,7 +558,6 @@ function renderExtensions(config) {
     " same => n,Set(CDR(direction)=internal)",
     " same => n,Gosub(record-call,s,1(${CALLERID(num)},${EXTEN}))",
     " same => n,Dial(${PJSIP_DIAL_CONTACTS(${EXTEN})}&${PJSIP_DIAL_CONTACTS(web-${EXTEN})},60,tT)",
-    " same => n,VoiceMail(${EXTEN}@default,u)",
     " same => n,Hangup()"
   ];
 
@@ -545,7 +566,6 @@ function renderExtensions(config) {
     lines.push(" same => n,Set(CDR(direction)=internal)");
     lines.push(` same => n,Gosub(record-call,s,1(\${CALLERID(num)},${clean(ext.number)}))`);
     lines.push(` same => n,Dial(${extensionContactExpression(ext.number)},60,tT)`);
-    lines.push(` same => n,VoiceMail(${clean(ext.number)}@default,u)`);
     lines.push(" same => n,Hangup()");
   });
 
@@ -608,20 +628,18 @@ function renderExtensions(config) {
   });
 
   lines.push("", "[inbound-trunk]");
-  lines.push("exten => s,1,Goto(inbound-route-main,s,1)");
-  config.inboundRoutes.forEach((route) => {
-    if (!route.did) return;
-    lines.push(`exten => ${clean(route.did)},1,Goto(inbound-route-${clean(route.id)},s,1)`);
+  const firstInboundTrunk = trunkId(configuredTrunks(config)[0]);
+  ["s", "_X!", "_+X!"].forEach((pattern) => {
+    lines.push(`exten => ${pattern},1,Goto(inbound-trunk-${firstInboundTrunk},\${EXTEN},1)`);
   });
-  lines.push("exten => _X.,1,Goto(inbound-route-main,s,1)");
 
-  config.inboundRoutes.forEach((route) => {
+  config.inboundRoutes.filter((route) => route.active !== false).forEach((route) => {
     renderInboundDestinationContext(
       lines,
       config,
       route.id,
       route.name,
-      route.trunkId || "trunk-operadora",
+      route.trunkId || firstInboundTrunk,
       route.did || config.trunk.mainNumber || "s",
       route.destinationType,
       route.destination
@@ -634,14 +652,7 @@ function renderExtensions(config) {
       const id = trunkId(trunk, index);
       const inbound = inboundDestinationForTrunk(config, trunk, index);
       const contextId = `trunk-${id}`;
-      if (trunk.sipServer) {
-        lines.push("", `[inbound-trunk-${id}]`);
-        lines.push(`exten => s,1,Goto(inbound-route-${contextId},s,1)`);
-        if (clean(inbound.did) && clean(inbound.did) !== "s") {
-          lines.push(`exten => ${clean(inbound.did)},1,Goto(inbound-route-${contextId},s,1)`);
-        }
-        lines.push(`exten => _X.,1,Goto(inbound-route-${contextId},s,1)`);
-      }
+      renderInboundDispatch(lines, config, `inbound-trunk-${id}`, id, `inbound-route-${contextId}`);
       renderInboundDestinationContext(
         lines,
         config,
@@ -654,7 +665,7 @@ function renderExtensions(config) {
       );
     });
 
-  if (!config.inboundRoutes.some((route) => route.id === "main")) {
+  if (!config.inboundRoutes.some((route) => route.id === "main" && route.active !== false)) {
     lines.push("", "[inbound-route-main]");
     lines.push("exten => s,1,Goto(ivr-main,s,1)");
     lines.push(" same => n,Hangup()");
@@ -692,7 +703,7 @@ function renderExtensions(config) {
     lines.push("", `[ringgroup-${clean(group.id)}]`);
     lines.push("exten => s,1,NoOp(" + clean(group.name) + ")");
     lines.push(` same => n,Dial(${members},${timeout},tT)`);
-    lines.push(` same => n,${destinationDialplan("extension", group.fallback)}`);
+    lines.push(` same => n,${finalDestinationDialplan(group)}`);
     lines.push(" same => n,Return()");
   });
 
@@ -701,7 +712,7 @@ function renderExtensions(config) {
     lines.push(`exten => s,1,NoOp(Fila ${clean(queue.name || queue.id)})`);
     lines.push(` same => n,Set(CDR(queue)=${clean(queue.id)})`);
     lines.push(` same => n,Queue(${clean(queue.id)},tT,,,${queueMaxWait(queue)})`);
-    lines.push(` same => n,${destinationDialplan("extension", queue.fallback)}`);
+    lines.push(` same => n,${finalDestinationDialplan(queue)}`);
     lines.push(" same => n,Return()");
   });
 
@@ -748,13 +759,7 @@ function renderQueues(config) {
 }
 
 function renderVoicemail(config) {
-  const lines = ["[general]", "format=wav49|gsm|wav", "serveremail=asterisk", "attach=yes", "", "[default]"];
-  config.extensions.forEach((ext) => {
-    if (ext.voicemail) {
-      lines.push(`${clean(ext.number)} => ${clean(config.voicemail.defaultPin)},${clean(ext.name)},${clean(ext.number)}@${clean(config.voicemail.emailDomain)}`);
-    }
-  });
-  return lines.join("\n") + "\n";
+  return "; Caixa postal desativada neste PBX.\n[general]\n[default]\n";
 }
 
 function cdrField(name) {
@@ -875,7 +880,7 @@ function renderModules() {
     "load = app_stack.so",
     "load = app_userevent.so",
     "load = app_verbose.so",
-    "load = app_voicemail.so",
+    "noload = app_voicemail.so",
     "load = app_queue.so",
     "load = app_mixmonitor.so",
     "load = app_readexten.so",

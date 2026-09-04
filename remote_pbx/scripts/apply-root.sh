@@ -87,7 +87,7 @@ reload_asterisk_configs() {
   if [[ "$changed" == *" queues.conf "* ]]; then
     /usr/sbin/asterisk -rx "module reload app_queue.so"
   fi
-  if [[ "$changed" == *" voicemail.conf "* ]]; then
+  if [[ "$changed" == *" voicemail.conf "* ]] && /usr/sbin/asterisk -rx "module show like app_voicemail.so" | grep -q '^app_voicemail.so'; then
     /usr/sbin/asterisk -rx "voicemail reload"
   fi
   if [[ "$changed" == *" cdr.conf "* || "$changed" == *" cdr_custom.conf "* ]]; then
