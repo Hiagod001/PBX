@@ -11,6 +11,7 @@
     <header class="app-header"><div class="app-brand"><img src="../assets/icon.png" alt="" /><strong>UAI PBX</strong><span>Ramal</span></div><button id="themeBtn" class="mini-btn" type="button" title="Alternar tema"><i data-lucide="sun"></i></button></header>
     <main class="app">
       <section id="loginView" class="panel">
+        <div class="login-content">
         <div class="login-emblem"><img src="../assets/icon.png" alt="UAI PBX" /><span class="signal-motion" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span></div>
         <p class="eyebrow">Seu atendimento</p>
         <h1>Acesso do ramal</h1>
@@ -23,10 +24,11 @@
             Senha
             <input id="passwordInput" type="password" autocomplete="current-password" required />
           </label>
-          <button id="loginBtn" class="primary-btn" type="submit">Entrar no ramal</button>
+          <button id="loginBtn" class="primary-btn" type="submit" disabled>Preparando telefone...</button>
         </form>
         <button id="loginTestRingBtn" class="secondary-btn" type="button">Testar som de toque</button>
         <p id="loginMessage" class="message"></p>
+        </div>
       </section>
 
       <section id="phoneView" class="phone hidden">
@@ -165,6 +167,7 @@
     <script src="../assets/vendor/sip.js"></script>
     <script src="../assets/vendor/lucide.js"></script>
     <script src="phone-state.js"></script>
+    <script src="login-motion.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

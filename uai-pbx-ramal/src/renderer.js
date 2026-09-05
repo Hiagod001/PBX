@@ -1194,12 +1194,16 @@ volumeSlider.addEventListener("input", applyAudioDevices);
 
 window.addEventListener("DOMContentLoaded", async () => {
   applyAppTheme(localStorage.getItem("uai:theme") || "dark");
-  const info = await window.pbxAPI.server();
-  state.serverUrl = info.serverUrl;
   extensionInput.value = localStorage.getItem("uai:lastExtension") || "";
   transferBtn.disabled = true;
-  await loadAudioDevices();
-  showLogin();
+  try {
+    const info = await window.pbxAPI.server();
+    state.serverUrl = info.serverUrl;
+    await loadAudioDevices();
+    showLogin();
+  } catch (error) {
+    showLogin(`Nao foi possivel preparar o telefone: ${error.message}`);
+  }
 });
 
 function applyAppTheme(theme) {

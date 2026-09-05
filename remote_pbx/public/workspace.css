@@ -1,4 +1,9 @@
 /* Shared tokens and compact editing surfaces. */
+.login-background { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+#loginView.login-shell { position:relative; isolation:isolate; overflow:hidden; }
+#loginView .login-panel { position:relative; width:min(100%,460px); padding:32px; background:var(--surface); border:1px solid var(--line); border-top:3px solid #991b1b; border-radius:8px; box-shadow:0 20px 70px #00000018; }
+#loginView .login-brand { margin-bottom:28px; }
+@media(max-width:480px) { #loginView .login-panel { padding:24px; } }
 .login-shell { min-height: 100dvh; padding: 32px 20px; background: var(--page); }
 .login-shell .login-panel { width: min(100%, 420px); padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
 .login-panel::before { display: none; }

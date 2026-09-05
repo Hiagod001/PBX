@@ -1,6 +1,6 @@
 {
   "name": "uai-pbx-ramal",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "App simples do ramal UAI PBX",
   "main": "src/main.js",
   "private": true,

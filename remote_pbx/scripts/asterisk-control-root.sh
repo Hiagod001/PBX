@@ -45,6 +45,10 @@ case "$ACTION" in
       exit 0
     fi
     if ! channel_belongs_to_extension "$CHANNEL"; then
+      if ! /usr/sbin/asterisk -rx "core show channels concise" | awk -F'!' -v channel="$CHANNEL" '$1 == channel { found = 1 } END { exit !found }'; then
+        echo "Chamada ja encerrada."
+        exit 0
+      fi
       echo "Canal invalido para este ramal." >&2
       exit 2
     fi

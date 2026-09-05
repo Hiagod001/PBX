@@ -3706,18 +3706,15 @@ app.post("/api/extensions/action", requireExtensionAuth, async (req, res) => {
     }
     if (action === "hangup") {
       const config = await getConfig();
-      const status = await readPbxStatus(config);
+      const status = await readPbxStatus(config, { fresh: true });
       const requestedChannel = String(channel || "").trim();
       const ownedChannel = ownedChannelForRequest(status, config, req.session.extension.number, requestedChannel);
       if (requestedChannel && !ownedChannel) return res.status(403).json({ error: "Canal fora da chamada ativa deste ramal" });
       channel = ownedChannel?.channel || "";
-      if (!channel) return res.status(400).json({ error: "Nenhuma chamada ativa encontrada para encerrar" });
+      if (!channel) return res.json({ ok: true, alreadyEnded: true });
     }
     const output = await runAsteriskControl(action, req.session.extension.number, { reason: pauseReason, channel });
-    let pause = null;
-    if (action === "queue-pause") pause = await setExtensionPause(req.session.extension.number, true, pauseReason);
-    if (action === "queue-unpause") await setExtensionPause(req.session.extension.number, false);
-    res.json({ ok: true, output, pause });
+    res.json({ ok: true, output });
   } catch (error) {
     res.status(503).json({ error: "Comando indisponivel no host Asterisk", detail: error.message });
   }
