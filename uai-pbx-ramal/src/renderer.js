@@ -60,7 +60,6 @@ const confirmTransferBtn = document.querySelector("#confirmTransferBtn");
 const pauseReasonPanel = document.querySelector("#pauseReasonPanel");
 const cancelPauseReasonBtn = document.querySelector("#cancelPauseReasonBtn");
 const volumeSlider = document.querySelector("#volumeSlider");
-const micSlider = document.querySelector("#micSlider");
 const muteSpeakerBtn = document.querySelector("#muteSpeakerBtn");
 const muteMicBtn = document.querySelector("#muteMicBtn");
 const historyPanel = document.querySelector("#historyPanel");
@@ -95,6 +94,10 @@ let activeTone = "";
 const synthTones = new Map();
 const SIP_REGISTER_TIMEOUT_MS = 15000;
 const SIP_RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 30000];
+let statusInFlight = false;
+let pauseInFlight = false;
+let pauseRevision = 0;
+let statusTimer = null;
 
 function sipLog(message) {
   window.pbxAPI.sipLog?.(String(message || "")).catch(() => null);
@@ -116,6 +119,8 @@ function setRegistrationStatus(nextStatus) {
   registrationBadge.textContent = status === "online" ? "Online" : status === "connecting" ? "Conectando" : "Offline";
   registrationBadge.classList.toggle("is-connecting", status === "connecting");
   registrationBadge.classList.toggle("is-offline", status === "offline");
+  if (status === "online" && paused) registrationBadge.textContent = "Em pausa";
+  registrationBadge.classList.toggle("is-paused", status === "online" && paused);
   if (!state.session && !state.callPending) callBtn.disabled = status !== "online";
 }
 
@@ -135,6 +140,10 @@ function scheduleSipReconnect(reason = "conexao indisponivel") {
   if (!state.session && !state.callPending) setMessage("Telefone offline. Reconectando...");
   state.reconnectTimer = setTimeout(() => {
     state.reconnectTimer = null;
+    if (state.session || state.callPending) {
+      scheduleSipReconnect("aguardando encerramento da chamada");
+      return;
+    }
     startSoftphone().catch((error) => {
       sipLog(`reconnect failed attempt=${attempt} error=${error.message || "unknown"}`);
     });
@@ -146,6 +155,9 @@ function assertSoftphoneAttemptActive() {
 }
 
 function showLogin(message = "") {
+  clearTimeout(statusTimer);
+  statusTimer = null;
+  setPaused(false);
   state.stoppingSoftphone = true;
   state.extension = null;
   clearSipReconnectTimer();
@@ -174,7 +186,7 @@ async function showPhone(extension) {
   activeCallExtension.textContent = extension.number || "-";
   callMessage.textContent = "Registrando telefone...";
   callMessage.classList.add("ok");
-  refreshStatus();
+  scheduleStatusRefresh(0);
   await startSoftphone().catch((error) => {
     setMessage(`Ramal entrou, mas o telefone nao registrou: ${error.message}`);
   });
@@ -497,9 +509,8 @@ function attachRemoteAudio(session) {
 
 async function terminateSipSession(session) {
   if (!session) return;
-  if (session.bye) await session.bye().catch(() => null);
-  else if (session.cancel) await session.cancel().catch(() => null);
-  else if (session.reject) await session.reject().catch(() => null);
+  const action = PhoneState.terminationAction(session, SIP.SessionState);
+  if (action) await session[action]();
 }
 
 function finishSipCall(message = "Chamada encerrada.") {
@@ -519,6 +530,11 @@ function finishSipCall(message = "Chamada encerrada.") {
   if (state.ua) setMessage(message, true);
   callBtn.textContent = "Ligar";
   callBtn.classList.remove("warn");
+  callBtn.disabled = !isSipRegistered();
+  remoteAudio.pause();
+  remoteAudio.srcObject = null;
+  transferBtn.disabled = true;
+  setPaused(paused);
 }
 
 async function hangupCurrentCall(message = "Chamada encerrada.") {
@@ -532,8 +548,8 @@ async function hangupCurrentCall(message = "Chamada encerrada.") {
   renderActiveCallPanel();
 
   await Promise.all([
-    terminateSipSession(session),
-    window.pbxAPI.hangup?.({}).catch(() => null)
+    finishSipOperation("terminate call", terminateSipSession(session)),
+    finishSipOperation("hangup server", window.pbxAPI.hangup?.({}))
   ]).catch(() => null);
 
   finishSipCall(message);
@@ -544,17 +560,20 @@ function watchSipSession(session) {
   session.delegate = {
     ...(session.delegate || {}),
     onBye() {
+      if (state.session !== session) return;
       stopRingtone();
       stopRingback();
       finishSipCall("Chamada encerrada pela outra ponta.");
     },
     onCancel() {
+      if (state.session !== session) return;
       stopRingtone();
       stopRingback();
       finishSipCall("Chamada cancelada.");
     }
   };
   session.stateChange?.addListener?.((nextState) => {
+    if (state.session !== session) return;
     if (nextState === sessionState.Establishing) {
       state.callStatus = "Chamando";
       setMessage("Chamando...", true);
@@ -570,6 +589,7 @@ function watchSipSession(session) {
       callBtn.classList.add("warn");
       setMessage("Chamada em andamento.", true);
       attachRemoteAudio(session);
+      transferBtn.disabled = false;
       renderActiveCallPanel();
       startCallTimer();
     }
@@ -684,6 +704,10 @@ async function startSoftphone() {
     state.sipGeneration = generation;
     userAgent.delegate = {
       async onInvite(invitation) {
+        if (PhoneState.rejectInvitation({ paused: paused || pauseInFlight, busy: Boolean(state.session), stopping: state.stoppingSoftphone || generation !== state.sipGeneration, callback: state.autoAnswerNext && state.callPending })) {
+          await invitation.reject({ statusCode: 486 }).catch(() => null);
+          return;
+        }
         setCallSession(invitation);
         if (state.autoAnswerNext) {
           state.autoAnswerNext = false;
@@ -693,7 +717,7 @@ async function startSoftphone() {
         }
         state.currentDirection = "entrada";
         state.incoming = true;
-        state.currentNumber = normalizeCallerNumber(invitation.remoteIdentity?.displayName || invitation.remoteIdentity?.uri?.user || "entrada");
+        state.currentNumber = normalizeCallerNumber(invitation.remoteIdentity?.uri?.user || invitation.remoteIdentity?.displayName || "entrada");
         state.currentProtocol = "";
         await assignCallProtocol("entrada", state.currentNumber).catch(() => null);
         state.callStatus = "Recebendo chamada";
@@ -704,7 +728,7 @@ async function startSoftphone() {
       }
     };
 
-    const registerer = new SIP.Registerer(userAgent);
+    const registerer = new SIP.Registerer(userAgent, { expires: 300 });
     state.ua = userAgent;
     state.registerer = registerer;
 
@@ -752,7 +776,7 @@ async function stopSoftphone() {
   clearPendingCallTimeout();
   stopRingtone();
   stopRingback();
-  await terminateSipSession(state.session);
+  await finishSipOperation("terminate on logout", terminateSipSession(state.session));
   state.session = null;
   await disposeSipStack(true);
   setRegistrationStatus("offline");
@@ -797,6 +821,7 @@ function normalizeCallerNumber(value) {
 function setMessage(text, ok = false) {
   callMessage.textContent = text;
   callMessage.classList.toggle("ok", ok);
+  document.querySelector("#pauseMessage").textContent = paused && !ok ? text : "";
 }
 
 function setPaused(nextPaused) {
@@ -805,8 +830,9 @@ function setPaused(nextPaused) {
   if (!paused) pauseStartedAt = null;
   pauseBtn.classList.toggle("active", paused);
   pauseBtn.textContent = paused ? "Voltar" : "Pausa";
-  pauseOverlay.classList.toggle("hidden", !paused);
+  pauseOverlay.classList.toggle("hidden", !paused || Boolean(state.session || state.callPending));
   pauseOverlayReason.textContent = pauseReason || "Pausa";
+  setRegistrationStatus(state.registrationStatus);
   updatePauseClock();
   if (paused && !pauseTimer) pauseTimer = setInterval(updatePauseClock, 1000);
   if (!paused && pauseTimer) {
@@ -867,39 +893,65 @@ function escapeHtml(value) {
 }
 
 async function refreshStatus() {
-  if (!state.extension) return;
+  if (!state.extension || statusInFlight) return;
+  statusInFlight = true;
+  const extension = state.extension;
+  const revision = pauseRevision;
   try {
     const result = await window.pbxAPI.status();
+    if (state.extension !== extension) return;
     const status = result.status || {};
-    const activePause = status.extension?.paused || status.queues?.some((queue) => queue.agent?.paused);
-    pauseReason = status.extension?.pauseReason || status.queues?.find((queue) => queue.agent?.pauseReason)?.agent?.pauseReason || pauseReason;
-    const startedAt = status.extension?.pauseStartedAt || status.queues?.find((queue) => queue.agent?.pauseStartedAt)?.agent?.pauseStartedAt || "";
-    if (startedAt) pauseStartedAt = Date.parse(startedAt) || pauseStartedAt;
-    setPaused(Boolean(activePause));
-    renderHistory(status.recentCalls || []);
+    if (!pauseInFlight && revision === pauseRevision) {
+      const pause = PhoneState.pauseFromStatus(status);
+      pauseReason = pause.reason;
+      pauseStartedAt = pause.startedAt;
+      setPaused(pause.paused);
+    }
+    if (!historyPanel.classList.contains("hidden")) renderHistory(status.recentCalls || []);
+    if (!isSipRegistered() && !state.session) scheduleSipReconnect("verificacao periodica");
   } catch (_error) {
-    renderHistory([]);
+    setMessage("Sem resposta do servidor. Tentando novamente...");
+  } finally {
+    statusInFlight = false;
   }
 }
 
+function scheduleStatusRefresh(delay = 2000) {
+  clearTimeout(statusTimer);
+  if (!state.extension) return;
+  statusTimer = setTimeout(async () => {
+    await refreshStatus();
+    scheduleStatusRefresh();
+  }, delay);
+}
+
 async function startPause(reason) {
+  if (pauseInFlight) return;
+  pauseInFlight = true;
+  pauseRevision += 1;
   pauseReason = reason || "Cafezinho";
   pauseStartedAt = Date.now();
   pauseReasonPanel.classList.add("hidden");
   setBusy(pauseBtn, true, "Pausando...");
   try {
-    await window.pbxAPI.pause({ paused: true, reason: pauseReason });
+    const response = await window.pbxAPI.pause({ paused: true, reason: pauseReason });
+    pauseStartedAt = Date.parse(response.result?.pause?.startedAt || "") || Date.now();
     setPaused(true);
     setMessage(`Ramal pausado: ${pauseReason}.`, true);
   } catch (error) {
     setPaused(false);
     setMessage(error.message || "Nao foi possivel pausar.");
   } finally {
+    pauseInFlight = false;
+    pauseRevision += 1;
     pauseBtn.disabled = false;
   }
 }
 
 async function resumePause() {
+  if (pauseInFlight) return;
+  pauseInFlight = true;
+  pauseRevision += 1;
   setBusy(pauseBtn, true, "Voltando...");
   try {
     await window.pbxAPI.pause({ paused: false });
@@ -908,6 +960,8 @@ async function resumePause() {
   } catch (error) {
     setMessage(error.message || "Nao foi possivel voltar da pausa.");
   } finally {
+    pauseInFlight = false;
+    pauseRevision += 1;
     pauseBtn.disabled = false;
   }
 }
@@ -922,6 +976,7 @@ loginForm.addEventListener("submit", async (event) => {
       password: passwordInput.value
     });
     passwordInput.value = "";
+    localStorage.setItem("uai:lastExtension", extensionInput.value.trim());
     await showPhone(result.extension);
   } catch (error) {
     showLogin(error.message || "Nao foi possivel entrar no ramal.");
@@ -1129,7 +1184,6 @@ muteMicBtn.addEventListener("click", () => {
   micMuted = !micMuted;
   muteMicBtn.classList.toggle("warn", micMuted);
   muteMicBtn.textContent = micMuted ? "Mic off" : "Mic";
-  micSlider.disabled = micMuted;
   state.session?.sessionDescriptionHandler?.peerConnection?.getSenders().forEach((sender) => {
     if (sender.track?.kind === "audio") sender.track.enabled = !micMuted;
   });
@@ -1139,9 +1193,32 @@ muteMicBtn.addEventListener("click", () => {
 volumeSlider.addEventListener("input", applyAudioDevices);
 
 window.addEventListener("DOMContentLoaded", async () => {
+  applyAppTheme(localStorage.getItem("uai:theme") || "dark");
   const info = await window.pbxAPI.server();
   state.serverUrl = info.serverUrl;
-  extensionInput.value = "505";
+  extensionInput.value = localStorage.getItem("uai:lastExtension") || "";
+  transferBtn.disabled = true;
   await loadAudioDevices();
   showLogin();
+});
+
+function applyAppTheme(theme) {
+  document.documentElement.dataset.theme = theme === "light" ? "light" : "dark";
+  localStorage.setItem("uai:theme", document.documentElement.dataset.theme);
+  document.querySelector("#themeBtn").innerHTML = `<i data-lucide="${theme === "light" ? "moon" : "sun"}"></i>`;
+  window.lucide?.createIcons({ icons: window.lucide.icons });
+}
+document.querySelector("#themeBtn").addEventListener("click", () => applyAppTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light"));
+
+window.pbxAPI.onResume?.(() => {
+  if (!state.extension) return;
+  scheduleStatusRefresh(0);
+  if (!state.session) startSoftphone().catch(() => null);
+});
+window.pbxAPI.onSessionExpired?.(async () => {
+  await stopSoftphone().catch(() => null);
+  showLogin("Sessao encerrada. Entre novamente no ramal.");
+});
+window.addEventListener("online", () => {
+  if (state.extension) scheduleStatusRefresh(0);
 });

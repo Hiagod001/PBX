@@ -260,6 +260,18 @@ function normalizePauseReason(reason) {
   return pauseReasons.has(text) ? text : "Cafezinho";
 }
 
+let pauseMutation = Promise.resolve();
+function updateExtensionPause(number, paused, reason = "") {
+  const operation = pauseMutation.catch(() => {}).then(async () => {
+    const output = await runAsteriskControl(paused ? "queue-pause" : "queue-unpause", number, { reason });
+    const pause = await setExtensionPause(number, paused, reason);
+    pbxStatusCache = { revision: "", expiresAt: 0, value: null, pending: null };
+    return { output, pause };
+  });
+  pauseMutation = operation;
+  return operation;
+}
+
 async function setExtensionPause(number, paused, reason = "") {
   const key = String(number || "").replace(/[^\d]/g, "");
   if (!key) return null;
@@ -1562,7 +1574,7 @@ async function readPbxStatusFresh(config) {
     const channel = channelByExtension.get(String(extension.number));
     const state = endpoint.state;
     const registered = endpoint.registered || Boolean(channel);
-    const activePause = registered ? pause : null;
+    const activePause = pause;
     const { event, ...presence } = updateExtensionPresence(extension.number, registered, readAt);
     if (event) presenceEvents.push(event);
     const endpointStatus = queueStatusFromText(channel?.state || state || "");
@@ -3572,7 +3584,7 @@ app.post("/api/extensions/login", async (req, res) => {
 
 app.post("/api/extensions/logout", requireExtensionAuth, async (req, res) => {
   const extensionNumber = req.session.extension?.number;
-  if (extensionNumber) await setExtensionPause(extensionNumber, false).catch(() => null);
+  if (extensionNumber) await updateExtensionPause(extensionNumber, false).catch(() => null);
   delete req.session.extension;
   res.json({ ok: true });
 });
@@ -3688,6 +3700,10 @@ app.post("/api/extensions/action", requireExtensionAuth, async (req, res) => {
   const pauseReason = action === "queue-pause" ? normalizePauseReason(reason) : reason;
 
   try {
+    if (action === "queue-pause" || action === "queue-unpause") {
+      const result = await updateExtensionPause(req.session.extension.number, action === "queue-pause", pauseReason);
+      return res.json({ ok: true, ...result });
+    }
     if (action === "hangup") {
       const config = await getConfig();
       const status = await readPbxStatus(config);

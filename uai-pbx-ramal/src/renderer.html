@@ -5,11 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>UAI PBX Ramal</title>
     <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="workspace.css" />
   </head>
   <body>
+    <header class="app-header"><div class="app-brand"><img src="../assets/icon.png" alt="" /><strong>UAI PBX</strong><span>Ramal</span></div><button id="themeBtn" class="mini-btn" type="button" title="Alternar tema"><i data-lucide="sun"></i></button></header>
     <main class="app">
       <section id="loginView" class="panel">
-        <p class="eyebrow">Softphone PBX</p>
+        <div class="login-emblem"><img src="../assets/icon.png" alt="UAI PBX" /><span class="signal-motion" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span></div>
+        <p class="eyebrow">Seu atendimento</p>
         <h1>Acesso do ramal</h1>
         <form id="loginForm" class="stack">
           <label>
@@ -72,13 +75,13 @@
 
         <div class="actions dial-ui">
           <button id="callBtn" class="call-btn" type="button">Ligar</button>
-          <button id="clearBtn" class="secondary-btn" type="button">Limpar</button>
+          <button id="clearBtn" class="secondary-btn" type="button" title="Apagar numero"><i data-lucide="delete"></i></button>
         </div>
 
         <div class="tool-row">
           <button id="pauseBtn" class="mini-btn" type="button">Pausa</button>
-          <button id="transferBtn" class="mini-btn" type="button">Transf.</button>
-          <button id="historyBtn" class="mini-btn" type="button">Reg.</button>
+          <button id="transferBtn" class="mini-btn" type="button">Transferir</button>
+          <button id="historyBtn" class="mini-btn" type="button">Historico</button>
         </div>
 
         <section id="transferPanel" class="subpanel hidden">
@@ -106,14 +109,10 @@
             Volume da ligacao
             <input id="volumeSlider" type="range" min="0" max="100" value="85" />
           </label>
-          <label>
-            Microfone
-            <input id="micSlider" type="range" min="0" max="100" value="85" />
-          </label>
           <div class="tool-row">
             <button id="muteSpeakerBtn" class="mini-btn" type="button">Som</button>
             <button id="muteMicBtn" class="mini-btn" type="button">Mic</button>
-            <button id="settingsBtn" class="mini-btn" type="button" title="Configuracoes de audio">&#9881;</button>
+            <button id="settingsBtn" class="mini-btn" type="button" title="Configuracoes de audio"><i data-lucide="settings"></i></button>
           </div>
 
           <section id="settingsPanel" class="settings-panel hidden" aria-label="Configuracoes">
@@ -150,7 +149,7 @@
           <div id="historyList" class="history-list"></div>
         </section>
 
-        <p id="callMessage" class="message ok">Ramal autenticado.</p>
+        <p id="callMessage" class="message ok" role="status" aria-live="polite">Ramal autenticado.</p>
       </section>
 
       <section id="pauseOverlay" class="pause-overlay hidden" aria-label="Ramal em pausa">
@@ -159,10 +158,13 @@
           <strong id="pauseOverlayReason">Cafezinho</strong>
           <small id="pauseOverlayTime">0s</small>
           <button id="resumeOverlayBtn" class="primary-btn" type="button">Voltar da pausa</button>
+          <p id="pauseMessage" class="message" role="status"></p>
         </div>
       </section>
     </main>
     <script src="../assets/vendor/sip.js"></script>
+    <script src="../assets/vendor/lucide.js"></script>
+    <script src="phone-state.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

@@ -123,7 +123,7 @@ test("configuration save and apply use one serialized endpoint", () => {
   assert.match(serverSource, /await saveConfig\(previous\)\.catch/);
   assert.match(appSource, /method: "PATCH"/);
   assert.match(appSource, /_sectionRevisions/);
-  assert.doesNotMatch(appSource.match(/async function saveConfig\(\)[\s\S]*?\n}\n/)[0], /renderAll\(\)/);
+  assert.doesNotMatch(appSource.match(/async function saveConfig\([^)]*\)[\s\S]*?\n}\n/)[0], /renderAll\(\)/);
 });
 
 test("independent configuration sections can be merged without overwriting other modules", () => {

@@ -691,10 +691,13 @@ function renderExtensions(config) {
 
   lines.push("", "[queue-member]");
   lines.push("exten => _X!,1,NoOp(Membro de fila ${EXTEN} chamado por ${CALLERID(num)})");
+  lines.push(' same => n,GotoIf($["${DB(UAI_PAUSED/${EXTEN})}"="1"]?paused)');
   lines.push(' same => n,GotoIf($["${CALLERID(num)}"="${EXTEN}"]?self)');
   lines.push(" same => n,Dial(${PJSIP_DIAL_CONTACTS(${EXTEN})}&${PJSIP_DIAL_CONTACTS(web-${EXTEN})},30,tT)");
   lines.push(" same => n,Hangup()");
   lines.push(" same => n(self),NoOp(Ignorando chamada da fila para o proprio ramal ${EXTEN})");
+  lines.push(" same => n,Hangup(21)");
+  lines.push(" same => n(paused),NoOp(Ramal pausado)");
   lines.push(" same => n,Hangup(21)");
 
   config.ringGroups.forEach((group) => {

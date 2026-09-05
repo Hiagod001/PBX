@@ -1,0 +1,83 @@
+/* Shared tokens and compact editing surfaces. */
+.login-shell { min-height: 100dvh; padding: 32px 20px; background: var(--page); }
+.login-shell .login-panel { width: min(100%, 420px); padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.login-panel::before { display: none; }
+.login-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 36px; color: var(--ink); }
+.login-brand img { width: 48px; height: 48px; object-fit: contain; }
+.login-brand strong { font-size: 26px; }
+.login-panel .login-heading { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; margin-bottom: 28px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); }
+.login-heading .login-mode-btn { display: flex; gap: 8px; align-items: center; justify-content: center; width: auto; height: 42px; border: 0; border-radius: 5px; color: var(--muted); background: transparent; box-shadow: none; }
+.login-heading .login-mode-btn.active { background: var(--surface-elevated); color: var(--ink); box-shadow: inset 0 -2px #991b1b; }
+#adminLoginModeBtn::after { content: 'Console'; }
+#extensionLoginModeBtn::after { content: 'Ramal'; }
+.login-panel h1 { font-size: 26px; line-height: 1.2; margin: 6px 0 14px; color: var(--ink); }
+.login-panel .eyebrow { color: var(--muted); }
+.login-panel input { min-height: 48px; background: var(--control-bg); color: var(--ink); border-color: var(--line); }
+.login-panel .primary-btn { min-height: 48px; margin-top: 8px; }
+.signal-motion { display: inline-flex; align-items: center; justify-content: center; gap: 4px; width: 36px; height: 30px; margin-left: auto; color: #b94b50; }
+.signal-motion span { width: 3px; height: 22px; border-radius: 2px; background: currentColor; transform: scaleY(.4); animation: pbx-signal 2.4s ease-in-out infinite; }
+.signal-motion span:nth-child(2), .signal-motion span:nth-child(4) { animation-delay: -.4s; }
+.signal-motion span:nth-child(3) { animation-delay: -.8s; }
+.login-shell.hidden .signal-motion span { animation: none; }
+.tab-page.active, .login-panel .form-stack:not(.hidden) { animation: pbx-enter 180ms ease-out; }
+@keyframes pbx-enter { from { opacity: .3; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes pbx-signal { 0%,100% { transform: scaleY(.35); } 50% { transform: scaleY(1); } }
+@media (prefers-reduced-motion: reduce) { .tab-page.active, .login-panel .form-stack:not(.hidden), .signal-motion span { animation: none; } }
+html:not([data-theme="dark"]) {
+  --page: #f4f4f5; --surface: #fff; --surface-soft: #fafafa; --surface-elevated: #f0f0f2;
+  --control-bg: #fff; --line: #dddddf; --line-strong: #b8b8bf; --ink: #242428;
+  --muted: #64646d; --muted-strong: #46464f; --subtle: #73737d; --placeholder: #777780;
+  --table-head: #f5f5f6; --sidebar: #fafafa; --sidebar-deep: #f0f0f2;
+  --sidebar-ink: #242428; --sidebar-muted: #64646d; --sidebar-line: #dddddf;
+  --nav-text: #52525b; --nav-hover-bg: #eeeeef; --neutral-soft: #f0f0f2; --neutral-ink: #52525b;
+  --shadow-soft: none;
+}
+html[data-theme="dark"] {
+  --page: #111113; --surface: #1a1a1e; --surface-soft: #202024; --surface-elevated: #27272c;
+  --control-bg: #18181c; --line: #38383f; --line-strong: #55555f; --ink: #eeeef0;
+  --muted: #ababb5; --muted-strong: #d1d1d7; --subtle: #aaaab4; --placeholder: #94949f;
+  --table-head: #232328; --sidebar: #18181b; --sidebar-deep: #202024;
+  --sidebar-ink: #eeeef0; --sidebar-muted: #aaaab4; --sidebar-line: #38383f;
+  --nav-text: #c2c2ca; --nav-hover-bg: #27272c; --shadow-soft: none;
+}
+body { line-height: 1.45; letter-spacing: 0; }
+button, input, select, textarea { font-weight: 500 !important; }
+h1, h2, h3, h4, strong, b, .field-title { font-weight: 600; letter-spacing: 0; }
+.topbar h2 { font-size: 20px; }
+.panel h3, .compact-card-header h3 { font-size: 15px; }
+.panel-header { gap: 12px; flex-wrap: wrap; }
+.panel-header p { margin-top: 4px; }
+.field-block, .field-grid > *, .inline-form > * { min-width: 0; }
+.field-block label, .field-title, .field-grid label { font-weight: 500; font-size: 12px; }
+.primary-btn, .call-btn { box-shadow: none !important; }
+.primary-btn { background: #991b1b; border-color: #991b1b; color: #fff; }
+.primary-btn:hover { background: #7f1d1d; }
+.secondary-btn:hover, .icon-btn:hover { border-color: var(--line-strong); background: var(--surface-elevated); }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.tab-page > .section-grid > .panel:has(.extension-grid),
+.tab-page > .section-grid > .panel:has(.trunk-grid) { padding: 0; border: 0; background: transparent; box-shadow: none; }
+.extension-grid, .trunk-grid { gap: 12px; }
+.extension-card, .trunk-config-card, .queue-config-card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: none; }
+.compact-card-header { background: transparent; margin-bottom: 12px; }
+.compact-card-header .badge { background: var(--surface-elevated); color: var(--muted-strong); }
+.compact-field-grid { gap: 12px; grid-template-columns: repeat(4,minmax(0,1fr)); }
+.compact-field-grid .wide { grid-column: span 2; }
+.compact-field-grid .full { grid-column: 1 / -1; }
+.local-save-bar { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 10px; padding-top: 12px; margin-top: 12px; border-top: 1px solid var(--line); }
+.local-save-bar button { flex: 0 0 auto; min-height: 34px; }
+.local-save-status { flex: 1 1 180px; color: var(--muted); font-size: 12px; }
+.local-save-status[data-tone="ok"] { color: var(--success-ink); }
+.local-save-status[data-tone="error"] { color: var(--danger-ink); }
+.queue-create-form { grid-template-columns: repeat(3,minmax(0,1fr)); }
+.queue-create-form > button { align-self: end; }
+.report-stat { min-width: 0; }
+.recording-row { background: var(--surface); }
+.microcopy, .table-meta { background: transparent; color: var(--muted); font-weight: 400; }
+.help-icon { opacity: .7; }
+@media(max-width:1050px) { .compact-field-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media(max-width:620px) {
+  .compact-field-grid, .queue-create-form { grid-template-columns: minmax(0,1fr); }
+  .compact-field-grid .wide { grid-column: 1; }
+  .compact-card-actions { flex-wrap: wrap; }
+  .topbar h2 { font-size: 18px; }
+}

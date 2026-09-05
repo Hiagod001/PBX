@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("pbxAPI", {
+  onResume: (callback) => ipcRenderer.on("app:resume", () => callback()),
+  onSessionExpired: (callback) => ipcRenderer.on("app:session-expired", () => callback()),
   server: () => ipcRenderer.invoke("app:server"),
   sipLog: (message) => ipcRenderer.invoke("app:sip-log", message),
   assetUrl: (name) => ipcRenderer.invoke("app:asset-url", name),

@@ -23,11 +23,13 @@ channel_belongs_to_extension() {
 
 case "$ACTION" in
   queue-pause)
+    /usr/sbin/asterisk -rx "database put UAI_PAUSED ${EXTENSION} 1"
     /usr/sbin/asterisk -rx "queue pause member Local/${EXTENSION}@queue-member/n"
     /usr/sbin/asterisk -rx "queue pause member PJSIP/${EXTENSION}" >/dev/null 2>&1 || true
     /usr/sbin/asterisk -rx "queue pause member PJSIP/web-${EXTENSION}" >/dev/null 2>&1 || true
     ;;
   queue-unpause)
+    /usr/sbin/asterisk -rx "database del UAI_PAUSED ${EXTENSION}"
     /usr/sbin/asterisk -rx "queue unpause member Local/${EXTENSION}@queue-member/n"
     /usr/sbin/asterisk -rx "queue unpause member PJSIP/${EXTENSION}" >/dev/null 2>&1 || true
     /usr/sbin/asterisk -rx "queue unpause member PJSIP/web-${EXTENSION}" >/dev/null 2>&1 || true

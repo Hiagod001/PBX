@@ -435,6 +435,7 @@ function renderSurfaceInBackground(root, render) {
 }
 
 function iconRefresh() {
+  installLocalSaveActions();
   const lucide = window.lucide;
   if (!lucide?.createIcons || !lucide.icons) return;
   try {
@@ -442,6 +443,27 @@ function iconRefresh() {
   } catch (error) {
     console.warn("Nao foi possivel atualizar os icones da interface.", error);
   }
+}
+
+function installLocalSaveActions() {
+  if (!state.config || !(state.user?.role === "admin" || state.user?.username === "admin")) return;
+  const surfaces = {
+    extensions: { label: "Salvar ramais", selector: "[data-extension-card]" },
+    trunk: { label: "Salvar troncos", selector: "[data-trunk-card]" },
+    queues: { label: "Salvar filas", selector: ".panel" },
+    routing: { label: "Salvar rotas", selector: ".panel" },
+    security: { label: "Salvar configuracao", selector: ".panel" }
+  };
+  Object.entries(surfaces).forEach(([tab, { label, selector }]) => {
+    if (!pages[tab]) return;
+    $all(selector, pages[tab]).forEach((card) => {
+      if (!card.querySelector("input, select, textarea") || card.querySelector(":scope > .local-save-bar")) return;
+      const bar = document.createElement("div");
+      bar.className = "local-save-bar";
+      bar.innerHTML = `<span class="local-save-status" role="status"></span><button type="button" class="secondary-btn compact" data-save-config="${tab}"><i data-lucide="save"></i>${label}</button>`;
+      card.append(bar);
+    });
+  });
 }
 
 function applyTheme(theme = state.theme) {
@@ -474,6 +496,10 @@ function setMessage(message, tone = "info") {
   const target = $("#statusMessage");
   target.textContent = message || "";
   target.style.color = tone === "ok" ? "var(--green)" : "var(--red-700)";
+  $all(".local-save-status", pages[state.activeTab] || document).forEach((node) => {
+    node.textContent = message || "";
+    node.dataset.tone = tone;
+  });
 }
 
 async function api(path, options = {}) {
@@ -6215,7 +6241,7 @@ function collectConfig() {
 }
 
 function setConfigSaveBusy(busy) {
-  $all("#saveBtn, #saveIvrFullscreenBtn").forEach((button) => {
+  $all("#saveBtn, #saveIvrFullscreenBtn, [data-save-config]").forEach((button) => {
     if (busy) {
       button.dataset.idleHtml = button.innerHTML;
       button.disabled = true;
@@ -6231,7 +6257,8 @@ function setConfigSaveBusy(busy) {
   iconRefresh();
 }
 
-async function saveConfig() {
+async function saveConfig(scope = "") {
+  if (state.configSaving) return;
   collectConfig();
   const queueNumberError = validateQueueDialNumbers();
   if (queueNumberError) {
@@ -6240,8 +6267,10 @@ async function saveConfig() {
   }
 
   const baseline = state.configBaseline || {};
+  const scopeKeys = { extensions: ["extensions"], trunk: ["trunk", "trunks", "inboundRoutes", "outbound"], queues: ["queues", "ringGroups", "ivr", "inboundRoutes", "businessHours"], routing: ["inboundRoutes", "outbound", "outboundRules", "extensions"], security: ["security", "businessHours"] };
   const sections = Object.fromEntries(
     CONFIG_SECTION_KEYS
+      .filter((key) => !scopeKeys[scope] || scopeKeys[scope].includes(key))
       .filter((key) => JSON.stringify(state.config?.[key]) !== JSON.stringify(baseline?.[key]))
       .map((key) => [key, state.config[key]])
   );
@@ -6250,6 +6279,8 @@ async function saveConfig() {
     return;
   }
 
+  const submitted = JSON.parse(JSON.stringify(state.config));
+  state.configSaving = true;
   setConfigSaveBusy(true);
   setMessage("Validando e aplicando somente os modulos alterados...");
   try {
@@ -6261,12 +6292,17 @@ async function saveConfig() {
         sections
       })
     });
-    state.config = applyResponse.config;
+    collectConfig();
+    const drafts = Object.fromEntries(CONFIG_SECTION_KEYS
+      .filter((key) => JSON.stringify(state.config[key]) !== JSON.stringify(submitted[key]) || (!Object.hasOwn(sections, key) && JSON.stringify(state.config[key]) !== JSON.stringify(baseline[key])))
+      .map((key) => [key, state.config[key]]));
+    state.config = { ...applyResponse.config, ...drafts };
     state.configBaseline = JSON.parse(JSON.stringify(applyResponse.config));
     const detail = applyResponse.reloaded ? "salva e aplicada ao Asterisk" : "salva; o Asterisk ja estava atualizado";
     const elapsed = Number(applyResponse.durationMs) > 0 ? ` em ${(Number(applyResponse.durationMs) / 1000).toFixed(1)}s` : "";
     setMessage(`Configuracao ${detail}${elapsed}.`, "ok");
   } finally {
+    state.configSaving = false;
     setConfigSaveBusy(false);
   }
 }
@@ -7344,8 +7380,8 @@ document.addEventListener("click", async (event) => {
       return;
     }
 
-    if (event.target.closest("#saveBtn")) {
-      await saveConfig();
+    if (event.target.closest("#saveBtn, [data-save-config]")) {
+      await saveConfig(event.target.closest("[data-save-config]")?.dataset.saveConfig || "");
       return;
     }
 

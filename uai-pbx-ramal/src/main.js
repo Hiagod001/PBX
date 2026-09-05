@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, Notification } = require("electron");
+const { app, BrowserWindow, ipcMain, session, Notification, powerMonitor } = require("electron");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { spawn } = require("node:child_process");
@@ -7,6 +7,7 @@ const fs = require("node:fs");
 const PBX_URL = process.env.UAI_PBX_URL || "https://uaipbx.uaitelecom.com.br";
 const APP_PARTITION = "persist:uai-pbx-ramal";
 const VALID_TONES = new Set(["ringtone", "ringing"]);
+if (process.env.UAI_PBX_TEST_USER_DATA) app.setPath("userData", path.resolve(process.env.UAI_PBX_TEST_USER_DATA));
 
 const singleInstanceLock = app.requestSingleInstanceLock();
 if (!singleInstanceLock) {
@@ -67,6 +68,7 @@ function apiUrl(route) {
 async function pbxFetch(route, options = {}) {
   const response = await operatorSession().fetch(apiUrl(route), {
     cache: "no-store",
+    signal: AbortSignal.timeout(20000),
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -75,6 +77,10 @@ async function pbxFetch(route, options = {}) {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401 && currentExtension) {
+      currentExtension = null;
+      mainWindow?.webContents.send("app:session-expired");
+    }
     const error = new Error(data.error || "Falha na requisicao");
     error.status = response.status;
     error.data = data;
@@ -166,13 +172,13 @@ function startTone(name) {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 360,
-    height: 610,
+    width: 400,
+    height: 760,
     minWidth: 320,
     minHeight: 520,
     title: "UAI PBX Ramal",
     icon: appIconPath(),
-    backgroundColor: "#0b1119",
+    backgroundColor: "#18181b",
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -246,7 +252,7 @@ ipcMain.handle("app:incoming-call", async (_event, payload) => {
       title: "Chamada recebida",
       body: `${number} no ramal ${currentExtension?.number || ""}`.trim(),
       icon: appIconPath(),
-      silent: false
+      silent: true
     });
     notification.on("click", () => {
       if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -352,6 +358,8 @@ app.whenReady().then(async () => {
   app.setAppUserModelId("br.com.uaitelecom.uaipbxramal");
   await resetRamalSession();
   createWindow();
+  powerMonitor.on("resume", () => mainWindow?.webContents.send("app:resume"));
+  powerMonitor.on("unlock-screen", () => mainWindow?.webContents.send("app:resume"));
   if (requestedToneTest()) runToneTest();
 });
 
