@@ -4,6 +4,10 @@ const assert = require("node:assert/strict");
 const { defaultConfig } = require("../src/store");
 const { renderPjsip, renderExtensions, renderQueues, renderModules } = require("../src/asterisk");
 
+test("supervision context parser remains loaded after restart", () => {
+  assert.match(renderModules(), /load = func_cut\.so/);
+});
+
 function queueConfig() {
   const config = structuredClone(defaultConfig);
   config.extensions = [{ ...config.extensions[0], number: "505", name: "Operador" }];

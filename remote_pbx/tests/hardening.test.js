@@ -69,7 +69,7 @@ test("recording path rejects Asterisk delimiters and traversal", () => {
 
 test("generated recording filename uses only server-controlled unique id", () => {
   const dialplan = renderExtensions(structuredClone(defaultConfig));
-  const recordingLine = dialplan.split("\n").find((line) => line.includes("Set(RECORDING_FILE="));
+  const recordingLine = dialplan.split("\n").find((line) => line.includes("Set(__RECORDING_FILE="));
   assert.match(recordingLine, /FILTER\(0-9A-Za-z_,\$\{UNIQUEID\}\)/);
   assert.doesNotMatch(recordingLine, /ARG1|ARG2/);
 });

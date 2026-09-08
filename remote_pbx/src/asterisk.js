@@ -723,12 +723,30 @@ function renderExtensions(config) {
   lines.push("exten => s,1,NoOp(Gravacao condicional)");
   if (config.recording.enabled) {
     lines.push(' same => n,GotoIf($["${RECORDING_FILE}"!=""]?done)');
-    lines.push(` same => n,Set(RECORDING_FILE=\${STRFTIME(\${EPOCH},,%Y%m%d-%H%M%S)}-\${FILTER(0-9A-Za-z_,\${UNIQUEID})}.${clean(config.recording.format)})`);
+    lines.push(` same => n,Set(__RECORDING_FILE=\${STRFTIME(\${EPOCH},,%Y%m%d-%H%M%S)}-\${FILTER(0-9A-Za-z_,\${UNIQUEID})}.${clean(config.recording.format)})`);
     lines.push(" same => n,Set(CDR(recordingfile)=${RECORDING_FILE})");
-    lines.push(` same => n,MixMonitor(${clean(config.recording.path)}/\${RECORDING_FILE},b)`);
+    // Continuous capture and completion timestamps align supervisor audio across holds.
+    lines.push(` same => n,MixMonitor(${clean(config.recording.path)}/\${RECORDING_FILE},,/bin/date +%s%3N > ${clean(config.recording.path)}/\${RECORDING_FILE}.end)`);
   }
   lines.push(" same => n(done),NoOp(Gravacao pronta: ${RECORDING_FILE})");
   lines.push(" same => n,Return()");
+
+  // This context is not included by any phone or trunk context. Only the trusted
+  // originate helper supplies a one-use random token and validated parameters.
+  lines.push("", "[pbx-supervision]");
+  lines.push("exten => _.,1,Set(PBX_SPY=${DB_DELETE(UAI_SUPERVISION/${EXTEN})})");
+  lines.push(' same => n,GotoIf($["${PBX_SPY}"=""]?done)');
+  lines.push(" same => n,Set(CDR(userfield)=pbx-supervision)");
+  lines.push(" same => n,Set(PBX_SPY_TARGET=${CUT(PBX_SPY,|,1)})");
+  lines.push(" same => n,Set(PBX_SPY_OPTIONS=${CUT(PBX_SPY,|,2)})");
+  lines.push(" same => n,Set(PBX_SPY_FILE=${CUT(PBX_SPY,|,3)})");
+  if (config.recording.enabled) {
+    lines.push(' same => n,GotoIf($["${PBX_SPY_FILE}"="" | "${PBX_SPY_OPTIONS}"="qubES"]?spy)');
+    lines.push(` same => n,Set(PBX_SPY_AUDIO=${clean(config.recording.path)}/.supervision/\${PBX_SPY_FILE}.spy-\${FILTER(0-9,\${UNIQUEID})}.wav)`);
+    lines.push(" same => n,MixMonitor(,r(${PBX_SPY_AUDIO}),/bin/date +%s%3N > ${PBX_SPY_AUDIO}.end)");
+  }
+  lines.push(" same => n(spy),ChanSpy(PJSIP/${PBX_SPY_TARGET},${PBX_SPY_OPTIONS})");
+  lines.push(" same => n(done),Hangup()");
 
   lines.push("", "; Permissoes de saida aplicadas por contexto de ramal.");
   config.extensions.forEach((ext) => {
@@ -909,6 +927,7 @@ function renderModules() {
     "load = format_wav.so",
     "load = func_callerid.so",
     "load = func_cdr.so",
+    "load = func_cut.so",
     "load = func_db.so",
     "load = func_devstate.so",
     "load = func_pjsip_endpoint.so",

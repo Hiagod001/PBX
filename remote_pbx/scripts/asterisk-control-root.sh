@@ -117,7 +117,14 @@ case "$ACTION" in
       echo "Navegador do monitor nao registrado." >&2
       exit 3
     fi
-    /usr/sbin/asterisk -rx "channel originate PJSIP/${LISTENER}/${CONTACT_URI} application ChanSpy PJSIP/${TARGET},${SPY_OPTIONS}"
+    RECORDING="$(/usr/sbin/asterisk -rx "core show channel PJSIP/${TARGET}" | sed -nE 's/^[[:space:]]*_?_*RECORDING_FILE=([0-9A-Za-z_.-]+)$/\1/p' | head -n 1)"
+    if [[ -n "$RECORDING" && ! "$RECORDING" =~ ^[0-9]{8}-[0-9]{6}-[0-9A-Za-z_]+\.(wav|gsm|mp3)$ ]]; then
+      echo "Referencia de gravacao invalida." >&2
+      exit 3
+    fi
+    TOKEN="$(tr -d '-' < /proc/sys/kernel/random/uuid)"
+    /usr/sbin/asterisk -rx "database put UAI_SUPERVISION ${TOKEN} ${TARGET}|${SPY_OPTIONS}|${RECORDING}" >/dev/null
+    /usr/sbin/asterisk -rx "channel originate PJSIP/${LISTENER}/${CONTACT_URI} extension ${TOKEN}@pbx-supervision"
     ;;
   originate)
     TARGET="$(printf '%s' "${VALUE:-}" | tr -cd '[:digit:]#*')"

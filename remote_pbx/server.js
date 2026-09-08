@@ -40,6 +40,7 @@ const port = Number(process.env.PORT) || 3090;
 const host = process.env.HOST || (process.env.NODE_ENV === "production" ? "127.0.0.1" : "0.0.0.0");
 const playbackAudioExtensions = new Set([".wav", ".gsm", ".ulaw", ".alaw", ".sln16", ".mp3"]);
 const browserRecordingExtensions = new Set([".wav", ".mp3", ".gsm"]);
+const { isSupervisionCall, unifiedRecording } = require("./src/supervision-recording");
 const extensionPresence = new Map();
 const extensionIdleSince = new Map();
 const protocolCounterPath = path.join(__dirname, "data", "call-protocol.json");
@@ -2463,7 +2464,7 @@ function mergeReportCallLegs(primary, secondary) {
 function collapseReportCallLegs(calls) {
   const groups = new Map();
 
-  calls.forEach((call) => {
+  calls.filter((call) => !isSupervisionCall(call)).forEach((call) => {
     const key = reportCallGroupKey(call);
     if (!key) {
       groups.set(`single:${call.id}`, [call]);
@@ -2551,7 +2552,7 @@ async function buildRecordingIndexFresh(config) {
     const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
     await Promise.all(entries.map(async (entry) => {
       const fullPath = path.join(directory, entry.name);
-      if (entry.isDirectory()) return walk(fullPath, depth + 1);
+      if (entry.isDirectory()) return entry.name === ".supervision" ? undefined : walk(fullPath, depth + 1);
       const extension = path.extname(entry.name).toLowerCase();
       if (browserRecordingExtensions.has(extension)) files.push({ name: entry.name, path: fullPath, extension });
     }));
@@ -4224,8 +4225,9 @@ app.get("/api/pbx/recordings/:uniqueid/play", requireAuth, async (req, res) => {
   if (!scope.canListen) return res.status(403).json({ error: "Sem permissao para escutar gravacoes" });
   if (!call.recordingPath || !(await fs.pathExists(call.recordingPath))) return res.status(404).json({ error: "Gravacao nao encontrada" });
   await writeAuditEvent(req, call, "listen");
-  res.type(path.extname(call.recordingPath).toLowerCase() === ".mp3" ? "audio/mpeg" : "audio/wav");
-  res.sendFile(call.recordingPath);
+  const audioPath = await unifiedRecording(call.recordingPath, path.join(__dirname, "data", "recording-mixes"));
+  res.type(path.extname(audioPath).toLowerCase() === ".mp3" ? "audio/mpeg" : "audio/wav");
+  res.sendFile(audioPath);
 });
 
 app.get("/api/pbx/recordings/:uniqueid/download", requireAuth, async (req, res) => {
@@ -4235,7 +4237,9 @@ app.get("/api/pbx/recordings/:uniqueid/download", requireAuth, async (req, res) 
   if (!scope.canDownload) return res.status(403).json({ error: "Sem permissao para baixar gravacoes" });
   if (!call.recordingPath || !(await fs.pathExists(call.recordingPath))) return res.status(404).json({ error: "Gravacao nao encontrada" });
   await writeAuditEvent(req, call, "download");
-  res.download(call.recordingPath, recordingDownloadName(call));
+  const audioPath = await unifiedRecording(call.recordingPath, path.join(__dirname, "data", "recording-mixes"));
+  const downloadName = audioPath === call.recordingPath ? recordingDownloadName(call) : recordingDownloadName({ ...call, recordingPath: audioPath });
+  res.download(audioPath, downloadName);
 });
 
 app.get("/api/pbx/reports/export/csv", requireAuth, async (req, res) => {
@@ -4563,6 +4567,7 @@ module.exports = {
   app,
   startServer,
   _test: {
+    collapseReportCallLegs,
     spyEndpointForMonitor,
     configForUser,
     configRevision,

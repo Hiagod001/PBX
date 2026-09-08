@@ -115,7 +115,7 @@ if [ "$FAIL2BAN_CHANGED" -eq 1 ]; then
   install -m 0644 "$GENERATED_DIR/fail2ban-asterisk.local" /etc/fail2ban/jail.d/asterisk.local
 fi
 
-mkdir -p /var/spool/asterisk/monitor /var/spool/asterisk/outgoing_done /var/log/asterisk/cdr-custom "${ASTERISK_SOUND_DIRS[@]}"
+mkdir -p /var/spool/asterisk/monitor/.supervision /var/spool/asterisk/outgoing_done /var/log/asterisk/cdr-custom "${ASTERISK_SOUND_DIRS[@]}"
 if compgen -G "$IVR_AUDIO_DIR/*" > /dev/null; then
   for sound_dir in "${ASTERISK_SOUND_DIRS[@]}"; do
     for audio_file in "$IVR_AUDIO_DIR"/*; do
