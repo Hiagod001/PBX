@@ -15,10 +15,10 @@ function section(name, body) {
 }
 
 function destinationDialplan(type, destination) {
+  if (!destination || type === "none" || type === "voicemail") return "Hangup()";
   if (type === "extension" && clean(destination) === "700") return "Goto(internal,700,1)";
   if (type === "queue") return `Gosub(queue-${clean(destination)},s,1)`;
   if (type === "ringGroup") return `Gosub(ringgroup-${clean(destination)},s,1)`;
-  if (type === "voicemail") return `VoiceMail(${clean(destination)}@default,u)`;
   if (type === "ivr") return `Goto(ivr-${clean(destination)},s,1)`;
   if (type === "trunk") return `Goto(inbound-route-trunk-${clean(destination)},s,1)`;
   if (type === "timeCondition") return `Goto(time-condition-${clean(destination)},s,1)`;
@@ -87,10 +87,38 @@ function queueDialNumber(queue, index = 0) {
   return clean(queue.number || queue.extension || (600 + index));
 }
 
+function queueMaxWait(queue) {
+  return Math.min(Math.max(Number(queue.maxWait) || 300, 1), 86400);
+}
+
+function finalDestinationDialplan(item) {
+  return destinationDialplan(item.fallbackType || (item.fallback ? "extension" : "none"), item.fallback);
+}
+
+function renderInboundDispatch(lines, config, context, id, fallbackContext) {
+  const firstTrunkId = trunkId(configuredTrunks(config)[0]);
+  const routes = (config.inboundRoutes || []).filter((route) => route.active !== false && (route.trunkId || firstTrunkId) === id);
+  const defaultRoute = routes.find((route) => !clean(route.did));
+  const fallback = defaultRoute && !(defaultRoute.id === "main" && !defaultRoute.trunkId) ? `inbound-route-${clean(defaultRoute.id)}` : fallbackContext;
+  lines.push("", `[${context}]`);
+  routes.filter((route) => clean(route.did)).forEach((route) => {
+    const target = route.id === "main" && !route.trunkId ? fallbackContext : `inbound-route-${clean(route.id)}`;
+    lines.push(`exten => ${clean(route.did)},1,Set(__INBOUND_DID=\${EXTEN})`);
+    lines.push(` same => n,Goto(${target},s,1)`);
+  });
+  ["s", "_X!", "_+X!"].forEach((pattern) => {
+    lines.push(`exten => ${pattern},1,Set(__INBOUND_DID=\${EXTEN})`);
+    lines.push(` same => n,Goto(${fallback},s,1)`);
+  });
+}
+
 function renderIvrContext(lines, config, menu, contextId, { answer = false } = {}) {
-  const ivrResponseTimeout = Math.min(Math.max(Number(config.ivr.timeoutSeconds) || 20, 5), 60);
-  const ivrMaxAttempts = Math.min(Math.max(Number(config.ivr.menuRepeat) || 3, 1), 10);
+  const ivrResponseTimeout = Math.min(Math.max(Number(menu.timeoutSeconds ?? config.ivr.timeoutSeconds) || 20, 5), 60);
+  const ivrMaxAttempts = Math.min(Math.max(Number(menu.menuRepeat ?? config.ivr.menuRepeat) || 3, 1), 10);
+  const timeoutAudio = menu.timeoutAudio === undefined ? config.ivr.timeoutAudio : menu.timeoutAudio;
+  const invalidAudio = menu.invalidAudio === undefined ? config.ivr.invalidAudio : menu.invalidAudio;
   const contextName = `ivr-${clean(contextId || "main")}`;
+  const cdrMenuId = clean(contextId || "main");
 
   lines.push("", `[${contextName}]`);
   lines.push(`exten => s,1,NoOp(URA ${clean(menu.name || contextId || "main")})`);
@@ -119,11 +147,12 @@ function renderIvrContext(lines, config, menu, contextId, { answer = false } = {
   lines.push("exten => audio-failed,1,NoOp(Audio da URA nao foi reproduzido)");
   lines.push(` same => n,WaitExten(${ivrResponseTimeout})`);
   lines.push(" same => n,Goto(t,1)");
-  if (config.ivr.allowDirectDial) {
+  if (menu.allowDirectDial ?? config.ivr.allowDirectDial) {
     lines.push("include => internal");
   }
   (menu.options || []).filter((option) => clean(option.digit) && clean(option.destination)).forEach((option) => {
     lines.push(`exten => ${clean(option.digit)},1,NoOp(URA ${clean(option.label)})`);
+    lines.push(` same => n,Set(CDR(userfield)=ivr:${cdrMenuId}:${clean(option.digit)})`);
     if (clean(option.announcement)) {
       lines.push(` same => n,Playback(${clean(option.announcement)})`);
     }
@@ -132,16 +161,19 @@ function renderIvrContext(lines, config, menu, contextId, { answer = false } = {
     lines.push(" same => n,Hangup()");
   });
   lines.push("exten => t,1,NoOp(URA timeout)");
-  if (clean(config.ivr.timeoutAudio)) {
-    lines.push(` same => n,Playback(${clean(config.ivr.timeoutAudio)})`);
+  lines.push(` same => n,Set(CDR(userfield)=ivr:${cdrMenuId}:timeout)`);
+  if (clean(timeoutAudio)) {
+    lines.push(` same => n,Playback(${clean(timeoutAudio)})`);
   }
   lines.push(` same => n,Goto(${contextName},s,prompt)`);
   lines.push("exten => i,1,NoOp(URA invalida)");
-  if (clean(config.ivr.invalidAudio)) {
-    lines.push(` same => n,Playback(${clean(config.ivr.invalidAudio)})`);
+  lines.push(` same => n,Set(CDR(userfield)=ivr:${cdrMenuId}:invalid)`);
+  if (clean(invalidAudio)) {
+    lines.push(` same => n,Playback(${clean(invalidAudio)})`);
   }
   lines.push(` same => n,Goto(${contextName},s,prompt)`);
   lines.push("exten => maxattempts,1,NoOp(URA encerrada apos tentativas sem opcao valida)");
+  lines.push(` same => n,Set(CDR(userfield)=ivr:${cdrMenuId}:maxattempts)`);
   lines.push(" same => n,Hangup()");
 }
 
@@ -187,6 +219,7 @@ function renderInboundDestinationContext(lines, config, contextId, routeName, tr
   lines.push(`exten => s,1,NoOp(${clean(routeName || `Entrada ${safeContextId}`)})`);
   lines.push(" same => n,Set(CDR(direction)=inbound)");
   lines.push(` same => n,Set(CDR(did)=${clean(did || "s")})`);
+  lines.push(' same => n,ExecIf($["${INBOUND_DID}"!="" & "${INBOUND_DID}"!="s"]?Set(CDR(did)=${INBOUND_DID}))');
   lines.push(` same => n,Set(CDR(trunk)=${clean(trunkName || "trunk-operadora")})`);
   lines.push(" same => n,Gosub(record-call,s,1(${CALLERID(num)},${CDR(did)}))");
   if (config.businessHours.enabled) {
@@ -222,8 +255,7 @@ function renderDialerContext(lines) {
   lines.push(" same => n,GotoIf($[\"${DIALER_DEST_TYPE}\"=\"queue\"]?queue)");
   lines.push(" same => n,GotoIf($[\"${DIALER_DEST_TYPE}\"=\"extension\"]?extension)");
   lines.push(" same => n,Hangup()");
-  lines.push(" same => n(queue),Set(CDR(queue)=${DIALER_DESTINATION})");
-  lines.push(" same => n,Queue(${DIALER_DESTINATION},tT)");
+  lines.push(" same => n(queue),Gosub(queue-${DIALER_DESTINATION},s,1)");
   lines.push(" same => n,Hangup()");
   lines.push(" same => n(extension),Dial(${PJSIP_DIAL_CONTACTS(${DIALER_DESTINATION})}&${PJSIP_DIAL_CONTACTS(web-${DIALER_DESTINATION})},60,tT)");
   lines.push(" same => n,Hangup()");
@@ -526,7 +558,6 @@ function renderExtensions(config) {
     " same => n,Set(CDR(direction)=internal)",
     " same => n,Gosub(record-call,s,1(${CALLERID(num)},${EXTEN}))",
     " same => n,Dial(${PJSIP_DIAL_CONTACTS(${EXTEN})}&${PJSIP_DIAL_CONTACTS(web-${EXTEN})},60,tT)",
-    " same => n,VoiceMail(${EXTEN}@default,u)",
     " same => n,Hangup()"
   ];
 
@@ -535,7 +566,6 @@ function renderExtensions(config) {
     lines.push(" same => n,Set(CDR(direction)=internal)");
     lines.push(` same => n,Gosub(record-call,s,1(\${CALLERID(num)},${clean(ext.number)}))`);
     lines.push(` same => n,Dial(${extensionContactExpression(ext.number)},60,tT)`);
-    lines.push(` same => n,VoiceMail(${clean(ext.number)}@default,u)`);
     lines.push(" same => n,Hangup()");
   });
 
@@ -598,20 +628,18 @@ function renderExtensions(config) {
   });
 
   lines.push("", "[inbound-trunk]");
-  lines.push("exten => s,1,Goto(inbound-route-main,s,1)");
-  config.inboundRoutes.forEach((route) => {
-    if (!route.did) return;
-    lines.push(`exten => ${clean(route.did)},1,Goto(inbound-route-${clean(route.id)},s,1)`);
+  const firstInboundTrunk = trunkId(configuredTrunks(config)[0]);
+  ["s", "_X!", "_+X!"].forEach((pattern) => {
+    lines.push(`exten => ${pattern},1,Goto(inbound-trunk-${firstInboundTrunk},\${EXTEN},1)`);
   });
-  lines.push("exten => _X.,1,Goto(inbound-route-main,s,1)");
 
-  config.inboundRoutes.forEach((route) => {
+  config.inboundRoutes.filter((route) => route.active !== false).forEach((route) => {
     renderInboundDestinationContext(
       lines,
       config,
       route.id,
       route.name,
-      route.trunkId || "trunk-operadora",
+      route.trunkId || firstInboundTrunk,
       route.did || config.trunk.mainNumber || "s",
       route.destinationType,
       route.destination
@@ -624,14 +652,7 @@ function renderExtensions(config) {
       const id = trunkId(trunk, index);
       const inbound = inboundDestinationForTrunk(config, trunk, index);
       const contextId = `trunk-${id}`;
-      if (trunk.sipServer) {
-        lines.push("", `[inbound-trunk-${id}]`);
-        lines.push(`exten => s,1,Goto(inbound-route-${contextId},s,1)`);
-        if (clean(inbound.did) && clean(inbound.did) !== "s") {
-          lines.push(`exten => ${clean(inbound.did)},1,Goto(inbound-route-${contextId},s,1)`);
-        }
-        lines.push(`exten => _X.,1,Goto(inbound-route-${contextId},s,1)`);
-      }
+      renderInboundDispatch(lines, config, `inbound-trunk-${id}`, id, `inbound-route-${contextId}`);
       renderInboundDestinationContext(
         lines,
         config,
@@ -644,7 +665,7 @@ function renderExtensions(config) {
       );
     });
 
-  if (!config.inboundRoutes.some((route) => route.id === "main")) {
+  if (!config.inboundRoutes.some((route) => route.id === "main" && route.active !== false)) {
     lines.push("", "[inbound-route-main]");
     lines.push("exten => s,1,Goto(ivr-main,s,1)");
     lines.push(" same => n,Hangup()");
@@ -670,18 +691,22 @@ function renderExtensions(config) {
 
   lines.push("", "[queue-member]");
   lines.push("exten => _X!,1,NoOp(Membro de fila ${EXTEN} chamado por ${CALLERID(num)})");
+  lines.push(' same => n,GotoIf($["${DB(UAI_PAUSED/${EXTEN})}"="1"]?paused)');
   lines.push(' same => n,GotoIf($["${CALLERID(num)}"="${EXTEN}"]?self)');
   lines.push(" same => n,Dial(${PJSIP_DIAL_CONTACTS(${EXTEN})}&${PJSIP_DIAL_CONTACTS(web-${EXTEN})},30,tT)");
   lines.push(" same => n,Hangup()");
   lines.push(" same => n(self),NoOp(Ignorando chamada da fila para o proprio ramal ${EXTEN})");
   lines.push(" same => n,Hangup(21)");
+  lines.push(" same => n(paused),NoOp(Ramal pausado)");
+  lines.push(" same => n,Hangup(21)");
 
   config.ringGroups.forEach((group) => {
     const members = group.members.map((member) => extensionContactExpression(member)).join("&");
+    const timeout = Math.min(Math.max(Number(group.timeout) || 25, 5), 300);
     lines.push("", `[ringgroup-${clean(group.id)}]`);
     lines.push("exten => s,1,NoOp(" + clean(group.name) + ")");
-    lines.push(` same => n,Dial(${members},${Math.max(Number(group.timeout) || 25, 60)},tT)`);
-    lines.push(` same => n,${destinationDialplan("extension", group.fallback)}`);
+    lines.push(` same => n,Dial(${members},${timeout},tT)`);
+    lines.push(` same => n,${finalDestinationDialplan(group)}`);
     lines.push(" same => n,Return()");
   });
 
@@ -689,8 +714,8 @@ function renderExtensions(config) {
     lines.push("", `[queue-${clean(queue.id)}]`);
     lines.push(`exten => s,1,NoOp(Fila ${clean(queue.name || queue.id)})`);
     lines.push(` same => n,Set(CDR(queue)=${clean(queue.id)})`);
-    lines.push(` same => n,Queue(${clean(queue.id)},tT)`);
-    lines.push(` same => n,${destinationDialplan("extension", queue.fallback)}`);
+    lines.push(` same => n,Queue(${clean(queue.id)},tT,,,${queueMaxWait(queue)})`);
+    lines.push(` same => n,${finalDestinationDialplan(queue)}`);
     lines.push(" same => n,Return()");
   });
 
@@ -698,12 +723,30 @@ function renderExtensions(config) {
   lines.push("exten => s,1,NoOp(Gravacao condicional)");
   if (config.recording.enabled) {
     lines.push(' same => n,GotoIf($["${RECORDING_FILE}"!=""]?done)');
-    lines.push(` same => n,Set(RECORDING_FILE=\${STRFTIME(\${EPOCH},,%Y%m%d-%H%M%S)}-\${FILTER(0-9A-Za-z_,\${UNIQUEID})}.${clean(config.recording.format)})`);
+    lines.push(` same => n,Set(__RECORDING_FILE=\${STRFTIME(\${EPOCH},,%Y%m%d-%H%M%S)}-\${FILTER(0-9A-Za-z_,\${UNIQUEID})}.${clean(config.recording.format)})`);
     lines.push(" same => n,Set(CDR(recordingfile)=${RECORDING_FILE})");
-    lines.push(` same => n,MixMonitor(${clean(config.recording.path)}/\${RECORDING_FILE},b)`);
+    // Continuous capture and completion timestamps align supervisor audio across holds.
+    lines.push(` same => n,MixMonitor(${clean(config.recording.path)}/\${RECORDING_FILE},,/bin/date +%s%3N > ${clean(config.recording.path)}/\${RECORDING_FILE}.end)`);
   }
   lines.push(" same => n(done),NoOp(Gravacao pronta: ${RECORDING_FILE})");
   lines.push(" same => n,Return()");
+
+  // This context is not included by any phone or trunk context. Only the trusted
+  // originate helper supplies a one-use random token and validated parameters.
+  lines.push("", "[pbx-supervision]");
+  lines.push("exten => _.,1,Set(PBX_SPY=${DB_DELETE(UAI_SUPERVISION/${EXTEN})})");
+  lines.push(' same => n,GotoIf($["${PBX_SPY}"=""]?done)');
+  lines.push(" same => n,Set(CDR(userfield)=pbx-supervision)");
+  lines.push(" same => n,Set(PBX_SPY_TARGET=${CUT(PBX_SPY,|,1)})");
+  lines.push(" same => n,Set(PBX_SPY_OPTIONS=${CUT(PBX_SPY,|,2)})");
+  lines.push(" same => n,Set(PBX_SPY_FILE=${CUT(PBX_SPY,|,3)})");
+  if (config.recording.enabled) {
+    lines.push(' same => n,GotoIf($["${PBX_SPY_FILE}"="" | "${PBX_SPY_OPTIONS}"="qubES"]?spy)');
+    lines.push(` same => n,Set(PBX_SPY_AUDIO=${clean(config.recording.path)}/.supervision/\${PBX_SPY_FILE}.spy-\${FILTER(0-9,\${UNIQUEID})}.wav)`);
+    lines.push(" same => n,MixMonitor(,r(${PBX_SPY_AUDIO}),/bin/date +%s%3N > ${PBX_SPY_AUDIO}.end)");
+  }
+  lines.push(" same => n(spy),ChanSpy(PJSIP/${PBX_SPY_TARGET},${PBX_SPY_OPTIONS})");
+  lines.push(" same => n(done),Hangup()");
 
   lines.push("", "; Permissoes de saida aplicadas por contexto de ramal.");
   config.extensions.forEach((ext) => {
@@ -737,13 +780,7 @@ function renderQueues(config) {
 }
 
 function renderVoicemail(config) {
-  const lines = ["[general]", "format=wav49|gsm|wav", "serveremail=asterisk", "attach=yes", "", "[default]"];
-  config.extensions.forEach((ext) => {
-    if (ext.voicemail) {
-      lines.push(`${clean(ext.number)} => ${clean(config.voicemail.defaultPin)},${clean(ext.name)},${clean(ext.number)}@${clean(config.voicemail.emailDomain)}`);
-    }
-  });
-  return lines.join("\n") + "\n";
+  return "; Caixa postal desativada neste PBX.\n[general]\n[default]\n";
 }
 
 function cdrField(name) {
@@ -864,7 +901,7 @@ function renderModules() {
     "load = app_stack.so",
     "load = app_userevent.so",
     "load = app_verbose.so",
-    "load = app_voicemail.so",
+    "noload = app_voicemail.so",
     "load = app_queue.so",
     "load = app_mixmonitor.so",
     "load = app_readexten.so",
@@ -890,6 +927,7 @@ function renderModules() {
     "load = format_wav.so",
     "load = func_callerid.so",
     "load = func_cdr.so",
+    "load = func_cut.so",
     "load = func_db.so",
     "load = func_devstate.so",
     "load = func_pjsip_endpoint.so",

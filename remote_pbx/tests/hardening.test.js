@@ -7,7 +7,7 @@ const { defaultConfig, normalizeConfig } = require("../src/store");
 const { renderExtensions } = require("../src/asterisk");
 const { validateConfig } = require("../src/validation");
 const { monitorSipPassword } = require("../src/runtime-secrets");
-const { _test } = require("../server");
+const { app, _test } = require("../server");
 
 function reportConfig() {
   const config = structuredClone(defaultConfig);
@@ -69,7 +69,7 @@ test("recording path rejects Asterisk delimiters and traversal", () => {
 
 test("generated recording filename uses only server-controlled unique id", () => {
   const dialplan = renderExtensions(structuredClone(defaultConfig));
-  const recordingLine = dialplan.split("\n").find((line) => line.includes("Set(RECORDING_FILE="));
+  const recordingLine = dialplan.split("\n").find((line) => line.includes("Set(__RECORDING_FILE="));
   assert.match(recordingLine, /FILTER\(0-9A-Za-z_,\$\{UNIQUEID\}\)/);
   assert.doesNotMatch(recordingLine, /ARG1|ARG2/);
 });
@@ -123,7 +123,7 @@ test("configuration save and apply use one serialized endpoint", () => {
   assert.match(serverSource, /await saveConfig\(previous\)\.catch/);
   assert.match(appSource, /method: "PATCH"/);
   assert.match(appSource, /_sectionRevisions/);
-  assert.doesNotMatch(appSource.match(/async function saveConfig\(\)[\s\S]*?\n}\n/)[0], /renderAll\(\)/);
+  assert.doesNotMatch(appSource.match(/async function saveConfig\([^)]*\)[\s\S]*?\n}\n/)[0], /renderAll\(\)/);
 });
 
 test("independent configuration sections can be merged without overwriting other modules", () => {
@@ -168,4 +168,37 @@ test("Asterisk apply is cross-process locked and skips unchanged files and audio
 test("standalone Asterisk generator loads production environment secrets", () => {
   const generator = fs.readFileSync(path.join(__dirname, "..", "scripts", "generate-configs.js"), "utf8");
   assert.match(generator, /require\("dotenv"\)\.config\(\)/);
+});
+
+test("IVR outcomes are parsed without confusing dialer metadata", () => {
+  assert.deepEqual(_test.parseIvrOutcome("ivr:main:3"), { menu: "main", option: "3" });
+  assert.deepEqual(_test.parseIvrOutcome("ivr:financeiro:timeout"), { menu: "financeiro", option: "timeout" });
+  assert.deepEqual(_test.parseIvrOutcome("dialer:attempt:accepted:3199999999"), { menu: "", option: "" });
+});
+
+test("only known frontend paths are eligible for the SPA shell", () => {
+  assert.equal(_test.spaRoutes.has("/resume"), true);
+  assert.equal(_test.spaRoutes.has("/ura"), true);
+  assert.equal(_test.spaRoutes.has("/.env"), false);
+  assert.equal(_test.spaRoutes.has("/phpinfo.php"), false);
+});
+
+test("unknown pages and APIs return 404 instead of the frontend shell", async () => {
+  const listener = await new Promise((resolve) => {
+    const server = app.listen(0, "127.0.0.1", () => resolve(server));
+  });
+  const { port } = listener.address();
+  try {
+    const [known, unknown, unknownApi] = await Promise.all([
+      fetch(`http://127.0.0.1:${port}/resume`),
+      fetch(`http://127.0.0.1:${port}/.env`),
+      fetch(`http://127.0.0.1:${port}/api/nao-existe`)
+    ]);
+    assert.equal(known.status, 200);
+    assert.match(known.headers.get("content-type") || "", /text\/html/);
+    assert.equal(unknown.status, 404);
+    assert.equal(unknownApi.status, 404);
+  } finally {
+    await new Promise((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
+  }
 });

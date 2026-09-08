@@ -363,13 +363,6 @@ const dialGroupOptions = ["PADRAO", "RECEPCAO", "GERAL", "GESTAO", "SUPORTE"];
 const pickupGroupOptions = ["-", "RECEPCAO", "GERAL", "SUPORTE"];
 const costCenterOptions = ["Padrao", "Recepcao", "Financeiro", "Comercial", "Suporte", "Diretoria"];
 const departmentOptions = ["Recepcao", "Financeiro", "Comercial", "Suporte", "Diretoria", "Geral"];
-const timeoutDestinationOptions = [
-  ["201", "201 Recepcao"],
-  ["202", "202 Financeiro"],
-  ["203", "203 Comercial"],
-  ["204", "204 Suporte"],
-  ["205", "205 Diretoria"]
-];
 
 function $(selector, root = document) {
   return root.querySelector(selector);
@@ -442,6 +435,7 @@ function renderSurfaceInBackground(root, render) {
 }
 
 function iconRefresh() {
+  installLocalSaveActions();
   const lucide = window.lucide;
   if (!lucide?.createIcons || !lucide.icons) return;
   try {
@@ -449,6 +443,27 @@ function iconRefresh() {
   } catch (error) {
     console.warn("Nao foi possivel atualizar os icones da interface.", error);
   }
+}
+
+function installLocalSaveActions() {
+  if (!state.config || !(state.user?.role === "admin" || state.user?.username === "admin")) return;
+  const surfaces = {
+    extensions: { label: "Salvar ramais", selector: "[data-extension-card]" },
+    trunk: { label: "Salvar troncos", selector: "[data-trunk-card]" },
+    queues: { label: "Salvar filas", selector: ".panel" },
+    routing: { label: "Salvar rotas", selector: ".panel" },
+    security: { label: "Salvar configuracao", selector: ".panel" }
+  };
+  Object.entries(surfaces).forEach(([tab, { label, selector }]) => {
+    if (!pages[tab]) return;
+    $all(selector, pages[tab]).forEach((card) => {
+      if (!card.querySelector("input, select, textarea") || card.querySelector(":scope > .local-save-bar")) return;
+      const bar = document.createElement("div");
+      bar.className = "local-save-bar";
+      bar.innerHTML = `<span class="local-save-status" role="status"></span><button type="button" class="secondary-btn compact" data-save-config="${tab}"><i data-lucide="save"></i>${label}</button>`;
+      card.append(bar);
+    });
+  });
 }
 
 function applyTheme(theme = state.theme) {
@@ -481,6 +496,10 @@ function setMessage(message, tone = "info") {
   const target = $("#statusMessage");
   target.textContent = message || "";
   target.style.color = tone === "ok" ? "var(--green)" : "var(--red-700)";
+  $all(".local-save-status", pages[state.activeTab] || document).forEach((node) => {
+    node.textContent = message || "";
+    node.dataset.tone = tone;
+  });
 }
 
 async function api(path, options = {}) {
@@ -800,11 +819,11 @@ function destinationChoices(selectedType, selectedValue) {
   const cfg = state.config;
   const extensionOptions = [["700", "700 URA principal"], ...cfg.extensions.map((ext) => [ext.number, `${ext.number} ${ext.name}`])];
   const groups = [
+    ["none", "Nenhum", [["", "Sem encaminhamento"]]],
     ["extension", "Ramal", extensionOptions],
-    ["ivr", "URA", [[cfg.ivr.id, cfg.ivr.name]]],
+    ["ivr", "URA", ivrMenuRecords().map((record) => [record.id, record.menu.name || record.id])],
     ["ringGroup", "Grupo", cfg.ringGroups.map((group) => [group.id, group.name])],
     ["queue", "Fila", cfg.queues.map((queue, index) => [queue.id, queueLabel(queue, index)])],
-    ["voicemail", "Voicemail", cfg.extensions.map((ext) => [ext.number, `${ext.number} ${ext.name}`])],
     ["trunk", "Tronco", ensureConfigTrunks().map((trunk) => [trunk.id, trunkLabel(trunk)])]
   ];
   return `
@@ -822,8 +841,9 @@ function destinationChoices(selectedType, selectedValue) {
 
 function destinationLabel(type, value) {
   const cfg = state.config;
+  if (type === "none" || type === "voicemail") return "Nenhum";
   if (type === "extension" && value === "700") return "700 URA principal";
-  if (type === "extension" || type === "voicemail") {
+  if (type === "extension") {
     const ext = cfg.extensions.find((item) => item.number === value);
     return ext ? `${ext.number} ${ext.name}` : value || "Ramal";
   }
@@ -956,7 +976,6 @@ function ivrTargetChoices(selectedType = "extension", selectedValue = "", curren
     ["extension", "Ramal", cfg.extensions.map((ext) => [ext.number, `${ext.number} ${ext.name}`])],
     ["ringGroup", "Grupo", cfg.ringGroups.map((group) => [group.id, group.name])],
     ["queue", "Fila", cfg.queues.map((queue, index) => [queue.id, queueLabel(queue, index)])],
-    ["voicemail", "Voicemail", cfg.extensions.map((ext) => [ext.number, `${ext.number} ${ext.name}`])],
     ["ivr", "Menu URA", menus],
     ["trunk", "Tronco", ensureConfigTrunks().map((trunk) => [trunk.id, trunkLabel(trunk)])],
     ["timeCondition", "Horario", timeConditions]
@@ -980,8 +999,7 @@ function ivrOptionDestinationLabel(item) {
   return destinationLabel(item.destinationType, item.destination);
 }
 
-function ensureIvrLooseOptions() {
-  const ivr = state.config.ivr;
+function ensureIvrLooseOptions(ivr = currentIvrWorkspaceMenu()) {
   ivr.looseOptions = Array.isArray(ivr.looseOptions) ? ivr.looseOptions : [];
   return ivr.looseOptions;
 }
@@ -1023,6 +1041,18 @@ function createIvrRootMenu() {
     greeting: "",
     greetingDescription: "",
     active: true,
+    timeoutAudio: "",
+    invalidAudio: "",
+    timeoutSeconds: 20,
+    menuRepeat: 3,
+    allowDirectDial: false,
+    targetVisibility: "explicit",
+    hideEntryNode: true,
+    looseOptions: [],
+    timeConditions: [],
+    hiddenTargetCards: [],
+    duplicateTargetCards: [],
+    flowLayout: {},
     options: []
   };
 }
@@ -1387,35 +1417,39 @@ function findIvrOptionByNodeId(nodeId) {
     const optionIndex = (menus[menuIndex].options || []).findIndex((item) => item.nodeId === nodeId);
     if (optionIndex >= 0) return { source: "menu", menu: menus[menuIndex], menuKey: String(menuIndex), index: optionIndex, item: menus[menuIndex].options[optionIndex] };
   }
-  const looseOptions = ensureIvrLooseOptions();
-  const looseIndex = looseOptions.findIndex((item) => item.nodeId === nodeId);
-  if (looseIndex >= 0) return { source: "loose", menu: null, menuKey: "", index: looseIndex, item: looseOptions[looseIndex] };
+  for (const record of ivrMenuRecords()) {
+    const looseOptions = ensureIvrLooseOptions(record.menu);
+    const looseIndex = looseOptions.findIndex((item) => item.nodeId === nodeId);
+    if (looseIndex >= 0) return { source: "loose", menu: record.menu, menuKey: record.menuKey, index: looseIndex, item: looseOptions[looseIndex] };
+  }
   return null;
 }
 
 function removeIvrOptionFromCurrentSource(found) {
   if (!found) return null;
-  if (found.source === "loose") return ensureIvrLooseOptions().splice(found.index, 1)[0] || null;
+  if (found.source === "loose") return ensureIvrLooseOptions(found.menu).splice(found.index, 1)[0] || null;
   found.menu.options = found.menu.options || [];
   return found.menu.options.splice(found.index, 1)[0] || null;
 }
 
 function eachIvrOption(callback) {
-  [state.config.ivr, ...ensureIvrMenus(), { options: ensureIvrLooseOptions() }].forEach((menu) => {
-    (menu.options || []).forEach((item) => callback(item));
+  [state.config.ivr, ...ensureIvrMenus()].forEach((menu) => {
+    [...(menu.options || []), ...ensureIvrLooseOptions(menu)].forEach((item) => callback(item));
   });
 }
 
-function clearIvrDestinationLinks(type, value) {
+function clearIvrDestinationLinks(type, value, workspace = null) {
   let removed = 0;
-  eachIvrOption((item) => {
+  const visitOptions = workspace ? (callback) => [...(workspace.options || []), ...ensureIvrLooseOptions(workspace)].forEach(callback) : eachIvrOption;
+  const visitConditions = workspace ? (callback) => ensureIvrTimeConditions(workspace).forEach(callback) : eachIvrTimeCondition;
+  visitOptions((item) => {
     if (item.destinationType === type && item.destination === value) {
       item.destinationType = "";
       item.destination = "";
       removed += 1;
     }
   });
-  eachIvrTimeCondition((condition) => {
+  visitConditions((condition) => {
     if (condition.inDestinationType === type && condition.inDestination === value) {
       condition.inDestinationType = "";
       condition.inDestination = "";
@@ -1432,6 +1466,12 @@ function clearIvrDestinationLinks(type, value) {
 
 function replaceIvrMenuReferences(oldId, nextId = "") {
   if (!oldId) return;
+  ensureIvrMenus().forEach((menu) => {
+    if (menu.parentMenuId === oldId) {
+      if (nextId) menu.parentMenuId = nextId;
+      else delete menu.parentMenuId;
+    }
+  });
   eachIvrOption((item) => {
     if (item.destinationType === "ivr" && item.destination === oldId) {
       item.destination = nextId;
@@ -1459,11 +1499,11 @@ function removeExtensionReferences(number, nextFallback = "") {
   clearIvrDestinationLinks("voicemail", number);
   state.config.queues.forEach((queue) => {
     queue.members = (queue.members || []).filter((member) => member !== number);
-    if (queue.fallback === number) queue.fallback = nextFallback;
+    if (queue.fallbackType !== "queue" && queue.fallback === number) queue.fallback = nextFallback;
   });
   state.config.ringGroups.forEach((group) => {
     group.members = (group.members || []).filter((member) => member !== number);
-    if (group.fallback === number) group.fallback = nextFallback;
+    if (group.fallbackType !== "queue" && group.fallback === number) group.fallback = nextFallback;
   });
   state.config.inboundRoutes.forEach((route) => {
     if (route.destinationType === "extension" && route.destination === number) {
@@ -1482,12 +1522,12 @@ function clearRouteReferences(type, value, fallbackType = "extension", fallbackV
 }
 
 function removeIvrTargetCard(type, value) {
-  const allowedTypes = ["extension", "voicemail", "queue", "ringGroup", "timeCondition", "trunk"];
+  const allowedTypes = ["extension", "queue", "ringGroup", "timeCondition", "trunk"];
   if (!allowedTypes.includes(type)) return { ok: false, message: "Tipo de card nao suportado para exclusao." };
   const hiddenCards = ensureHiddenTargetCards();
   const key = ivrTargetKey(type, value);
   if (!hiddenCards.includes(key)) hiddenCards.push(key);
-  clearIvrDestinationLinks(type, value);
+  clearIvrDestinationLinks(type, value, currentIvrWorkspaceMenu());
   return { ok: true, message: "Card removido da URA sem apagar o recurso do sistema." };
 }
 
@@ -1553,16 +1593,6 @@ function ivrTargetCards() {
       x: 920,
       y: 90 + index * 120
     })),
-    ...cfg.extensions.filter((ext) => ext.voicemail !== false).map((ext, index) => ({
-      key: `voicemail:${ext.number}`,
-      type: "voicemail",
-      value: ext.number,
-      title: `Voicemail ${ext.number}`,
-      subtitle: ext.name || "Caixa postal",
-      icon: "voicemail",
-      x: 1520,
-      y: 90 + index * 120
-    })),
     ...cfg.queues.map((queue, index) => ({
       key: `queue:${queue.id}`,
       type: "queue",
@@ -1619,7 +1649,16 @@ function ivrTargetCards() {
       };
     })
     .filter(Boolean);
-  return [...baseTargets, ...duplicateTargets].filter((target) => !hiddenCards.has(target.key));
+  const workspace = currentIvrWorkspaceMenu();
+  const layout = ensureIvrFlowLayout(workspace);
+  const references = new Set((workspace.options || []).map((item) => ivrTargetCardByDestination(item.destinationType, item.destination)));
+  (workspace.timeConditions || []).forEach((condition) => {
+    references.add(`timeCondition:${condition.id}`);
+    ["in", "out"].forEach((branch) => references.add(ivrTargetCardByDestination(condition[`${branch}DestinationType`], condition[`${branch}Destination`])));
+  });
+  return [...baseTargets, ...duplicateTargets].filter((target) =>
+    !hiddenCards.has(target.key) && (workspace.targetVisibility !== "explicit" || Object.hasOwn(layout, target.key) || references.has(target.key))
+  );
 }
 
 function ivrTargetCardByDestination(type, value) {
@@ -1641,11 +1680,11 @@ function trunkInboundChoices(selectedType = "ivr", selectedValue = "main") {
   }
   const timeConditions = ensureIvrTimeConditions().map((condition) => [condition.id, condition.name || condition.id]);
   const groups = [
+    ["none", "Nenhum", [["", "Sem encaminhamento"]]],
     ["ivr", "URA", menus],
     ["queue", "Fila", cfg.queues.map((queue, index) => [queue.id, queueLabel(queue, index)])],
     ["ringGroup", "Grupo", cfg.ringGroups.map((group) => [group.id, group.name])],
     ["extension", "Ramal", cfg.extensions.map((ext) => [ext.number, `${ext.number} ${ext.name}`])],
-    ["voicemail", "Voicemail", cfg.extensions.map((ext) => [ext.number, `${ext.number} ${ext.name}`])],
     ["timeCondition", "Horario", timeConditions]
   ];
   const values = groups.find(([type]) => type === selectedType)?.[2] || [];
@@ -1669,7 +1708,7 @@ function ensureConfigTrunks() {
     id: trunk.id || (index === 0 ? "trunk-operadora" : `trunk-${index + 1}`),
     name: trunk.name || (index === 0 ? "Operadora principal" : `Operadora ${index + 1}`),
     inboundDestinationType: trunk.inboundDestinationType || "ivr",
-    inboundDestination: trunk.inboundDestination || "main",
+    inboundDestination: trunk.inboundDestinationType === "none" ? "" : trunk.inboundDestination || "main",
     active: trunk.active !== false
   }));
   state.config.trunk = { ...state.config.trunk, ...state.config.trunks[0] };
@@ -2566,6 +2605,10 @@ async function ensureMonitorSpySoftphone() {
 
   userAgent.delegate = {
     async onInvite(invitation) {
+      if (!state.monitorSpy.open || !state.monitorSpy.accepting || state.monitorSpy.session) {
+        await invitation.reject({ statusCode: 486 });
+        return;
+      }
       const mode = monitorSpyMode(state.monitorSpy.mode);
       const modeConfig = MONITOR_SPY_MODES[mode];
       state.monitorSpy.session = invitation;
@@ -2575,6 +2618,7 @@ async function ensureMonitorSpySoftphone() {
       invitation.delegate = {
         ...(invitation.delegate || {}),
         onBye() {
+          if (state.monitorSpy.session !== invitation) return;
           state.monitorSpy.session = null;
           state.monitorSpy.busy = false;
           state.monitorSpy.status = "Encerrada";
@@ -2582,6 +2626,7 @@ async function ensureMonitorSpySoftphone() {
           renderMonitorSpyPortal();
         },
         onCancel() {
+          if (state.monitorSpy.session !== invitation) return;
           state.monitorSpy.session = null;
           state.monitorSpy.busy = false;
           state.monitorSpy.status = "Cancelada";
@@ -2591,6 +2636,7 @@ async function ensureMonitorSpySoftphone() {
       };
       const sessionState = window.SIP?.SessionState || {};
       invitation.stateChange?.addListener?.((nextState) => {
+        if (state.monitorSpy.session !== invitation) return;
         let shouldAttachAudio = false;
         if (nextState === sessionState.Established) {
           state.monitorSpy.busy = false;
@@ -2650,18 +2696,25 @@ function prepareMonitorSpySoftphone() {
   return monitorSpyPreparation;
 }
 
-async function stopMonitorSpy() {
+let monitorSpyGeneration = 0;
+async function stopMonitorSpy({ keepRegistered = false } = {}) {
+  monitorSpyGeneration += 1;
+  state.monitorSpy.accepting = false;
   const session = state.monitorSpy.session;
+  state.monitorSpy.session = null;
   state.monitorSpy.busy = true;
   state.monitorSpy.status = "Encerrando";
   renderMonitorSpyPortal();
-  if (session) await terminateSipSession(session);
+  if (session) await finishMonitorSipOperation(() => {
+    if (session.state === SIP.SessionState.Established) return session.bye();
+    if (session.state === SIP.SessionState.Initial || session.state === SIP.SessionState.Establishing) return session.reject ? session.reject() : session.cancel();
+  });
   await api("/api/pbx/monitor/action", {
     method: "POST",
     body: JSON.stringify({ action: "hangup-monitor-spy" })
   }).catch(() => null);
   state.monitorSpy.session = null;
-  await disposeMonitorSpySoftphone();
+  if (!keepRegistered) await disposeMonitorSpySoftphone();
   state.monitorSpy.busy = false;
   state.monitorSpy.status = "Parada";
   state.monitorSpy.output = "Monitoramento encerrado.";
@@ -2676,6 +2729,8 @@ async function startMonitorBrowserSpy(target, requestedMode = "listen") {
     throw new Error("O navegador nao pode acessar o microfone neste ambiente");
   }
   if (state.monitorSpy.busy) return;
+  if (state.monitorSpy.session) return;
+  const generation = ++monitorSpyGeneration;
   state.monitorSpy.mode = mode;
   state.monitorSpy.busy = true;
   state.monitorSpy.status = "Registrando monitor";
@@ -2683,14 +2738,25 @@ async function startMonitorBrowserSpy(target, requestedMode = "listen") {
   renderMonitorSpyPortal();
   try {
     await prepareMonitorSpySoftphone();
+    if (generation !== monitorSpyGeneration || !state.monitorSpy.open) return;
     state.monitorSpy.status = "Conectando";
     state.monitorSpy.output = `Abrindo ${modeConfig.label.toLowerCase()} na chamada do operador...`;
     renderMonitorSpyPortal();
+    state.monitorSpy.accepting = true;
     await api("/api/pbx/monitor/action", {
       method: "POST",
-      body: JSON.stringify({ action: "spy-browser", target, mode })
+      body: JSON.stringify({ action: "spy-browser", target, mode, contact: state.monitorSpy.ua.contact.uri.user })
     });
-    state.monitorSpy.output = "Solicitacao enviada ao Asterisk.";
+    if (!state.monitorSpy.session) state.monitorSpy.output = "Solicitacao enviada ao Asterisk.";
+    setTimeout(() => {
+      if (generation === monitorSpyGeneration && state.monitorSpy.busy && !state.monitorSpy.session && state.monitorSpy.target === target) {
+        state.monitorSpy.accepting = false;
+        state.monitorSpy.busy = false;
+        state.monitorSpy.status = "Falha";
+        state.monitorSpy.output = "O monitor nao recebeu a conexao. Tente novamente.";
+        renderMonitorSpyPortal();
+      }
+    }, 12000);
     renderMonitorSpyPortal();
   } catch (error) {
     state.monitorSpy.busy = false;
@@ -3347,7 +3413,7 @@ function renderMonitorSpyModal() {
   const targetExtension = (state.config.extensions || []).find((extension) => String(extension.number) === target);
   const listening = Boolean(state.monitorSpy.session);
   const busy = Boolean(state.monitorSpy.busy);
-  const locked = listening || busy;
+  const locked = busy;
   const mode = monitorSpyMode(state.monitorSpy.mode);
   const modeConfig = MONITOR_SPY_MODES[mode];
   const modeHint = {
@@ -3388,7 +3454,7 @@ function renderMonitorSpyModal() {
       <div class="modal-actions">
         <button class="secondary-btn" id="monitorSpyCancelBtn" type="button">Cancelar</button>
         ${listening ? `<button class="secondary-btn danger" id="monitorSpyStopBtn" type="button"><i data-lucide="phone-off"></i>Encerrar monitoramento</button>` : ""}
-        <button class="primary-btn" id="monitorSpyStartBtn" type="button" ${locked ? "disabled" : ""}><i data-lucide="${modeConfig.icon}"></i>${escapeHtml(busy ? "Conectando..." : modeConfig.actionLabel)}</button>
+        <button class="primary-btn" id="monitorSpyStartBtn" type="button" ${locked || listening ? "disabled" : ""}><i data-lucide="${modeConfig.icon}"></i>${escapeHtml(busy ? "Conectando..." : modeConfig.actionLabel)}</button>
       </div>
     </section>
   `;
@@ -3396,7 +3462,12 @@ function renderMonitorSpyModal() {
 
 function renderMonitorSpyPortal() {
   if (!monitorSpyPortal) return;
+  const audio = monitorSpyPortal.querySelector("#monitorSpyAudio");
+  if (audio) audio.remove();
   monitorSpyPortal.innerHTML = renderMonitorSpyModal();
+  const replacement = monitorSpyPortal.querySelector("#monitorSpyAudio");
+  if (audio && replacement) replacement.replaceWith(audio);
+  else if (audio) { audio.pause(); audio.srcObject = null; }
   restoreMonitorSpyAudio();
   iconRefresh();
 }
@@ -4129,7 +4200,6 @@ function renderExtensions() {
               <label class="check-pill compact"><input data-field="blockExtension" type="checkbox" ${ext.blockExtension ? "checked" : ""} />Bloquear chamadas</label>
               <label class="check-pill compact"><input data-field="bridgeMode" type="checkbox" ${ext.bridgeMode ? "checked" : ""} />Bridge</label>
               <label class="check-pill compact"><input data-field="temporary" type="checkbox" ${ext.temporary ? "checked" : ""} />Temporario</label>
-              <label class="check-pill compact"><input data-field="voicemail" type="checkbox" ${ext.voicemail ? "checked" : ""} />Voicemail</label>
               <label class="check-pill compact"><input data-field="recordCalls" type="checkbox" ${ext.recordCalls ? "checked" : ""} />Gravar chamadas</label>
             </div>
           </div>
@@ -4175,40 +4245,19 @@ function renderRouting() {
   const cfg = state.config;
   cfg.outbound = cfg.outbound || {};
   const preview = state.outboundDiagnostics?.preview;
-  const primaryRoute = cfg.inboundRoutes[0] || {
-    id: "main",
-    name: "Entrada principal",
-    did: cfg.trunk.mainNumber || "",
-    destinationType: "extension",
-    destination: "700"
-  };
+  const trunks = ensureConfigTrunks();
   const routes = cfg.inboundRoutes
     .map((route, index) => ({ route, index }))
-    .filter(({ index }) => index > 0)
     .map(
       ({ route, index }) => `
-      <div class="route-card ${index === 0 ? "active" : ""}" data-route-index="${index}">
-        <header>
-          <strong>${escapeHtml(route.name)}</strong>
-          <span class="badge">${escapeHtml(route.did || "Any DID")}</span>
-        </header>
-        <label>Nome<input data-field="name" value="${escapeHtml(route.name)}" /></label>
-        <label>DID recebido<input data-field="did" value="${escapeHtml(route.did)}" placeholder="Vazio = qualquer numero" /></label>
-        <label>Destino<div>${destinationChoices(route.destinationType, route.destination)}</div></label>
-      </div>`
-    )
-    .join("") || `<p class="hint">Nenhuma rota extra criada. A entrada principal ja envia para 700 URA.</p>`;
-
-  const ivrOptionCards = cfg.ivr.options
-    .map(
-      (item) => `
-      <div class="ivr-option-card">
-        <strong>${escapeHtml(item.digit || "-")}</strong>
-        <div>
-          <span>${escapeHtml(item.label || "Opcao")}</span>
-          <small>${escapeHtml(destinationLabel(item.destinationType, item.destination))}</small>
-        </div>
-      </div>`
+      <tr data-route-index="${index}">
+        <td><input data-field="name" aria-label="Nome da rota" value="${escapeHtml(route.name)}" /></td>
+        <td><select data-field="trunkId" aria-label="Tronco da rota">${trunkChoices(route.trunkId || trunks[0]?.id || "")}</select></td>
+        <td><input data-field="did" aria-label="Numero recebido" inputmode="tel" value="${escapeHtml(route.did || "")}" placeholder="Qualquer numero" /></td>
+        <td><div class="destination-picker">${destinationChoices(route.destinationType || "none", route.destination || "")}</div></td>
+        <td><input data-field="active" type="checkbox" aria-label="Rota ativa" ${route.active !== false ? "checked" : ""} /></td>
+        <td><button class="icon-btn danger" data-remove-inbound="${index}" type="button" title="Excluir rota"><i data-lucide="trash-2"></i></button></td>
+      </tr>`
     )
     .join("");
 
@@ -4230,31 +4279,17 @@ function renderRouting() {
 
   pages.routing.innerHTML = `
     <div class="section-grid">
-      <section class="route-hero">
-        <div>
-          <p class="eyebrow">Atendimento principal</p>
-          <h3>Quem liga no tronco entra no ramal 700 e ouve a URA.</h3>
-          <p class="hint">Configure o numero recebido, confirme o destino principal e mantenha as opcoes da URA visiveis para revisar antes de aplicar.</p>
-        </div>
-        <div class="field-grid">
-          ${fieldBlock("Numero recebido", "DID que chega da operadora. Deixe vazio para aceitar qualquer numero enviado pelo tronco.", `<input data-route-index="0" data-field="did" value="${escapeHtml(primaryRoute.did || cfg.trunk.mainNumber || "")}" placeholder="3431950817" />`, "full")}
-          ${fieldBlock("Nome da entrada", "Nome amigavel para identificar essa rota no painel.", `<input data-route-index="0" data-field="name" value="${escapeHtml(primaryRoute.name || "Entrada principal")}" />`, "full")}
-          ${fieldBlock("Destino principal", "Para a URA no ramal 700, deixe selecionado 700 URA principal.", `<div data-primary-route-destination>${destinationChoices(primaryRoute.destinationType || "extension", primaryRoute.destination || "700")}</div>`, "full")}
-        </div>
-      </section>
-      <section class="panel">
+      <section class="panel full">
         <div class="panel-header">
-          <h3>Fluxo de entrada</h3>
-          <span class="badge">Ao vivo no dialplan</span>
+          <h3>Rotas de entrada</h3>
+          <button id="addInboundBtn" class="primary-btn" type="button"><i data-lucide="plus"></i>Nova rota</button>
         </div>
-        <div class="route-path route-path-large">
-          <span class="route-node"><i data-lucide="radio-tower"></i>${escapeHtml(primaryRoute.did || cfg.trunk.mainNumber || "Qualquer DID")}</span>
-          <i data-lucide="arrow-right"></i>
-          <span class="route-node"><i data-lucide="phone-forwarded"></i>${escapeHtml(destinationLabel(primaryRoute.destinationType || "extension", primaryRoute.destination || "700"))}</span>
-          <i data-lucide="arrow-right"></i>
-          <span class="route-node"><i data-lucide="messages-square"></i>${escapeHtml(cfg.ivr.name)}</span>
+        <div class="table-wrap">
+          <table class="inbound-route-table">
+            <thead><tr><th>Nome</th><th>Tronco</th><th>Numero recebido (DID)</th><th>Destino ${helpIcon("A rota do numero tem prioridade. Sem correspondencia, vale a rota sem DID ou o destino de entrada do tronco.")}</th><th>Ativa</th><th></th></tr></thead>
+            <tbody>${routes || `<tr><td colspan="6" class="empty-table-cell">Nenhuma rota cadastrada.</td></tr>`}</tbody>
+          </table>
         </div>
-        <div class="ivr-option-grid">${ivrOptionCards}</div>
       </section>
       <section class="panel">
         <div class="panel-header">
@@ -4267,19 +4302,6 @@ function renderRouting() {
           ${fieldBlock("Completar local", "Quando ativo, um numero local curto recebe o DDD automaticamente antes de sair.", `<select data-outbound="prependAreaCodeToLocal">${option("true", String(cfg.outbound.prependAreaCodeToLocal !== false), "Sim")}${option("false", String(cfg.outbound.prependAreaCodeToLocal !== false), "Nao")}</select>`)}
           ${fieldBlock("Prefixo ao discar", "Use apenas se a operadora exigir adicionar algo antes do numero, como 0 ou codigo da operadora.", `<input data-outbound="dialPrefix" value="${escapeHtml(cfg.outbound.dialPrefix || "")}" placeholder="Ex: 0 ou vazio" />`)}
           ${fieldBlock("Remover digitos", "Apaga os primeiros digitos antes de enviar ao tronco. Normalmente deixe 0.", `<select data-outbound="stripDigits">${Array.from({ length: 9 }, (_, index) => option(String(index), String(cfg.outbound.stripDigits || 0), `${index}`)).join("")}</select>`)}
-        </div>
-      </section>
-      <section class="panel">
-        <div class="panel-header"><h3>Rotas de entrada extras</h3><button id="addInboundBtn" class="secondary-btn"><i data-lucide="plus"></i>Nova rota</button></div>
-        <div class="route-studio">
-          <aside class="route-sidebar">${routes}</aside>
-          <div class="route-main">
-            <div class="route-card active">
-              <header><strong>Destino padrão</strong><span class="badge">700 URA</span></header>
-              <p class="hint">Se a operadora enviar a chamada para s ou para qualquer DID nao mapeado, essa rota atende.</p>
-              <div class="route-node"><i data-lucide="phone-forwarded"></i>${escapeHtml(destinationLabel(primaryRoute.destinationType || "extension", primaryRoute.destination || "700"))}</div>
-            </div>
-          </div>
         </div>
       </section>
       <section class="panel">
@@ -4329,7 +4351,7 @@ function renderIvrMenuNode(menu, menuKey, isMain = false, fallbackIndex = 0, pre
       <header data-ivr-drag-handle>
         <span class="ivr-node-icon"><i data-lucide="${isMain ? "layout-grid" : "git-branch"}"></i></span>
         <div>
-          <strong>${escapeHtml(isMain ? "Menu principal" : "Submenu")}</strong>
+          <strong>${escapeHtml(isMain || !menu.parentMenuId ? "Menu principal" : "Submenu")}</strong>
           <small>${escapeHtml(menu.id || "main")}</small>
         </div>
         ${waitingDestinationLink && !preview ? `<button type="button" class="secondary-btn compact" data-ivr-target-type="ivr" data-ivr-target-value="${escapeHtml(menu.id || "main")}"><i data-lucide="crosshair"></i>Conectar</button>` : ""}
@@ -4343,21 +4365,19 @@ function renderIvrMenuNode(menu, menuKey, isMain = false, fallbackIndex = 0, pre
         <label class="wide">Descricao<textarea data-ivr-menu-field="greetingDescription" rows="2" placeholder="Texto do audio e orientacao das opcoes">${escapeHtml(menu.greetingDescription || "")}</textarea></label>
       </div>
       ${
-        isMain
-          ? `<div class="ivr-general-rules" data-scope="ivr">
+        `<div class="ivr-general-rules">
               <div class="ivr-rules-title">
                 <span class="ivr-node-icon"><i data-lucide="sliders-horizontal"></i></span>
                 <div><strong>Regras gerais</strong><small>Timeout, tentativas e discagem direta</small></div>
               </div>
               <div class="ivr-node-grid">
-                <label>Audio timeout<select data-key="timeoutAudio">${audioChoices(ivr.timeoutAudio || "")}</select></label>
-                <label>Audio invalido<select data-key="invalidAudio">${audioChoices(ivr.invalidAudio || "")}</select></label>
-                <label>Tempo resposta<input data-key="timeoutSeconds" type="number" min="5" max="60" value="${escapeHtml(ivr.timeoutSeconds || 20)}" /></label>
-                <label>Tentativas<input data-key="menuRepeat" type="number" min="1" max="10" value="${escapeHtml(ivr.menuRepeat || 3)}" /></label>
-                <label class="wide">Discar ramal direto<select data-key="allowDirectDial">${option("true", String(Boolean(ivr.allowDirectDial)), "Sim")}${option("false", String(Boolean(ivr.allowDirectDial)), "Nao")}</select></label>
+                <label>Audio timeout<select data-ivr-menu-field="timeoutAudio">${audioChoices(menu.timeoutAudio ?? ivr.timeoutAudio ?? "")}</select></label>
+                <label>Audio invalido<select data-ivr-menu-field="invalidAudio">${audioChoices(menu.invalidAudio ?? ivr.invalidAudio ?? "")}</select></label>
+                <label>Tempo resposta<input data-ivr-menu-field="timeoutSeconds" type="number" min="5" max="60" value="${escapeHtml(menu.timeoutSeconds ?? ivr.timeoutSeconds ?? 20)}" /></label>
+                <label>Tentativas<input data-ivr-menu-field="menuRepeat" type="number" min="1" max="10" value="${escapeHtml(menu.menuRepeat ?? ivr.menuRepeat ?? 3)}" /></label>
+                <label class="wide">Discar ramal direto<select data-ivr-menu-field="allowDirectDial">${option("true", String(Boolean(menu.allowDirectDial ?? ivr.allowDirectDial)), "Sim")}${option("false", String(Boolean(menu.allowDirectDial ?? ivr.allowDirectDial)), "Nao")}</select></label>
               </div>
             </div>`
-          : ""
       }
       <div class="ivr-options-head">
         <span>${monitorNumber(options.length)} opcoes</span>
@@ -4580,7 +4600,12 @@ function renderIvrCanvas({ preview = false, menuId = "" } = {}) {
     { record: ivrMenuRecords()[0], menu: ivr, menuKey: "main", fallbackIndex: 0 },
     ...menus.map((menu, index) => ({ record: ivrMenuRecords()[index + 1], menu, menuKey: String(index), fallbackIndex: index + 1 }))
   ];
-  const visibleMenuEntries = focusedRecord ? menuEntries.filter((entry) => entry.record?.id === focusedRecord.id) : menuEntries;
+  const visibleMenuEntries = focusedRecord ? menuEntries.filter((entry) => entry.record?.id === focusedRecord.id || entry.menu.parentMenuId === focusedRecord.id) : menuEntries;
+  const layout = ensureIvrFlowLayout();
+  visibleMenuEntries.forEach((entry, index) => {
+    const key = ivrCardKey(entry.menuKey);
+    if (!layout[key]) layout[key] = { x: 300 + index * 620, y: 90 + index * 80 };
+  });
   const menuCards = visibleMenuEntries.map((entry, index) => ({
     key: ivrCardKey(entry.menuKey),
     menu: entry.menu,
@@ -4602,16 +4627,16 @@ function renderIvrCanvas({ preview = false, menuId = "" } = {}) {
         item,
         index,
         menuPos,
-        ...ivrCardPosition(`option:${ensureIvrOptionId(item)}`, menuPos.x + 40, menuPos.y + 250 + index * 150)
+        ...ivrCardPosition(`option:${ensureIvrOptionId(item)}`, menuPos.x + 40, menuPos.y + (currentIvrWorkspaceMenu().targetVisibility === "explicit" ? 850 + index * 600 : 250 + index * 150))
       }))
     );
-  const looseOptionCards = focusedRecord ? [] : ensureIvrLooseOptions().map((item, index) => ({
+  const looseOptionCards = ensureIvrLooseOptions(focusedRecord?.menu || currentIvrWorkspaceMenu()).map((item, index) => ({
     key: `option:${ensureIvrOptionId(item)}`,
     kind: "option",
     sourceType: "loose",
     sourceMenuKey: "",
-    menu: null,
-    menuKey: "",
+    menu: focusedRecord?.menu || currentIvrWorkspaceMenu(),
+    menuKey: focusedRecord?.menuKey || "main",
     item,
     index,
     menuPos: { x: 420 + index * 40, y: 560 + index * 150 },
@@ -4621,9 +4646,6 @@ function renderIvrCanvas({ preview = false, menuId = "" } = {}) {
   const targetCards = ivrTargetCards().map((target) => ({ ...target, ...ivrCardPosition(target.key, target.x, target.y) }));
   const entryHidden = focusedRecord && focusedRecord.id !== "main" ? true : Boolean(ivr.hideEntryNode);
   const entryCard = { key: "entry:main", ...entryPos };
-  const primaryTrunkId = state.config.outbound?.defaultTrunk || ensureConfigTrunks()[0]?.id || "trunk-operadora";
-  const trunkEntryCard = targetCards.find((target) => target.type === "trunk" && target.value === primaryTrunkId) || targetCards.find((target) => target.type === "trunk");
-  const entrySourceCard = entryHidden && trunkEntryCard ? trunkEntryCard : entryCard;
   const allCards = [...(entryHidden ? [] : [entryCard]), ...menuCards, ...allOptionCards, ...targetCards];
   const canvasWidth = Math.max(1500, ...allCards.map((card) => card.x + 620)) + 80;
   const canvasHeight = Math.max(850, ...allCards.map((card) => card.y + 430)) + 80;
@@ -4636,7 +4658,7 @@ function renderIvrCanvas({ preview = false, menuId = "" } = {}) {
     <div class="ivr-canvas-space" style="width:${scaledCanvasWidth}px;height:${scaledCanvasHeight}px">
       <div class="ivr-canvas-zoom-layer" style="width:${canvasWidth}px;height:${canvasHeight}px;transform:scale(${zoom})">
         <svg class="ivr-link-layer" width="${canvasWidth}" height="${canvasHeight}" viewBox="0 0 ${canvasWidth} ${canvasHeight}" aria-hidden="true">
-          ${(!focusedRecord || focusedRecord.id === "main") && menuCards[0] ? `<line class="entry-link" data-link-from="${escapeHtml(entrySourceCard.key)}" data-link-to="menu:main" x1="${entrySourceCard.x + (entryHidden ? 130 : 95)}" y1="${entrySourceCard.y + 36}" x2="${menuCards[0].x + 270}" y2="${menuCards[0].y + 150}" />` : ""}
+          ${!entryHidden && (!focusedRecord || focusedRecord.id === "main") && menuCards[0] ? `<line class="entry-link" data-link-from="${escapeHtml(entryCard.key)}" data-link-to="menu:main" x1="${entryCard.x + 95}" y1="${entryCard.y + 36}" x2="${menuCards[0].x + 270}" y2="${menuCards[0].y + 150}" />` : ""}
           ${renderIvrLinks(allCards)}
         </svg>
         ${
@@ -4662,7 +4684,7 @@ function renderIvrCanvas({ preview = false, menuId = "" } = {}) {
 }
 
 function renderIvrManager() {
-  const records = ivrMenuRecords();
+  const records = ivrMenuRecords().filter((record) => !record.menu.parentMenuId);
   const trunks = ensureConfigTrunks();
   const routes = state.config.inboundRoutes || [];
   const rows = records
@@ -4737,7 +4759,7 @@ function renderIvr() {
     state.ivrLinkSource?.type === "menu-option"
       ? "Escolha um card de opcao para ligar a este menu."
       : state.ivrLinkSource?.type === "option-target"
-        ? "Escolha um menu, ramal, fila, grupo ou voicemail para concluir o destino."
+        ? "Escolha um menu, ramal, fila ou grupo para concluir o destino."
         : state.ivrLinkSource?.type === "trunk-entry"
           ? "Escolha o menu que deve receber as chamadas de entrada deste tronco."
           : "Arraste os cards e crie os links individualmente: menu para opcao, opcao para destino, e tronco para menu de entrada.";
@@ -5142,8 +5164,11 @@ function removeQueueReferences(queueId) {
     config.businessHours.afterHoursDestination = fallbackExtension;
   }
 
-  (config.ringGroups || []).forEach((group) => {
-    if (String(group.fallback) === String(queueId)) group.fallback = fallbackExtension;
+  [...(config.ringGroups || []), ...(config.queues || [])].forEach((group) => {
+    if (group.fallbackType === "queue" && String(group.fallback) === String(queueId)) {
+      group.fallbackType = "none";
+      group.fallback = "";
+    }
   });
 
   const ivr = config.ivr || {};
@@ -5172,6 +5197,21 @@ function removeQueueReferences(queueId) {
   }
 }
 
+function finalDestinationChoices(item = {}, excludedQueueId = "") {
+  const legacy = item.fallback && (!item.fallbackType || item.fallbackType === "extension");
+  const selected = legacy ? "legacy:" : item.fallbackType === "queue" ? item.fallback : "";
+  return (legacy ? option("legacy:", selected, "Manter destino atual (legado)") : "") +
+    option("", selected, "Nenhum") + state.config.queues
+      .filter((queue) => queue.id !== excludedQueueId)
+      .map((queue) => option(queue.id, selected, `${queue.number || queue.id} ${queue.name}`)).join("");
+}
+
+function collectFinalDestination(item, value) {
+  if (value === "legacy:") return;
+  item.fallbackType = value ? "queue" : "none";
+  item.fallback = value || "";
+}
+
 function renderQueues() {
   const ring = state.config.ringGroups[0];
   const queueStrategies = ["rrmemory", "ringall", "leastrecent", "fewestcalls"];
@@ -5179,7 +5219,7 @@ function renderQueues() {
     ? state.config.queues.map((queue, index) => option(queue.id, state.config.queues[0]?.id || "", `${queueLabel(queue, index)} (${queue.id})`)).join("")
     : `<option value="">Nenhuma fila cadastrada</option>`;
   const extensionOptions = state.config.extensions.map((ext) => option(ext.number, state.config.extensions[0]?.number || "", `${ext.number} ${ext.name}`)).join("");
-  const fallbackOptions = state.config.extensions.map((ext) => option(ext.number, state.config.extensions[0]?.number || "", `${ext.number} ${ext.name}`)).join("");
+  const fallbackOptions = finalDestinationChoices();
   const queueCards = state.config.queues
     .map((queue, index) => {
       const detailsOpen = Boolean(state.openQueueDetails[queue.id || index]);
@@ -5219,7 +5259,7 @@ function renderQueues() {
               ${fieldBlock("Estrategia", "Define como a fila distribui chamadas entre os agentes.", `<select data-key="strategy">${queueStrategies.map((item) => option(item, queue.strategy)).join("")}</select>`)}
               ${fieldBlock("Timeout", "Tempo maximo que cada agente toca por tentativa.", `<input data-key="timeout" type="number" value="${escapeHtml(queue.timeout)}" />`)}
               ${fieldBlock("Espera maxima", "Tempo maximo de fila antes de mandar para o destino final.", `<input data-key="maxWait" type="number" value="${escapeHtml(queue.maxWait)}" />`)}
-              ${fieldBlock("Destino final", "Para onde a chamada vai se a fila nao conseguir atender.", `<select data-key="fallback">${state.config.extensions.map((ext) => option(ext.number, queue.fallback, `${ext.number} ${ext.name}`)).join("")}</select>`)}
+              ${fieldBlock("Destino final", "Outra fila apos a espera maxima. Nenhum encerra a chamada sem encaminhamento.", `<select data-key="fallbackDestination">${finalDestinationChoices(queue, queue.id)}</select>`)}
             </div>
             <div class="member-chip-row">${memberChips || `<span class="hint">Nenhum ramal nesta fila.</span>`}</div>
           </div>
@@ -5253,7 +5293,7 @@ function renderQueues() {
         <div class="field-grid" data-scope="ring">
           ${fieldBlock("Membros", "Ramais que vao tocar juntos. Separe por virgula.", `<input data-key="members" value="${escapeHtml((ring.members || []).join(", "))}" />`, "wide")}
           ${fieldBlock("Tempo de toque", "Quanto tempo o grupo tenta tocar antes de cair no destino final.", `<input data-key="timeout" type="number" value="${escapeHtml(ring.timeout)}" />`)}
-          ${fieldBlock("Destino final", "Para onde a chamada vai se ninguem atender o grupo.", `<select data-key="fallback">${timeoutDestinationOptions.map(([value, label]) => option(value, ring.fallback, label)).join("")}</select>`)}
+          ${fieldBlock("Destino final", "Fila que recebe a chamada se ninguem atender o grupo. Nenhum encerra a chamada.", `<select data-key="fallbackDestination">${finalDestinationChoices(ring)}</select>`)}
         </div>
       </section>
       ${queueCards}
@@ -5314,7 +5354,7 @@ function renderSecurity() {
           ${fieldBlock("Inicio", "Hora em que o atendimento normal comeca.", `<input data-key="start" type="time" value="${escapeHtml(hours.start)}" />`)}
           ${fieldBlock("Fim", "Hora em que o atendimento normal termina.", `<input data-key="end" type="time" value="${escapeHtml(hours.end)}" />`)}
           ${fieldBlock("Dias", "Dias em que a empresa atende normalmente. Separe por virgula.", `<input data-key="weekdays" value="${escapeHtml((hours.weekdays || []).join(", "))}" />`, "wide")}
-          ${fieldBlock("Tipo fora horario", "Define para onde a chamada vai fora do horario comercial.", `<select data-key="afterHoursDestinationType">${["ivr", "extension", "ringGroup", "queue", "voicemail"].map((item) => option(item, hours.afterHoursDestinationType)).join("")}</select>`)}
+          ${fieldBlock("Tipo fora horario", "Define para onde a chamada vai fora do horario comercial.", `<select data-key="afterHoursDestinationType">${["none", "ivr", "extension", "ringGroup", "queue"].map((item) => option(item, hours.afterHoursDestinationType, item === "none" ? "Nenhum" : item)).join("")}</select>`)}
           ${fieldBlock("Destino fora horario", "Numero do ramal, fila ou grupo usado fora do horario.", `<input data-key="afterHoursDestination" value="${escapeHtml(hours.afterHoursDestination)}" />`)}
         </div>
       </section>
@@ -5613,6 +5653,8 @@ function renderReports() {
           <label>Unique ID<input data-report-filter="uniqueId" value="${escapeHtml(filters.uniqueId || "")}" /></label>
           <label>Caller ID<input data-report-filter="callerId" value="${escapeHtml(filters.callerId || "")}" /></label>
           <label>Grupo/departamento<input data-report-filter="department" value="${escapeHtml(filters.department || "")}" /></label>
+          <label>Menu URA<input data-report-filter="ivrMenu" value="${escapeHtml(filters.ivrMenu || "")}" placeholder="Ex.: main" /></label>
+          <label>Opcao URA<input data-report-filter="ivrOption" value="${escapeHtml(filters.ivrOption || "")}" placeholder="Digito, timeout ou invalid" /></label>
           </div>
         </div>
         <div class="filter-actions">
@@ -6025,11 +6067,15 @@ function collectConfig() {
         else trunk[key] = input.value;
       });
       trunk.inboundDestinationType = $("[data-trunk-inbound-type]", card)?.value || trunk.inboundDestinationType || "ivr";
-      trunk.inboundDestination = $("[data-trunk-inbound-value]", card)?.value || trunk.inboundDestination || "main";
+      trunk.inboundDestination = trunk.inboundDestinationType === "none" ? "" : $("[data-trunk-inbound-value]", card)?.value || trunk.inboundDestination || "main";
       trunk.id = (trunk.id || (index === 0 ? "trunk-operadora" : `trunk-${index + 1}`)).replace(/[^a-zA-Z0-9_.-]/g, "-");
       return trunk;
     });
     cfg.trunk = { ...(cfg.trunk || {}), ...(cfg.trunks[0] || {}) };
+    (cfg.inboundRoutes || []).filter((route) => route.id === "main" && !route.trunkId).forEach((route) => {
+      route.destinationType = cfg.trunk.inboundDestinationType;
+      route.destination = cfg.trunk.inboundDestination;
+    });
     if (!cfg.trunks.some((trunk) => trunk.id === cfg.outbound?.defaultTrunk)) {
       cfg.outbound = cfg.outbound || {};
       cfg.outbound.defaultTrunk = cfg.trunks[0]?.id || "trunk-operadora";
@@ -6050,7 +6096,7 @@ function collectConfig() {
     const route = cfg.inboundRoutes[Number(row.dataset.routeIndex)];
     if (!route) return;
     $all("[data-field]", row).forEach((input) => {
-      route[input.dataset.field] = input.value;
+      route[input.dataset.field] = input.type === "checkbox" ? input.checked : input.value;
     });
     const destinationType = $("[data-destination-type]", row);
     const destinationValue = $("[data-destination-value]", row);
@@ -6114,7 +6160,7 @@ function collectConfig() {
 
       $all("[data-ivr-menu-field]", node).forEach((input) => {
         const key = input.dataset.ivrMenuField;
-        menu[key] = input.value;
+        menu[key] = key === "allowDirectDial" ? input.value === "true" : input.type === "number" ? Number(input.value) : input.value;
       });
       if (menuKey !== "main") {
         menu.id = String(menu.id || `menu-${Number(menuKey) + 1}`)
@@ -6135,8 +6181,8 @@ function collectConfig() {
       const menu = menuKey === "main" ? cfg.ivr : cfg.ivr.menus?.[Number(menuKey)];
       if (menu) menu.options = [];
     });
-    const shouldCollectLooseOptions = Boolean($("[data-ivr-source-type='loose']", activeRoot));
-    if (shouldCollectLooseOptions) cfg.ivr.looseOptions = [];
+    const workspace = currentIvrWorkspaceMenu();
+    workspace.looseOptions = [];
     $all("[data-ivr-option][data-ivr-card-key]", activeRoot).forEach((row) => {
       const optionData = {
         nodeId: $("[data-ivr-option-id-field]", row)?.value || row.dataset.ivrOptionId || "",
@@ -6149,8 +6195,7 @@ function collectConfig() {
         destinationCardKey: $("[data-ivr-destination-card-key]", row)?.value || ""
       };
       if (row.dataset.ivrSourceType === "loose") {
-        cfg.ivr.looseOptions = cfg.ivr.looseOptions || [];
-        cfg.ivr.looseOptions.push(optionData);
+        workspace.looseOptions.push(optionData);
         return;
       }
       const menuKey = row.dataset.ivrMenu;
@@ -6196,6 +6241,7 @@ function collectConfig() {
 
   const ring = cfg.ringGroups[0];
   $all("[data-scope='ring'] [data-key]", activeRoot).forEach((input) => {
+    if (input.dataset.key === "fallbackDestination") return collectFinalDestination(ring, input.value);
     ring[input.dataset.key] = input.dataset.key === "members" ? readArray(input.value) : input.type === "number" ? Number(input.value) : input.value;
   });
 
@@ -6204,6 +6250,7 @@ function collectConfig() {
     if (!queue) return;
     $all("[data-key]", card).forEach((input) => {
       if (input.dataset.key === "members") queue.members = readArray(input.value);
+      else if (input.dataset.key === "fallbackDestination") collectFinalDestination(queue, input.value);
       else if (input.dataset.key === "number") queue.number = String(input.value || "").replace(/\D/g, "");
       else queue[input.dataset.key] = input.type === "number" ? Number(input.value) : input.value;
     });
@@ -6226,7 +6273,7 @@ function collectConfig() {
 }
 
 function setConfigSaveBusy(busy) {
-  $all("#saveBtn, #saveIvrFullscreenBtn").forEach((button) => {
+  $all("#saveBtn, #saveIvrFullscreenBtn, [data-save-config]").forEach((button) => {
     if (busy) {
       button.dataset.idleHtml = button.innerHTML;
       button.disabled = true;
@@ -6242,7 +6289,8 @@ function setConfigSaveBusy(busy) {
   iconRefresh();
 }
 
-async function saveConfig() {
+async function saveConfig(scope = "") {
+  if (state.configSaving) return;
   collectConfig();
   const queueNumberError = validateQueueDialNumbers();
   if (queueNumberError) {
@@ -6251,8 +6299,10 @@ async function saveConfig() {
   }
 
   const baseline = state.configBaseline || {};
+  const scopeKeys = { extensions: ["extensions"], trunk: ["trunk", "trunks", "inboundRoutes", "outbound"], queues: ["queues", "ringGroups", "ivr", "inboundRoutes", "businessHours"], routing: ["inboundRoutes", "outbound", "outboundRules", "extensions"], security: ["security", "businessHours"] };
   const sections = Object.fromEntries(
     CONFIG_SECTION_KEYS
+      .filter((key) => !scopeKeys[scope] || scopeKeys[scope].includes(key))
       .filter((key) => JSON.stringify(state.config?.[key]) !== JSON.stringify(baseline?.[key]))
       .map((key) => [key, state.config[key]])
   );
@@ -6261,6 +6311,8 @@ async function saveConfig() {
     return;
   }
 
+  const submitted = JSON.parse(JSON.stringify(state.config));
+  state.configSaving = true;
   setConfigSaveBusy(true);
   setMessage("Validando e aplicando somente os modulos alterados...");
   try {
@@ -6272,12 +6324,17 @@ async function saveConfig() {
         sections
       })
     });
-    state.config = applyResponse.config;
+    collectConfig();
+    const drafts = Object.fromEntries(CONFIG_SECTION_KEYS
+      .filter((key) => JSON.stringify(state.config[key]) !== JSON.stringify(submitted[key]) || (!Object.hasOwn(sections, key) && JSON.stringify(state.config[key]) !== JSON.stringify(baseline[key])))
+      .map((key) => [key, state.config[key]]));
+    state.config = { ...applyResponse.config, ...drafts };
     state.configBaseline = JSON.parse(JSON.stringify(applyResponse.config));
     const detail = applyResponse.reloaded ? "salva e aplicada ao Asterisk" : "salva; o Asterisk ja estava atualizado";
     const elapsed = Number(applyResponse.durationMs) > 0 ? ` em ${(Number(applyResponse.durationMs) / 1000).toFixed(1)}s` : "";
     setMessage(`Configuracao ${detail}${elapsed}.`, "ok");
   } finally {
+    state.configSaving = false;
     setConfigSaveBusy(false);
   }
 }
@@ -7189,7 +7246,13 @@ document.addEventListener("click", async (event) => {
       return;
     }
 
-    if (monitorSpyModeButton && !state.monitorSpy.session && !state.monitorSpy.busy) {
+    if (monitorSpyModeButton && !state.monitorSpy.busy) {
+      const nextMode = monitorSpyMode(monitorSpyModeButton.dataset.monitorSpyMode);
+      if (state.monitorSpy.session && nextMode !== state.monitorSpy.mode) {
+        await stopMonitorSpy({ keepRegistered: true });
+        await startMonitorBrowserSpy(state.monitorSpy.target, nextMode);
+        return;
+      }
       state.monitorSpy.mode = monitorSpyMode(monitorSpyModeButton.dataset.monitorSpyMode);
       state.monitorSpy.output = "";
       state.monitorSpy.status = "Pronta";
@@ -7355,8 +7418,8 @@ document.addEventListener("click", async (event) => {
       return;
     }
 
-    if (event.target.closest("#saveBtn")) {
-      await saveConfig();
+    if (event.target.closest("#saveBtn, [data-save-config]")) {
+      await saveConfig(event.target.closest("[data-save-config]")?.dataset.saveConfig || "");
       return;
     }
 
@@ -7387,7 +7450,7 @@ document.addEventListener("click", async (event) => {
         name: "Novo ramal",
         department: "Geral",
         secret: `Ram-${next}-Senha9`,
-        voicemail: true,
+        voicemail: false,
         recordCalls: true,
         permissions: ["local", "mobile"],
         blockExtension: false,
@@ -7432,9 +7495,22 @@ document.addEventListener("click", async (event) => {
         id: `route-${Date.now()}`,
         name: "Nova entrada",
         did: "",
-        destinationType: "extension",
-        destination: "700"
+        trunkId: ensureConfigTrunks()[0]?.id || "",
+        active: false,
+        destinationType: "none",
+        destination: ""
       });
+      renderRouting();
+      iconRefresh();
+      return;
+    }
+
+    const removeInbound = event.target.closest("[data-remove-inbound]");
+    if (removeInbound) {
+      collectConfig();
+      const index = Number(removeInbound.dataset.removeInbound);
+      if (!window.confirm(`Excluir a rota ${state.config.inboundRoutes[index]?.name || "selecionada"}?`)) return;
+      state.config.inboundRoutes.splice(index, 1);
       renderRouting();
       iconRefresh();
       return;
@@ -7455,8 +7531,10 @@ document.addEventListener("click", async (event) => {
       const menus = ensureIvrMenus();
       const next = menus.length + 1;
       menus.push({
+        ...createIvrRootMenu(),
         id: `menu-${next}`,
         name: `Novo menu ${next}`,
+        parentMenuId: state.ivrEditingMenuId || "main",
         greeting: "",
         greetingDescription: "",
         options: []
@@ -7473,8 +7551,7 @@ document.addEventListener("click", async (event) => {
       const menus = ensureIvrMenus();
       const menu = createIvrRootMenu();
       menus.push(menu);
-      const layout = ensureIvrFlowLayout();
-      layout[`menu:${menu.id}`] = { x: 860 + menus.length * 360, y: 90 };
+      menu.flowLayout[`menu:${menu.id}`] = { x: 300, y: 90 };
       openIvrBuilder(menu.id);
       renderIvr();
       iconRefresh();
@@ -7512,8 +7589,7 @@ document.addEventListener("click", async (event) => {
       collectConfig();
       const menu = createIvrRootMenu();
       ensureIvrMenus().push(menu);
-      const layout = ensureIvrFlowLayout();
-      layout[`menu:${menu.id}`] = { x: 300, y: 90 };
+      menu.flowLayout[`menu:${menu.id}`] = { x: 300, y: 90 };
       openIvrBuilder(menu.id);
       renderIvr();
       iconRefresh();
@@ -7547,6 +7623,9 @@ document.addEventListener("click", async (event) => {
       if (!window.confirm(`Excluir a URA ${record.menu.name || record.id}?`)) return;
       const removed = ensureIvrMenus().splice(record.index, 1)[0];
       if (removed?.id) {
+        ensureIvrMenus().forEach((menu) => {
+          if (menu.parentMenuId === removed.id) delete menu.parentMenuId;
+        });
         replaceIvrMenuReferences(removed.id, "");
         ensureConfigTrunks().forEach((trunk) => {
           if (trunk.inboundDestinationType === "ivr" && trunk.inboundDestination === removed.id) trunk.inboundDestination = "main";
@@ -7571,13 +7650,14 @@ document.addEventListener("click", async (event) => {
         const menus = ensureIvrMenus();
         const next = menus.length + 1;
         const id = `menu-${Date.now().toString(36)}`;
-        menus.push({ id, name: `Novo menu ${next}`, greeting: "", greetingDescription: "", options: [] });
+        menus.push({ ...createIvrRootMenu(), id, name: `Novo menu ${next}`, parentMenuId: state.ivrEditingMenuId || "main" });
         setIvrCardPosition(`menu:${id}`, menuInfo.x, menuInfo.y);
       }
       if (action === "root") {
         const menu = createIvrRootMenu();
         ensureIvrMenus().push(menu);
-        setIvrCardPosition(`menu:${menu.id}`, menuInfo.x, menuInfo.y);
+        menu.flowLayout[`menu:${menu.id}`] = { x: 300, y: 90 };
+        openIvrBuilder(menu.id);
       }
       if (action === "option") {
         const digit = createIvrCardButton.dataset.digit || String(ensureIvrLooseOptions().length + 1);
@@ -7605,7 +7685,7 @@ document.addEventListener("click", async (event) => {
           name: "Novo ramal",
           department: "Geral",
           secret: `Ram-${next}-Senha9`,
-          voicemail: true,
+          voicemail: false,
           recordCalls: true,
           permissions: ["local", "mobile"],
           blockExtension: false,
@@ -7785,7 +7865,7 @@ document.addEventListener("click", async (event) => {
     if (removeTargetLinksButton) {
       rememberIvrViewport();
       collectConfig();
-      const removed = clearIvrDestinationLinks(removeTargetLinksButton.dataset.removeTargetLinks, removeTargetLinksButton.dataset.targetValue);
+      const removed = clearIvrDestinationLinks(removeTargetLinksButton.dataset.removeTargetLinks, removeTargetLinksButton.dataset.targetValue, currentIvrWorkspaceMenu());
       renderIvr();
       iconRefresh();
       setMessage(removed ? `${removed} link(s) removido(s) deste card sem apagar outros cards.` : "Este card nao tinha links ativos.", "ok");
@@ -7874,7 +7954,16 @@ document.addEventListener("click", async (event) => {
       if (menu) {
         menu.options = menu.options || [];
         const nextDigit = String(menu.options.length + 1);
-        menu.options.push(createIvrOption(nextDigit));
+        const option = createIvrOption(nextDigit);
+        const menuNode = addIvrOptionButton.closest(".ivr-flow-node");
+        if (menuNode) {
+          const x = menuNode.offsetLeft + 40;
+          const bottom = Math.max(...$all("[data-ivr-card-key]", $(".ivr-canvas-zoom-layer"))
+            .filter((node) => node.offsetLeft < x + 540 && node.offsetLeft + node.offsetWidth > x)
+            .map((node) => node.offsetTop + node.offsetHeight));
+          setIvrCardPosition(`option:${ensureIvrOptionId(option)}`, x, bottom + 40);
+        }
+        menu.options.push(option);
         renderIvr();
         iconRefresh();
       }
@@ -7909,6 +7998,9 @@ document.addEventListener("click", async (event) => {
       const menus = ensureIvrMenus();
       const removed = menus.splice(Number(removeIvrMenuButton.dataset.removeIvrMenu), 1)[0];
       if (removed?.id) {
+        menus.forEach((menu) => {
+          if (menu.parentMenuId === removed.id) delete menu.parentMenuId;
+        });
         [state.config.ivr, ...menus, { options: ensureIvrLooseOptions() }].forEach((menu) => {
           (menu.options || []).forEach((item) => {
             if (item.destinationType === "ivr" && item.destination === removed.id) {
@@ -7933,7 +8025,7 @@ document.addEventListener("click", async (event) => {
         setMessage("O ramal da fila ja esta em uso por outro ramal ou fila.", "error");
         return;
       }
-      const fallback = $("#newQueueFallback")?.value || state.config.extensions[0]?.number || "201";
+      const fallback = $("#newQueueFallback")?.value || "";
       state.config.queues.push({
         id,
         number,
@@ -7942,6 +8034,7 @@ document.addEventListener("click", async (event) => {
         members: [],
         timeout: 20,
         maxWait: 300,
+        fallbackType: fallback ? "queue" : "none",
         fallback
       });
       renderQueues();

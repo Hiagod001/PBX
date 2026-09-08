@@ -40,6 +40,7 @@ const port = Number(process.env.PORT) || 3090;
 const host = process.env.HOST || (process.env.NODE_ENV === "production" ? "127.0.0.1" : "0.0.0.0");
 const playbackAudioExtensions = new Set([".wav", ".gsm", ".ulaw", ".alaw", ".sln16", ".mp3"]);
 const browserRecordingExtensions = new Set([".wav", ".mp3", ".gsm"]);
+const { isSupervisionCall, unifiedRecording } = require("./src/supervision-recording");
 const extensionPresence = new Map();
 const extensionIdleSince = new Map();
 const protocolCounterPath = path.join(__dirname, "data", "call-protocol.json");
@@ -51,6 +52,12 @@ const dialerOutgoingDir = path.join(__dirname, "data", "dialer-outgoing");
 const dialerSpoolDir = process.env.ASTERISK_DIALER_SPOOL_DIR || "/var/spool/asterisk/outgoing";
 const dialerArchiveDir = process.env.ASTERISK_DIALER_ARCHIVE_DIR || "/var/spool/asterisk/outgoing_done";
 const pauseReasons = new Set(["Cafezinho", "Almoço", "Treinamento", "Atendimento presencial"]);
+const spaRoutes = new Set([
+  "/", "/resume", "/resumo", "/overview", "/reports", "/relatorios", "/monitor", "/status",
+  "/trunk", "/troncos", "/extensions", "/ramais", "/routes", "/rotas", "/routing", "/ura", "/ivr",
+  "/dialer", "/discador", "/audios", "/queues", "/filas", "/logs", "/security", "/seguranca",
+  "/audit", "/auditoria", "/users", "/usuarios"
+]);
 let protocolCounterLock = Promise.resolve();
 let dialerStoreLock = Promise.resolve();
 let cdrImportRunning = false;
@@ -252,6 +259,19 @@ async function appendExtensionPauseHistory(event) {
 function normalizePauseReason(reason) {
   const text = String(reason || "").trim();
   return pauseReasons.has(text) ? text : "Cafezinho";
+}
+
+let pauseMutation = Promise.resolve();
+let monitorSpyOwner = null;
+function updateExtensionPause(number, paused, reason = "") {
+  const operation = pauseMutation.catch(() => {}).then(async () => {
+    const output = await runAsteriskControl(paused ? "queue-pause" : "queue-unpause", number, { reason });
+    const pause = await setExtensionPause(number, paused, reason);
+    pbxStatusCache = { revision: "", expiresAt: 0, value: null, pending: null };
+    return { output, pause };
+  });
+  pauseMutation = operation;
+  return operation;
 }
 
 async function setExtensionPause(number, paused, reason = "") {
@@ -714,6 +734,7 @@ async function runAsteriskControl(action, extensionNumber, payload = {}) {
     args.push(String(payload.targetEndpoint || payload.target || ""));
     args.push(String(payload.listenerEndpoint || ""));
     args.push(String(payload.mode || "listen"));
+    args.push(String(payload.contact || ""));
   }
   if (action === "dialer-call") args.push(String(payload.file || ""));
 
@@ -1556,7 +1577,7 @@ async function readPbxStatusFresh(config) {
     const channel = channelByExtension.get(String(extension.number));
     const state = endpoint.state;
     const registered = endpoint.registered || Boolean(channel);
-    const activePause = registered ? pause : null;
+    const activePause = pause;
     const { event, ...presence } = updateExtensionPresence(extension.number, registered, readAt);
     if (event) presenceEvents.push(event);
     const endpointStatus = queueStatusFromText(channel?.state || state || "");
@@ -2024,6 +2045,11 @@ function inferRecordingName(call) {
   return "";
 }
 
+function parseIvrOutcome(userField) {
+  const match = String(userField || "").match(/^ivr:([a-zA-Z0-9_.-]+):([0-9#*]|timeout|invalid|maxattempts)$/);
+  return match ? { menu: match[1], option: match[2] } : { menu: "", option: "" };
+}
+
 function mapCdrColumns(columns, index, config) {
   const isAsteriskCsv = hasLikelyCdrDate(columns[9]) && !hasLikelyCdrDate(columns[8]);
   const raw = isAsteriskCsv
@@ -2114,6 +2140,7 @@ function mapCdrColumns(columns, index, config) {
   const type = inferReportType(raw, config);
   const extension = inferReportExtension(raw, config, type);
   const protocol = extractCallProtocol(raw.userfield) || extractCallProtocol(raw.accountcode);
+  const ivrOutcome = parseIvrOutcome(raw.userfield);
   const destination = reportDestinationForType(raw, type, extension);
   const extensionInfo = (config.extensions || []).find((item) => item.number === extension) || {};
   const started = parseFlexibleDate(raw.start || raw.calldate);
@@ -2171,6 +2198,8 @@ function mapCdrColumns(columns, index, config) {
     trunk: raw.trunk || inferTrunk(raw, config),
     did: raw.did || inferDid(raw, type),
     queue: raw.queue || inferQueue(raw, config),
+    ivrMenu: ivrOutcome.menu,
+    ivrOption: ivrOutcome.option,
     protocol,
     direction: raw.direction || type,
     dialstatus: raw.dialstatus || "",
@@ -2435,7 +2464,7 @@ function mergeReportCallLegs(primary, secondary) {
 function collapseReportCallLegs(calls) {
   const groups = new Map();
 
-  calls.forEach((call) => {
+  calls.filter((call) => !isSupervisionCall(call)).forEach((call) => {
     const key = reportCallGroupKey(call);
     if (!key) {
       groups.set(`single:${call.id}`, [call]);
@@ -2523,7 +2552,7 @@ async function buildRecordingIndexFresh(config) {
     const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
     await Promise.all(entries.map(async (entry) => {
       const fullPath = path.join(directory, entry.name);
-      if (entry.isDirectory()) return walk(fullPath, depth + 1);
+      if (entry.isDirectory()) return entry.name === ".supervision" ? undefined : walk(fullPath, depth + 1);
       const extension = path.extname(entry.name).toLowerCase();
       if (browserRecordingExtensions.has(extension)) files.push({ name: entry.name, path: fullPath, extension });
     }));
@@ -2716,6 +2745,8 @@ function parseReportFilters(query) {
     uniqueId: String(query.uniqueId || ""),
     callerId: String(query.callerId || ""),
     department: String(query.department || ""),
+    ivrMenu: String(query.ivrMenu || ""),
+    ivrOption: String(query.ivrOption || ""),
     q: String(query.q || query.search || "")
   };
 }
@@ -2759,6 +2790,8 @@ function applyReportFilters(calls, filters) {
     if (!includesText(call.uniqueId, filters.uniqueId)) return false;
     if (!includesText(call.callerId, filters.callerId)) return false;
     if (!includesText(call.department, filters.department)) return false;
+    if (!includesText(call.ivrMenu, filters.ivrMenu)) return false;
+    if (!includesText(call.ivrOption, filters.ivrOption)) return false;
     if (general) {
       const haystack = [
         call.startedAt,
@@ -2775,7 +2808,9 @@ function applyReportFilters(calls, filters) {
         call.protocol,
         call.uniqueId,
         call.linkedId,
-        call.userField
+        call.userField,
+        call.ivrMenu,
+        call.ivrOption
       ].join(" ").toLowerCase();
       if (!haystack.includes(general)) return false;
     }
@@ -3012,6 +3047,8 @@ function callExportRows(calls) {
     "Tempo espera": call.waitsecLabel,
     "Tronco SIP": call.trunk,
     Fila: call.queue,
+    "Menu URA": call.ivrMenu,
+    "Opcao URA": call.ivrOption,
     DID: call.did,
     "Caller ID": call.callerId,
     "Unique ID": call.uniqueId,
@@ -3160,7 +3197,8 @@ function activeChannelForMonitor(status, extensionNumber, channelName = "") {
 }
 
 function spyEndpointForMonitor(status, extensionNumber) {
-  const channel = activeChannelForMonitor(status, extensionNumber, "");
+  const number = String(extensionNumber || "").replace(/[^\d]/g, "");
+  const channel = (status.activeChannels || []).find(item => new RegExp(`^PJSIP/(?:web-)?${number}-[a-f0-9]+$`, "i").test(item.channel || ""));
   const endpoint = String(channel?.channel || "").match(/(?:PJSIP|SIP)\/((?:web-)?\d+)(?:[-/@]|\b)/i);
   return endpoint?.[1] || String(extensionNumber || "").replace(/[^\d]/g, "");
 }
@@ -3550,7 +3588,7 @@ app.post("/api/extensions/login", async (req, res) => {
 
 app.post("/api/extensions/logout", requireExtensionAuth, async (req, res) => {
   const extensionNumber = req.session.extension?.number;
-  if (extensionNumber) await setExtensionPause(extensionNumber, false).catch(() => null);
+  if (extensionNumber) await updateExtensionPause(extensionNumber, false).catch(() => null);
   delete req.session.extension;
   res.json({ ok: true });
 });
@@ -3666,20 +3704,21 @@ app.post("/api/extensions/action", requireExtensionAuth, async (req, res) => {
   const pauseReason = action === "queue-pause" ? normalizePauseReason(reason) : reason;
 
   try {
+    if (action === "queue-pause" || action === "queue-unpause") {
+      const result = await updateExtensionPause(req.session.extension.number, action === "queue-pause", pauseReason);
+      return res.json({ ok: true, ...result });
+    }
     if (action === "hangup") {
       const config = await getConfig();
-      const status = await readPbxStatus(config);
+      const status = await readPbxStatus(config, { fresh: true });
       const requestedChannel = String(channel || "").trim();
       const ownedChannel = ownedChannelForRequest(status, config, req.session.extension.number, requestedChannel);
       if (requestedChannel && !ownedChannel) return res.status(403).json({ error: "Canal fora da chamada ativa deste ramal" });
       channel = ownedChannel?.channel || "";
-      if (!channel) return res.status(400).json({ error: "Nenhuma chamada ativa encontrada para encerrar" });
+      if (!channel) return res.json({ ok: true, alreadyEnded: true });
     }
     const output = await runAsteriskControl(action, req.session.extension.number, { reason: pauseReason, channel });
-    let pause = null;
-    if (action === "queue-pause") pause = await setExtensionPause(req.session.extension.number, true, pauseReason);
-    if (action === "queue-unpause") await setExtensionPause(req.session.extension.number, false);
-    res.json({ ok: true, output, pause });
+    res.json({ ok: true, output });
   } catch (error) {
     res.status(503).json({ error: "Comando indisponivel no host Asterisk", detail: error.message });
   }
@@ -4088,14 +4127,24 @@ app.post("/api/pbx/monitor/action", requireAuth, requireSupervisor, async (req, 
       if (mode !== "listen" && !userCanInterveneLiveCalls(req)) {
         return res.status(403).json({ error: "Sem permissao para intervir em chamadas" });
       }
-      const status = await readPbxStatus(config);
-      const activeChannel = activeChannelForMonitor(status, target, "");
+      const status = await readPbxStatus(config, { fresh: true });
+      const activeChannel = (status.activeChannels || []).find(item => new RegExp(`^PJSIP/(?:web-)?${target}-[a-f0-9]+$`, "i").test(item.channel || ""));
       if (!activeChannel?.channel) {
         return res.status(409).json({ error: "O ramal nao esta em uma chamada ativa" });
       }
-      const targetEndpoint = spyEndpointForMonitor(status, target);
+      const targetEndpoint = activeChannel.channel.replace(/^PJSIP\//, "");
       const listenerEndpoint = process.env.PBX_MONITOR_SIP_USER || "monitor-admin";
-      const output = await runAsteriskControl("spy-browser", "00", { targetEndpoint, listenerEndpoint, mode });
+      const contact = String(req.body.contact || "");
+      if (!/^[a-zA-Z0-9]{8,32}$/.test(contact)) return res.status(400).json({ error: "Atualize a pagina para registrar este navegador no monitor" });
+      const hasMonitor = (status.activeChannels || []).some(item => String(item.channel || "").startsWith(`PJSIP/${listenerEndpoint}-`));
+      if (monitorSpyOwner?.starting || hasMonitor) return res.status(409).json({ error: "Ja existe um monitoramento ativo. Encerre-o antes de iniciar outro." });
+      monitorSpyOwner = { sessionId: req.sessionID, starting: true };
+      let output;
+      try {
+        output = await runAsteriskControl("spy-browser", "00", { targetEndpoint, listenerEndpoint, mode, contact });
+      } finally {
+        if (monitorSpyOwner?.sessionId === req.sessionID) monitorSpyOwner.starting = false;
+      }
       if (asteriskCommandFailed(output)) {
         return res.status(409).json({ error: "O Asterisk nao conseguiu abrir o monitoramento no navegador", detail: output, targetEndpoint });
       }
@@ -4116,11 +4165,12 @@ app.post("/api/pbx/monitor/action", requireAuth, requireSupervisor, async (req, 
     }
 
     if (action === "hangup-monitor-spy") {
+      if (monitorSpyOwner?.sessionId !== req.sessionID) return res.json({ ok: true, channels: [] });
+      if (monitorSpyOwner.starting) return res.status(409).json({ error: "Aguarde a conexao do monitor terminar" });
       const listenerEndpoint = process.env.PBX_MONITOR_SIP_USER || "monitor-admin";
-      const status = await readPbxStatus(config);
+      const status = await readPbxStatus(config, { fresh: true });
       const monitorChannels = (status.activeChannels || []).filter((item) => {
-        const joined = [item.channel, item.data, item.callerId, item.extension].join(" ");
-        return new RegExp(`(?:PJSIP|SIP|Local)/${listenerEndpoint}(?:[-/@]|\\b)|ChanSpy`, "i").test(joined);
+        return String(item.channel || "").startsWith(`PJSIP/${listenerEndpoint}-`);
       });
       const outputs = [];
       for (const item of monitorChannels) {
@@ -4136,6 +4186,7 @@ app.post("/api/pbx/monitor/action", requireAuth, requireSupervisor, async (req, 
       if (!userCanMonitorExtension(req, config, target)) {
         return res.status(403).json({ error: "Ramal fora do escopo permitido para este supervisor" });
       }
+      monitorSpyOwner = null;
       const status = await readPbxStatus(config);
       const targetEndpoint = spyEndpointForMonitor(status, target);
       const output = await runAsteriskControl("spy", listener, { targetEndpoint });
@@ -4174,8 +4225,9 @@ app.get("/api/pbx/recordings/:uniqueid/play", requireAuth, async (req, res) => {
   if (!scope.canListen) return res.status(403).json({ error: "Sem permissao para escutar gravacoes" });
   if (!call.recordingPath || !(await fs.pathExists(call.recordingPath))) return res.status(404).json({ error: "Gravacao nao encontrada" });
   await writeAuditEvent(req, call, "listen");
-  res.type(path.extname(call.recordingPath).toLowerCase() === ".mp3" ? "audio/mpeg" : "audio/wav");
-  res.sendFile(call.recordingPath);
+  const audioPath = await unifiedRecording(call.recordingPath, path.join(__dirname, "data", "recording-mixes"));
+  res.type(path.extname(audioPath).toLowerCase() === ".mp3" ? "audio/mpeg" : "audio/wav");
+  res.sendFile(audioPath);
 });
 
 app.get("/api/pbx/recordings/:uniqueid/download", requireAuth, async (req, res) => {
@@ -4185,7 +4237,9 @@ app.get("/api/pbx/recordings/:uniqueid/download", requireAuth, async (req, res) 
   if (!scope.canDownload) return res.status(403).json({ error: "Sem permissao para baixar gravacoes" });
   if (!call.recordingPath || !(await fs.pathExists(call.recordingPath))) return res.status(404).json({ error: "Gravacao nao encontrada" });
   await writeAuditEvent(req, call, "download");
-  res.download(call.recordingPath, recordingDownloadName(call));
+  const audioPath = await unifiedRecording(call.recordingPath, path.join(__dirname, "data", "recording-mixes"));
+  const downloadName = audioPath === call.recordingPath ? recordingDownloadName(call) : recordingDownloadName({ ...call, recordingPath: audioPath });
+  res.download(audioPath, downloadName);
 });
 
 app.get("/api/pbx/reports/export/csv", requireAuth, async (req, res) => {
@@ -4467,8 +4521,16 @@ app.delete("/api/dialer/campaigns/:id", requireAuth, requireAdmin, async (req, r
   res.json({ ok: true, campaigns: (await readDialerCampaigns()).map(publicDialerCampaign) });
 });
 
-app.get("*", (_req, res) => {
+app.use("/api", (_req, res) => {
+  res.status(404).json({ error: "Rota de API nao encontrada." });
+});
+
+app.get(Array.from(spaRoutes), (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+app.use((_req, res) => {
+  res.status(404).json({ error: "Pagina nao encontrada." });
 });
 
 app.use((error, req, res, _next) => {
@@ -4505,6 +4567,8 @@ module.exports = {
   app,
   startServer,
   _test: {
+    collapseReportCallLegs,
+    spyEndpointForMonitor,
     configForUser,
     configRevision,
     configSectionRevisions,
@@ -4531,6 +4595,8 @@ module.exports = {
     finishDialerLead,
     normalizeDialerNumbers,
     parseDialerArchiveStatus,
-    reportMatchesDialerAttempt
+    reportMatchesDialerAttempt,
+    parseIvrOutcome,
+    spaRoutes
   }
 };

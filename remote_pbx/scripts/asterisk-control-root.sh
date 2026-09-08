@@ -23,11 +23,13 @@ channel_belongs_to_extension() {
 
 case "$ACTION" in
   queue-pause)
+    /usr/sbin/asterisk -rx "database put UAI_PAUSED ${EXTENSION} 1"
     /usr/sbin/asterisk -rx "queue pause member Local/${EXTENSION}@queue-member/n"
     /usr/sbin/asterisk -rx "queue pause member PJSIP/${EXTENSION}" >/dev/null 2>&1 || true
     /usr/sbin/asterisk -rx "queue pause member PJSIP/web-${EXTENSION}" >/dev/null 2>&1 || true
     ;;
   queue-unpause)
+    /usr/sbin/asterisk -rx "database del UAI_PAUSED ${EXTENSION}"
     /usr/sbin/asterisk -rx "queue unpause member Local/${EXTENSION}@queue-member/n"
     /usr/sbin/asterisk -rx "queue unpause member PJSIP/${EXTENSION}" >/dev/null 2>&1 || true
     /usr/sbin/asterisk -rx "queue unpause member PJSIP/web-${EXTENSION}" >/dev/null 2>&1 || true
@@ -43,6 +45,10 @@ case "$ACTION" in
       exit 0
     fi
     if ! channel_belongs_to_extension "$CHANNEL"; then
+      if ! /usr/sbin/asterisk -rx "core show channels concise" | awk -F'!' -v channel="$CHANNEL" '$1 == channel { found = 1 } END { exit !found }'; then
+        echo "Chamada ja encerrada."
+        exit 0
+      fi
       echo "Canal invalido para este ramal." >&2
       exit 2
     fi
@@ -78,27 +84,47 @@ case "$ACTION" in
     /usr/sbin/asterisk -rx "channel originate Local/${EXTENSION}@internal application ChanSpy PJSIP/${TARGET},q"
     ;;
   spy-browser)
+    CONTACT="${6:-}"
+    if ! [[ "$CONTACT" =~ ^[a-zA-Z0-9]{8,32}$ ]]; then
+      echo "Contato do monitor invalido." >&2
+      exit 2
+    fi
     TARGET="$(printf '%s' "${VALUE:-}" | tr -cd '[:alnum:]_-')"
     LISTENER="$(printf '%s' "${EXTRA:-}" | tr -cd '[:alnum:]_-')"
     MODE="$(printf '%s' "${MODE:-listen}" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alpha:]-')"
-    if [[ -z "$TARGET" || ! "$TARGET" =~ ^(web-)?[0-9]{2,8}$ || -z "$LISTENER" || ! "$LISTENER" =~ ^[a-zA-Z0-9_-]{3,40}$ ]]; then
+    if [[ -z "$TARGET" || ! "$TARGET" =~ ^(web-)?[0-9]{2,8}-[a-fA-F0-9]+$ || -z "$LISTENER" || ! "$LISTENER" =~ ^[a-zA-Z0-9_-]{3,40}$ ]]; then
       echo "Escuta do navegador invalida." >&2
       exit 2
     fi
     case "$MODE" in
-      listen) SPY_OPTIONS="qbES" ;;
-      whisper) SPY_OPTIONS="qwbES" ;;
-      barge) SPY_OPTIONS="qBbES" ;;
+      listen) SPY_OPTIONS="qubES" ;;
+      whisper) SPY_OPTIONS="quwbES" ;;
+      barge) SPY_OPTIONS="quBbES" ;;
       *)
         echo "Modo de monitoramento invalido." >&2
         exit 2
         ;;
     esac
-    if ! /usr/sbin/asterisk -rx "core show application ChanSpy" >/dev/null 2>&1; then
+    if ! /usr/sbin/asterisk -rx "core show application ChanSpy" | grep 'ChanSpy(' >/dev/null; then
+      /usr/sbin/asterisk -rx "module load app_chanspy.so" >/dev/null
+    fi
+    if ! /usr/sbin/asterisk -rx "core show application ChanSpy" | grep 'ChanSpy(' >/dev/null; then
       echo "Modulo ChanSpy indisponivel." >&2
       exit 3
     fi
-    /usr/sbin/asterisk -rx "channel originate PJSIP/${LISTENER} application ChanSpy PJSIP/${TARGET},${SPY_OPTIONS}"
+    CONTACT_URI="$(/usr/sbin/asterisk -rx "pjsip show aor ${LISTENER}" | awk -v prefix="sip:${CONTACT}@" '$1 == "contact" && $2 == ":" && index($3, prefix) == 1 && !found { print $3; found = 1 }')"
+    if [[ -z "$CONTACT_URI" || "$CONTACT_URI" == *[[:space:]\"\']* ]]; then
+      echo "Navegador do monitor nao registrado." >&2
+      exit 3
+    fi
+    RECORDING="$(/usr/sbin/asterisk -rx "core show channel PJSIP/${TARGET}" | sed -nE 's/^[[:space:]]*_?_*RECORDING_FILE=([0-9A-Za-z_.-]+)$/\1/p' | head -n 1)"
+    if [[ -n "$RECORDING" && ! "$RECORDING" =~ ^[0-9]{8}-[0-9]{6}-[0-9A-Za-z_]+\.(wav|gsm|mp3)$ ]]; then
+      echo "Referencia de gravacao invalida." >&2
+      exit 3
+    fi
+    TOKEN="$(tr -d '-' < /proc/sys/kernel/random/uuid)"
+    /usr/sbin/asterisk -rx "database put UAI_SUPERVISION ${TOKEN} ${TARGET}|${SPY_OPTIONS}|${RECORDING}" >/dev/null
+    /usr/sbin/asterisk -rx "channel originate PJSIP/${LISTENER}/${CONTACT_URI} extension ${TOKEN}@pbx-supervision"
     ;;
   originate)
     TARGET="$(printf '%s' "${VALUE:-}" | tr -cd '[:digit:]#*')"

@@ -7317,6 +7317,20 @@ html body textarea,
   color: var(--accent-dark);
 }
 
+.inbound-route-table {
+  width: 100%;
+  min-width: 900px;
+  table-layout: fixed;
+}
+
+.inbound-route-table th:nth-child(4) { width: 28%; }
+.inbound-route-table th:nth-child(5),
+.inbound-route-table th:nth-child(6) { width: 64px; }
+.inbound-route-table input:not([type="checkbox"]),
+.inbound-route-table select { width: 100%; min-width: 0; }
+.inbound-route-table input[type="checkbox"] { width: 18px; height: 18px; }
+.inbound-route-table .destination-picker { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 6px; }
+
 .strategy-bar-row > div,
 .strategy-progress {
   background: var(--neutral-soft);

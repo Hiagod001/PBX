@@ -22,7 +22,7 @@ ASTERISK_SOUND_DIRS=(
   "/usr/share/asterisk/sounds/en/custom"
 )
 
-sudo mkdir -p /var/spool/asterisk/monitor
+sudo mkdir -p /var/spool/asterisk/monitor/.supervision
 sudo mkdir -p /var/log/asterisk/cdr-custom
 sudo mkdir -p "${ASTERISK_SOUND_DIRS[@]}"
 if compgen -G "data/ivr-audio/*" > /dev/null; then

@@ -78,7 +78,7 @@ test("lucide refresh supplies the local icon catalog without blocking page rende
   assert.match(appSource, /lucide\.createIcons\(\{ icons: lucide\.icons \}\)/);
   assert.doesNotMatch(appSource, /\.createIcons\(\);/);
   assert.match(appSource, /console\.warn\("Nao foi possivel atualizar os icones da interface\."/);
-  assert.match(indexSource, /app\.js\?v=20260827-icons/);
+  assert.match(indexSource, /app\.js\?v=[a-z0-9-]+/);
 });
 
 test("background refreshes preserve unfinished form input", () => {

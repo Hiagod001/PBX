@@ -87,7 +87,7 @@ reload_asterisk_configs() {
   if [[ "$changed" == *" queues.conf "* ]]; then
     /usr/sbin/asterisk -rx "module reload app_queue.so"
   fi
-  if [[ "$changed" == *" voicemail.conf "* ]]; then
+  if [[ "$changed" == *" voicemail.conf "* ]] && /usr/sbin/asterisk -rx "module show like app_voicemail.so" | grep -q '^app_voicemail.so'; then
     /usr/sbin/asterisk -rx "voicemail reload"
   fi
   if [[ "$changed" == *" cdr.conf "* || "$changed" == *" cdr_custom.conf "* ]]; then
@@ -115,7 +115,7 @@ if [ "$FAIL2BAN_CHANGED" -eq 1 ]; then
   install -m 0644 "$GENERATED_DIR/fail2ban-asterisk.local" /etc/fail2ban/jail.d/asterisk.local
 fi
 
-mkdir -p /var/spool/asterisk/monitor /var/spool/asterisk/outgoing_done /var/log/asterisk/cdr-custom "${ASTERISK_SOUND_DIRS[@]}"
+mkdir -p /var/spool/asterisk/monitor/.supervision /var/spool/asterisk/outgoing_done /var/log/asterisk/cdr-custom "${ASTERISK_SOUND_DIRS[@]}"
 if compgen -G "$IVR_AUDIO_DIR/*" > /dev/null; then
   for sound_dir in "${ASTERISK_SOUND_DIRS[@]}"; do
     for audio_file in "$IVR_AUDIO_DIR"/*; do
