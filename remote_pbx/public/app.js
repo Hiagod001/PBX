@@ -2605,6 +2605,10 @@ async function ensureMonitorSpySoftphone() {
 
   userAgent.delegate = {
     async onInvite(invitation) {
+      if (!state.monitorSpy.open || !state.monitorSpy.accepting || state.monitorSpy.session) {
+        await invitation.reject({ statusCode: 486 });
+        return;
+      }
       const mode = monitorSpyMode(state.monitorSpy.mode);
       const modeConfig = MONITOR_SPY_MODES[mode];
       state.monitorSpy.session = invitation;
@@ -2614,6 +2618,7 @@ async function ensureMonitorSpySoftphone() {
       invitation.delegate = {
         ...(invitation.delegate || {}),
         onBye() {
+          if (state.monitorSpy.session !== invitation) return;
           state.monitorSpy.session = null;
           state.monitorSpy.busy = false;
           state.monitorSpy.status = "Encerrada";
@@ -2621,6 +2626,7 @@ async function ensureMonitorSpySoftphone() {
           renderMonitorSpyPortal();
         },
         onCancel() {
+          if (state.monitorSpy.session !== invitation) return;
           state.monitorSpy.session = null;
           state.monitorSpy.busy = false;
           state.monitorSpy.status = "Cancelada";
@@ -2630,6 +2636,7 @@ async function ensureMonitorSpySoftphone() {
       };
       const sessionState = window.SIP?.SessionState || {};
       invitation.stateChange?.addListener?.((nextState) => {
+        if (state.monitorSpy.session !== invitation) return;
         let shouldAttachAudio = false;
         if (nextState === sessionState.Established) {
           state.monitorSpy.busy = false;
@@ -2689,18 +2696,25 @@ function prepareMonitorSpySoftphone() {
   return monitorSpyPreparation;
 }
 
-async function stopMonitorSpy() {
+let monitorSpyGeneration = 0;
+async function stopMonitorSpy({ keepRegistered = false } = {}) {
+  monitorSpyGeneration += 1;
+  state.monitorSpy.accepting = false;
   const session = state.monitorSpy.session;
+  state.monitorSpy.session = null;
   state.monitorSpy.busy = true;
   state.monitorSpy.status = "Encerrando";
   renderMonitorSpyPortal();
-  if (session) await terminateSipSession(session);
+  if (session) await finishMonitorSipOperation(() => {
+    if (session.state === SIP.SessionState.Established) return session.bye();
+    if (session.state === SIP.SessionState.Initial || session.state === SIP.SessionState.Establishing) return session.reject ? session.reject() : session.cancel();
+  });
   await api("/api/pbx/monitor/action", {
     method: "POST",
     body: JSON.stringify({ action: "hangup-monitor-spy" })
   }).catch(() => null);
   state.monitorSpy.session = null;
-  await disposeMonitorSpySoftphone();
+  if (!keepRegistered) await disposeMonitorSpySoftphone();
   state.monitorSpy.busy = false;
   state.monitorSpy.status = "Parada";
   state.monitorSpy.output = "Monitoramento encerrado.";
@@ -2715,6 +2729,8 @@ async function startMonitorBrowserSpy(target, requestedMode = "listen") {
     throw new Error("O navegador nao pode acessar o microfone neste ambiente");
   }
   if (state.monitorSpy.busy) return;
+  if (state.monitorSpy.session) return;
+  const generation = ++monitorSpyGeneration;
   state.monitorSpy.mode = mode;
   state.monitorSpy.busy = true;
   state.monitorSpy.status = "Registrando monitor";
@@ -2722,14 +2738,25 @@ async function startMonitorBrowserSpy(target, requestedMode = "listen") {
   renderMonitorSpyPortal();
   try {
     await prepareMonitorSpySoftphone();
+    if (generation !== monitorSpyGeneration || !state.monitorSpy.open) return;
     state.monitorSpy.status = "Conectando";
     state.monitorSpy.output = `Abrindo ${modeConfig.label.toLowerCase()} na chamada do operador...`;
     renderMonitorSpyPortal();
+    state.monitorSpy.accepting = true;
     await api("/api/pbx/monitor/action", {
       method: "POST",
-      body: JSON.stringify({ action: "spy-browser", target, mode })
+      body: JSON.stringify({ action: "spy-browser", target, mode, contact: state.monitorSpy.ua.contact.uri.user })
     });
-    state.monitorSpy.output = "Solicitacao enviada ao Asterisk.";
+    if (!state.monitorSpy.session) state.monitorSpy.output = "Solicitacao enviada ao Asterisk.";
+    setTimeout(() => {
+      if (generation === monitorSpyGeneration && state.monitorSpy.busy && !state.monitorSpy.session && state.monitorSpy.target === target) {
+        state.monitorSpy.accepting = false;
+        state.monitorSpy.busy = false;
+        state.monitorSpy.status = "Falha";
+        state.monitorSpy.output = "O monitor nao recebeu a conexao. Tente novamente.";
+        renderMonitorSpyPortal();
+      }
+    }, 12000);
     renderMonitorSpyPortal();
   } catch (error) {
     state.monitorSpy.busy = false;
@@ -3386,7 +3413,7 @@ function renderMonitorSpyModal() {
   const targetExtension = (state.config.extensions || []).find((extension) => String(extension.number) === target);
   const listening = Boolean(state.monitorSpy.session);
   const busy = Boolean(state.monitorSpy.busy);
-  const locked = listening || busy;
+  const locked = busy;
   const mode = monitorSpyMode(state.monitorSpy.mode);
   const modeConfig = MONITOR_SPY_MODES[mode];
   const modeHint = {
@@ -3427,7 +3454,7 @@ function renderMonitorSpyModal() {
       <div class="modal-actions">
         <button class="secondary-btn" id="monitorSpyCancelBtn" type="button">Cancelar</button>
         ${listening ? `<button class="secondary-btn danger" id="monitorSpyStopBtn" type="button"><i data-lucide="phone-off"></i>Encerrar monitoramento</button>` : ""}
-        <button class="primary-btn" id="monitorSpyStartBtn" type="button" ${locked ? "disabled" : ""}><i data-lucide="${modeConfig.icon}"></i>${escapeHtml(busy ? "Conectando..." : modeConfig.actionLabel)}</button>
+        <button class="primary-btn" id="monitorSpyStartBtn" type="button" ${locked || listening ? "disabled" : ""}><i data-lucide="${modeConfig.icon}"></i>${escapeHtml(busy ? "Conectando..." : modeConfig.actionLabel)}</button>
       </div>
     </section>
   `;
@@ -3435,7 +3462,12 @@ function renderMonitorSpyModal() {
 
 function renderMonitorSpyPortal() {
   if (!monitorSpyPortal) return;
+  const audio = monitorSpyPortal.querySelector("#monitorSpyAudio");
+  if (audio) audio.remove();
   monitorSpyPortal.innerHTML = renderMonitorSpyModal();
+  const replacement = monitorSpyPortal.querySelector("#monitorSpyAudio");
+  if (audio && replacement) replacement.replaceWith(audio);
+  else if (audio) { audio.pause(); audio.srcObject = null; }
   restoreMonitorSpyAudio();
   iconRefresh();
 }
@@ -7214,7 +7246,13 @@ document.addEventListener("click", async (event) => {
       return;
     }
 
-    if (monitorSpyModeButton && !state.monitorSpy.session && !state.monitorSpy.busy) {
+    if (monitorSpyModeButton && !state.monitorSpy.busy) {
+      const nextMode = monitorSpyMode(monitorSpyModeButton.dataset.monitorSpyMode);
+      if (state.monitorSpy.session && nextMode !== state.monitorSpy.mode) {
+        await stopMonitorSpy({ keepRegistered: true });
+        await startMonitorBrowserSpy(state.monitorSpy.target, nextMode);
+        return;
+      }
       state.monitorSpy.mode = monitorSpyMode(monitorSpyModeButton.dataset.monitorSpyMode);
       state.monitorSpy.output = "";
       state.monitorSpy.status = "Pronta";

@@ -261,6 +261,7 @@ function normalizePauseReason(reason) {
 }
 
 let pauseMutation = Promise.resolve();
+let monitorSpyOwner = null;
 function updateExtensionPause(number, paused, reason = "") {
   const operation = pauseMutation.catch(() => {}).then(async () => {
     const output = await runAsteriskControl(paused ? "queue-pause" : "queue-unpause", number, { reason });
@@ -732,6 +733,7 @@ async function runAsteriskControl(action, extensionNumber, payload = {}) {
     args.push(String(payload.targetEndpoint || payload.target || ""));
     args.push(String(payload.listenerEndpoint || ""));
     args.push(String(payload.mode || "listen"));
+    args.push(String(payload.contact || ""));
   }
   if (action === "dialer-call") args.push(String(payload.file || ""));
 
@@ -3194,7 +3196,8 @@ function activeChannelForMonitor(status, extensionNumber, channelName = "") {
 }
 
 function spyEndpointForMonitor(status, extensionNumber) {
-  const channel = activeChannelForMonitor(status, extensionNumber, "");
+  const number = String(extensionNumber || "").replace(/[^\d]/g, "");
+  const channel = (status.activeChannels || []).find(item => new RegExp(`^PJSIP/(?:web-)?${number}-[a-f0-9]+$`, "i").test(item.channel || ""));
   const endpoint = String(channel?.channel || "").match(/(?:PJSIP|SIP)\/((?:web-)?\d+)(?:[-/@]|\b)/i);
   return endpoint?.[1] || String(extensionNumber || "").replace(/[^\d]/g, "");
 }
@@ -4123,14 +4126,24 @@ app.post("/api/pbx/monitor/action", requireAuth, requireSupervisor, async (req, 
       if (mode !== "listen" && !userCanInterveneLiveCalls(req)) {
         return res.status(403).json({ error: "Sem permissao para intervir em chamadas" });
       }
-      const status = await readPbxStatus(config);
-      const activeChannel = activeChannelForMonitor(status, target, "");
+      const status = await readPbxStatus(config, { fresh: true });
+      const activeChannel = (status.activeChannels || []).find(item => new RegExp(`^PJSIP/(?:web-)?${target}-[a-f0-9]+$`, "i").test(item.channel || ""));
       if (!activeChannel?.channel) {
         return res.status(409).json({ error: "O ramal nao esta em uma chamada ativa" });
       }
-      const targetEndpoint = spyEndpointForMonitor(status, target);
+      const targetEndpoint = activeChannel.channel.replace(/^PJSIP\//, "");
       const listenerEndpoint = process.env.PBX_MONITOR_SIP_USER || "monitor-admin";
-      const output = await runAsteriskControl("spy-browser", "00", { targetEndpoint, listenerEndpoint, mode });
+      const contact = String(req.body.contact || "");
+      if (!/^[a-zA-Z0-9]{8,32}$/.test(contact)) return res.status(400).json({ error: "Atualize a pagina para registrar este navegador no monitor" });
+      const hasMonitor = (status.activeChannels || []).some(item => String(item.channel || "").startsWith(`PJSIP/${listenerEndpoint}-`));
+      if (monitorSpyOwner?.starting || hasMonitor) return res.status(409).json({ error: "Ja existe um monitoramento ativo. Encerre-o antes de iniciar outro." });
+      monitorSpyOwner = { sessionId: req.sessionID, starting: true };
+      let output;
+      try {
+        output = await runAsteriskControl("spy-browser", "00", { targetEndpoint, listenerEndpoint, mode, contact });
+      } finally {
+        if (monitorSpyOwner?.sessionId === req.sessionID) monitorSpyOwner.starting = false;
+      }
       if (asteriskCommandFailed(output)) {
         return res.status(409).json({ error: "O Asterisk nao conseguiu abrir o monitoramento no navegador", detail: output, targetEndpoint });
       }
@@ -4151,11 +4164,12 @@ app.post("/api/pbx/monitor/action", requireAuth, requireSupervisor, async (req, 
     }
 
     if (action === "hangup-monitor-spy") {
+      if (monitorSpyOwner?.sessionId !== req.sessionID) return res.json({ ok: true, channels: [] });
+      if (monitorSpyOwner.starting) return res.status(409).json({ error: "Aguarde a conexao do monitor terminar" });
       const listenerEndpoint = process.env.PBX_MONITOR_SIP_USER || "monitor-admin";
-      const status = await readPbxStatus(config);
+      const status = await readPbxStatus(config, { fresh: true });
       const monitorChannels = (status.activeChannels || []).filter((item) => {
-        const joined = [item.channel, item.data, item.callerId, item.extension].join(" ");
-        return new RegExp(`(?:PJSIP|SIP|Local)/${listenerEndpoint}(?:[-/@]|\\b)|ChanSpy`, "i").test(joined);
+        return String(item.channel || "").startsWith(`PJSIP/${listenerEndpoint}-`);
       });
       const outputs = [];
       for (const item of monitorChannels) {
@@ -4171,6 +4185,7 @@ app.post("/api/pbx/monitor/action", requireAuth, requireSupervisor, async (req, 
       if (!userCanMonitorExtension(req, config, target)) {
         return res.status(403).json({ error: "Ramal fora do escopo permitido para este supervisor" });
       }
+      monitorSpyOwner = null;
       const status = await readPbxStatus(config);
       const targetEndpoint = spyEndpointForMonitor(status, target);
       const output = await runAsteriskControl("spy", listener, { targetEndpoint });
@@ -4548,6 +4563,7 @@ module.exports = {
   app,
   startServer,
   _test: {
+    spyEndpointForMonitor,
     configForUser,
     configRevision,
     configSectionRevisions,

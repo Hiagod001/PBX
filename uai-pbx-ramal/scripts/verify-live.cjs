@@ -25,6 +25,7 @@ async function main() {
       await a.locator('#callBtn').click();
       await a.waitForFunction(()=>state.callPending||Boolean(state.session),null,{timeout:10000});
     };
+    if (!process.env.PBX_MONITOR_QA) {
     await check('pause and authoritative status',async()=>{
       await b.evaluate(()=>startPause('Treinamento'));
       await b.waitForFunction(()=>paused===true);
@@ -44,6 +45,7 @@ async function main() {
       await a.locator('#activeHangupBtn').click();
       await b.waitForFunction(()=>!state.session,null,{timeout:10000});
     });
+    }
     await check('answer and bidirectional media packets',async()=>{
       await call();await b.waitForFunction(()=>state.incoming&&Boolean(state.session),null,{timeout:30000});
       await b.locator('#activeAnswerBtn').click();
@@ -59,6 +61,7 @@ async function main() {
       }
     });
     await check('hangup established call clears both endpoints',async()=>{
+      if (process.env.PBX_MONITOR_QA) await require(process.env.PBX_MONITOR_QA)(pages, credentials);
       await b.locator('#activeHangupBtn').click();
       for(const p of pages)await p.waitForFunction(()=>!state.session&&!state.callPending,null,{timeout:10000});
     });
