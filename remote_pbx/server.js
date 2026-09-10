@@ -3829,7 +3829,17 @@ async function applyAsteriskConfig(config, existingFiles = null) {
   const generatedFiles = existingFiles || await generateAsteriskConfigs(config);
   const result = { generatedFiles, copied: false, reloaded: false, output: "" };
   if (process.env.ASTERISK_APPLY_CMD) {
-    const { stdout, stderr } = await execAsync(process.env.ASTERISK_APPLY_CMD);
+    let stdout;
+    let stderr;
+    try {
+      ({ stdout, stderr } = await execAsync(process.env.ASTERISK_APPLY_CMD));
+    } catch (cause) {
+      const error = new Error("A configuracao nao foi aplicada ao Asterisk. Os dados anteriores foram preservados; tente novamente ou consulte os logs do sistema.");
+      error.status = 503;
+      error.expose = true;
+      error.cause = cause;
+      throw error;
+    }
     result.output = `${stdout || ""}${stderr || ""}`.trim();
     result.copied = /PBX_APPLY_CHANGED=1/.test(result.output) || !/PBX_APPLY_CHANGED=0/.test(result.output);
     result.reloaded = /PBX_APPLY_RELOADED=1/.test(result.output) || !/PBX_APPLY_RELOADED=0/.test(result.output);
@@ -4538,7 +4548,7 @@ app.use((error, req, res, _next) => {
   if (res.headersSent) return;
   const status = Number(error.status || error.statusCode) || 500;
   res.status(status).json({
-    error: status >= 500 ? "Falha interna ao processar a solicitacao" : error.message,
+    error: status >= 500 && !error.expose ? "Falha interna ao processar a solicitacao" : error.message,
     ...(Array.isArray(error.conflicts) ? { conflicts: error.conflicts } : {}),
     ...(process.env.NODE_ENV === "development" ? { detail: error.message } : {})
   });

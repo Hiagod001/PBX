@@ -123,7 +123,17 @@ test("configuration save and apply use one serialized endpoint", () => {
   assert.match(serverSource, /await saveConfig\(previous\)\.catch/);
   assert.match(appSource, /method: "PATCH"/);
   assert.match(appSource, /_sectionRevisions/);
-  assert.doesNotMatch(appSource.match(/async function saveConfig\([^)]*\)[\s\S]*?\n}\n/)[0], /renderAll\(\)/);
+  assert.doesNotMatch(appSource.match(/async function saveConfig\([^)]*\)[\s\S]*?\r?\n}\r?\n/)[0], /renderAll\(\)/);
+});
+
+test("Asterisk apply survives Windows deployments and exposes an actionable failure", () => {
+  const environmentExample = fs.readFileSync(path.join(__dirname, "..", ".env.example"), "utf8");
+  const sudoers = fs.readFileSync(path.join(__dirname, "..", "deploy", "pbx-sip-admin.sudoers"), "utf8");
+  const serverSource = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  assert.match(environmentExample, /sudo -n \/usr\/bin\/bash \/opt\/pbx-sip-admin\/scripts\/apply-root\.sh/);
+  assert.match(sudoers, /NOPASSWD: \/usr\/bin\/bash \/opt\/pbx-sip-admin\/scripts\/apply-root\.sh/);
+  assert.match(serverSource, /error\.expose = true/);
+  assert.match(serverSource, /status >= 500 && !error\.expose/);
 });
 
 test("independent configuration sections can be merged without overwriting other modules", () => {

@@ -1,0 +1,7 @@
+agenda ALL=(root) NOPASSWD: /usr/bin/bash /opt/pbx-sip-admin/scripts/apply-root.sh
+agenda ALL=(root) NOPASSWD: /opt/pbx-sip-admin/scripts/asterisk-read-root.sh endpoints
+agenda ALL=(root) NOPASSWD: /opt/pbx-sip-admin/scripts/asterisk-read-root.sh registrations
+agenda ALL=(root) NOPASSWD: /opt/pbx-sip-admin/scripts/asterisk-read-root.sh contacts
+agenda ALL=(root) NOPASSWD: /opt/pbx-sip-admin/scripts/asterisk-control-root.sh
+agenda ALL=(root) NOPASSWD: /opt/pbx-sip-admin/scripts/asterisk-read-root.sh queues
+agenda ALL=(root) NOPASSWD: /opt/pbx-sip-admin/scripts/asterisk-read-root.sh channels
