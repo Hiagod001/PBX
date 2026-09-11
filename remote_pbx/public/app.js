@@ -6848,9 +6848,10 @@ async function handleSoftphoneClick(event) {
 document.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.target;
+  const formId = form.getAttribute("id");
 
   try {
-    if (form.id === "loginForm") {
+    if (formId === "loginForm") {
       const formData = new FormData(form);
       const response = await api("/api/login", {
         method: "POST",
@@ -6865,7 +6866,7 @@ document.addEventListener("submit", async (event) => {
       return;
     }
 
-    if (form.id === "extensionLoginForm") {
+    if (formId === "extensionLoginForm") {
       const formData = new FormData(form);
       const response = await api("/api/extensions/login", {
         method: "POST",
@@ -6881,7 +6882,7 @@ document.addEventListener("submit", async (event) => {
       return;
     }
 
-    if (form.id === "passwordForm") {
+    if (formId === "passwordForm") {
       const formData = new FormData(form);
       const response = await api("/api/change-password", {
         method: "POST",
@@ -6896,7 +6897,7 @@ document.addEventListener("submit", async (event) => {
       return;
     }
 
-    if (form.id === "ivrAudioUploadForm") {
+    if (formId === "ivrAudioUploadForm") {
       const formData = new FormData(form);
       const response = await fetch("/api/ivr-audios", {
         method: "POST",
@@ -6914,13 +6915,13 @@ document.addEventListener("submit", async (event) => {
       return;
     }
 
-    if (form.id === "dialerCampaignForm") {
+    if (formId === "dialerCampaignForm") {
       await saveDialerCampaign(form);
       return;
     }
   } catch (error) {
-    if (form.id === "loginForm") $("#loginMessage").textContent = error.message;
-    else if (form.id === "extensionLoginForm") $("#extensionLoginMessage").textContent = error.message;
+    if (formId === "loginForm") $("#loginMessage").textContent = error.message;
+    else if (formId === "extensionLoginForm") $("#extensionLoginMessage").textContent = error.message;
     else setMessage(error.message);
   }
 });
