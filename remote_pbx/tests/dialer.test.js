@@ -89,6 +89,34 @@ test("does not replace an empty database user field with the linked call id", ()
   assert.equal(call.userField, "");
 });
 
+test("normalizes Asterisk channel suffixes to configured report trunks", () => {
+  const config = structuredClone(defaultConfig);
+  config.trunks = [
+    { id: "trunk-operadora", sipServer: "192.0.2.10" },
+    { id: "trunk-2", sipServer: "192.0.2.11" }
+  ];
+
+  assert.equal(_test.normalizeReportTrunk("PJSIP/trunk-2-00000107", config), "trunk-2");
+  assert.equal(_test.normalizeReportTrunk("trunk-operadora-000000f7", config), "trunk-operadora");
+  assert.equal(_test.normalizeReportTrunk("PJSIP/777-00000108", config), "");
+
+  const call = _test.mapDbCdrRow({
+    calldate: new Date("2026-09-14T15:19:49.000Z"),
+    channel: "PJSIP/trunk-2-00000107",
+    trunk: "trunk-2-00000107",
+    uniqueid: "report-trunk-test"
+  }, 0, config);
+  assert.equal(call.trunk, "trunk-2");
+});
+
+test("trunk chart omits internal calls without a trunk", () => {
+  const chart = _test.buildChartData([
+    { trunk: "trunk-operadora", startedAt: "2026-09-14T10:00:00.000Z", duration: 10, billsec: 5 },
+    { trunk: "", startedAt: "2026-09-14T10:01:00.000Z", duration: 10, billsec: 5 }
+  ]);
+  assert.deepEqual(chart.byTrunk.map((item) => item.label), ["trunk-operadora"]);
+});
+
 test("keeps accepted dialer metadata when call legs are grouped", () => {
   const [call] = _test.collapseReportCallLegs([
     { id: "agent", linkedId: "linked-1", userField: "linked-1", status: "answered", billsec: 30, duration: 35, destinationChannel: "PJSIP/705", lastApp: "Dial" },

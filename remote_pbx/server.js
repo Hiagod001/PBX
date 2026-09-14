@@ -2039,9 +2039,29 @@ function inferReportType(call, config) {
 
 function inferTrunk(call, config) {
   const joined = `${call.channel || ""} ${call.dstchannel || ""} ${call.lastdata || ""} ${call.peeraccount || ""}`;
-  const trunkMatch = joined.match(/(trunk-[\w.-]+|operadora[\w.-]*|PJSIP\/([^/@]+)@trunk-[\w.-]+)/i);
-  if (trunkMatch) return trunkMatch[1].startsWith("PJSIP/") ? trunkMatch[2] : trunkMatch[1];
+  const configuredTrunk = normalizeReportTrunk(joined, config);
+  if (configuredTrunk) return configuredTrunk;
   return /trunk|from-trunk|inbound/.test(String(call.dcontext || "").toLowerCase()) ? (config.outbound?.defaultTrunk || "trunk-operadora") : "";
+}
+
+function normalizeReportTrunk(value, config) {
+  const source = String(value || "").toLowerCase();
+  if (!source) return "";
+  const configuredIds = [
+    ...(Array.isArray(config.trunks) ? config.trunks.map((trunk) => trunk.id) : []),
+    config.outbound?.defaultTrunk,
+    config.trunk?.id,
+    "trunk-operadora"
+  ]
+    .map((id) => String(id || "").trim())
+    .filter(Boolean)
+    .filter((id, index, ids) => ids.indexOf(id) === index)
+    .sort((left, right) => right.length - left.length);
+
+  return configuredIds.find((id) => {
+    const escaped = id.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|[/@\\s,])${escaped}(?=$|[/@\\s,]|-[0-9a-f]{6,}(?:$|[/@\\s,]))`, "i").test(source);
+  }) || "";
 }
 
 function inferQueue(call, config) {
@@ -2231,7 +2251,7 @@ function mapCdrColumns(columns, index, config) {
     extension,
     extensionName: extensionInfo.name || "",
     department: extensionInfo.department || "",
-    trunk: raw.trunk || inferTrunk(raw, config),
+    trunk: normalizeReportTrunk(raw.trunk, config) || inferTrunk(raw, config),
     did: raw.did || inferDid(raw, type),
     queue: raw.queue || inferQueue(raw, config),
     ivrMenu: ivrOutcome.menu,
@@ -3058,7 +3078,7 @@ function buildDashboard(calls) {
     totalBillsec,
     recordings: calls.filter((call) => call.recordingExists).length,
     topExtensions: groupCount(calls, (call) => call.extension ? `${call.extension} ${call.extensionName || ""}`.trim() : ""),
-    topTrunks: groupCount(calls, (call) => call.trunk),
+    topTrunks: groupCount(calls.filter((call) => call.trunk), (call) => call.trunk),
     peakHours: groupCount(calls, (call) => {
       const started = parseFlexibleDate(call.startedAt);
       return started ? `${String(started.getHours()).padStart(2, "0")}:00` : "";
@@ -3076,7 +3096,7 @@ function buildChartData(calls) {
     }, 24).sort((a, b) => a.label.localeCompare(b.label)),
     byExtension: groupCount(calls, (call) => call.extension ? `${call.extension} ${call.extensionName || ""}`.trim() : ""),
     byStatus: groupCount(calls, (call) => call.statusLabel),
-    byTrunk: groupCount(calls, (call) => call.trunk),
+    byTrunk: groupCount(calls.filter((call) => call.trunk), (call) => call.trunk),
     byType: groupCount(calls, (call) => call.typeLabel),
     averageDurationByDay: groupCount(calls, (call) => String(call.startedAt || "").slice(0, 10), 60)
       .map((item) => ({ label: item.label, value: item.value ? Math.round(item.duration / item.value) : 0 }))
@@ -4635,6 +4655,8 @@ module.exports = {
     dialerReportForAttempt,
     recentReportCalls,
     mapDbCdrRow,
+    normalizeReportTrunk,
+    buildChartData,
     parseIvrOutcome,
     spaRoutes
   }
