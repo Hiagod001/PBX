@@ -204,9 +204,21 @@ const state = {
   dialerDestinations: { queues: [], extensions: [] },
   dialerTrunks: [],
   dialerEditingId: "",
+  dialerEditorOpen: false,
+  dialerEditingNew: false,
   ivrZoom: 1,
   ivrViewport: null,
   ivrViewports: {},
+  editingExtensionIndex: null,
+  editingExtensionNew: false,
+  editingTrunkIndex: null,
+  editingTrunkNew: false,
+  editingQueueIndex: null,
+  editingQueueNew: false,
+  editingRouteIndex: null,
+  editingRouteNew: false,
+  editingUserIndex: null,
+  editingUserNew: false,
   openExtensionDetails: {},
   openQueueDetails: {}
 };
@@ -231,18 +243,18 @@ const monitorStatusContent = document.querySelector("#monitorStatusContent");
 const monitorSpyPortal = document.querySelector("#monitorSpyPortal");
 
 const titleByTab = {
-  overview: "Visao Estrategica",
+  overview: "Visao Geral",
   status: "Monitor de Filas",
-  trunk: "Tronco SIP",
-  extensions: "Ramais SIP",
-  routing: "Rotas e permissoes",
-  ivr: "Construtor URA",
+  trunk: "Troncos",
+  extensions: "Ramais",
+  routing: "Rotas e regras",
+  ivr: "URAs",
   dialer: "Discador",
   audios: "Gravacoes",
-  queues: "Grupos e filas",
+  queues: "Filas de atendimento",
   security: "Seguranca",
   logs: "Sistema",
-  reports: "Relatorios PBX",
+  reports: "Relatorios",
   audit: "Auditoria",
   users: "Usuarios"
 };
@@ -250,7 +262,7 @@ const titleByTab = {
 const subtitleByTab = {
   overview: "Indicadores, tendencias e desempenho do atendimento",
   status: "Acompanhamento em tempo real de filas e agentes",
-  trunk: "Conectividade SIP e entradas da operadora",
+  trunk: "Conexoes com as operadoras de telefonia",
   extensions: "Cadastro, presenca e recursos dos ramais",
   routing: "Regras de entrada, saida e permissoes",
   ivr: "Fluxos de atendimento automatico",
@@ -431,11 +443,15 @@ function renderSurfaceInBackground(root, render) {
   const draft = captureSurfaceDraft(root);
   render();
   restoreSurfaceDraft(root, draft);
+  iconRefresh();
   return true;
 }
 
 function iconRefresh() {
+  persistViewPreferences();
   installLocalSaveActions();
+  window.installRecordSearch?.(state.user?.username || "");
+  window.installFieldHelp?.();
   const lucide = window.lucide;
   if (!lucide?.createIcons || !lucide.icons) return;
   try {
@@ -445,13 +461,38 @@ function iconRefresh() {
   }
 }
 
+function restoreViewPreferences() {
+  if (!state.user?.username || !window.PbxViewPreferences) return;
+  try {
+    const prefs = window.PbxViewPreferences.read(localStorage, state.user.username);
+    state.pbxReports.meta.pageSize = prefs.reportSize;
+    state.recordingLibrary.meta.pageSize = prefs.recordingSize;
+    state.pbxReports.filtersOpen = prefs.reportFiltersOpen;
+    state.recordingLibrary.filtersOpen = prefs.recordingFiltersOpen;
+    state.pbxReports.compactOpen = prefs.compactOpen;
+  } catch { /* Restricted browsers can still use the default layout. */ }
+}
+
+function persistViewPreferences() {
+  if (!state.user?.username || !window.PbxViewPreferences) return;
+  try {
+    window.PbxViewPreferences.write(localStorage, state.user.username, {
+      reportSize: state.pbxReports.meta.pageSize,
+      recordingSize: state.recordingLibrary.meta.pageSize,
+      reportFiltersOpen: state.pbxReports.filtersOpen,
+      recordingFiltersOpen: state.recordingLibrary.filtersOpen,
+      compactOpen: state.pbxReports.compactOpen
+    });
+  } catch { /* Never interrupt an operation because a preference cannot be saved. */ }
+}
+
 function installLocalSaveActions() {
   if (!state.config || !(state.user?.role === "admin" || state.user?.username === "admin")) return;
   const surfaces = {
-    extensions: { label: "Salvar ramais", selector: "[data-extension-card]" },
-    trunk: { label: "Salvar troncos", selector: "[data-trunk-card]" },
-    queues: { label: "Salvar filas", selector: ".panel" },
-    routing: { label: "Salvar rotas", selector: ".panel" },
+    extensions: { label: "Salvar ramais", selector: "[data-extension-card][data-entity-editor]" },
+    trunk: { label: "Salvar troncos", selector: "[data-trunk-card][data-entity-editor]" },
+    queues: { label: "Salvar filas", selector: "[data-queue-index][data-entity-editor]" },
+    routing: { label: "Salvar rotas", selector: "[data-route-index][data-entity-editor]" },
     security: { label: "Salvar configuracao", selector: ".panel" }
   };
   Object.entries(surfaces).forEach(([tab, { label, selector }]) => {
@@ -1840,7 +1881,7 @@ async function loadTabData(tab = state.activeTab) {
   if (!state.config) return;
   if (tab === "reports") await loadPbxStatus();
   if (["overview", "reports"].includes(tab)) await loadReports();
-  if (tab === "status") await loadPbxStatus();
+  if (["status", "security"].includes(tab)) await loadPbxStatus();
   if (tab === "users") await loadUsers();
   if (tab === "audit") await loadAudit();
   if (tab === "dialer") await loadDialerCampaigns();
@@ -2099,6 +2140,7 @@ function startIncomingRingtone() {
 }
 
 function clearConsultTransferState() {
+  state.extensionCall.transferController?.dispose().catch(() => {});
   state.extensionCall.consultSession = null;
   state.extensionCall.consultTarget = "";
   state.extensionCall.consultStatus = "";
@@ -2284,7 +2326,7 @@ function renderExtensionPortal() {
   `).join("");
   const activeCall = isExtensionCallActive();
   const callLocked = activeCall ? "disabled" : "";
-  const consultActive = Boolean(state.extensionCall.consultSession);
+  const consultActive = Boolean(state.extensionCall.transferPhase && state.extensionCall.transferPhase !== "idle");
   const phoneInPicture = Boolean(phonePipWindow());
   const floatingPhone = Boolean(state.extensionCall.floatingPhoneOpen && !phoneInPicture);
   const detachedPhone = floatingPhone || phoneInPicture;
@@ -2345,7 +2387,7 @@ function renderExtensionPortal() {
       ${activeChannel ? `<div class="call-actions"><button id="serverHangupBtn" class="icon-btn danger" type="button" data-channel="${escapeHtml(activeChannel.channel)}" title="Derrubar canal"><i data-lucide="unlink"></i></button></div>` : ""}
       <div class="transfer-box">
         <input id="extensionTransferTarget" value="${escapeHtml(state.extensionCall.transferTarget)}" inputmode="tel" placeholder="Ramal para transferencia assistida" />
-        <button id="assistedTransferStartBtn" class="secondary-btn" type="button"><i data-lucide="messages-square"></i>Transferencia Assistida</button>
+        <button id="assistedTransferStartBtn" class="secondary-btn" type="button" ${state.extensionCall.transferPhase && state.extensionCall.transferPhase !== "idle" ? "disabled" : ""}><i data-lucide="messages-square"></i>Transferir</button>
       </div>
       ${consultActive ? `
         <div class="assisted-transfer-panel">
@@ -2353,8 +2395,8 @@ function renderExtensionPortal() {
           <strong>${escapeHtml(state.extensionCall.consultTarget || "-")}</strong>
           <small>${escapeHtml(state.extensionCall.consultStatus || "Consultando ramal")}</small>
           <div>
-            <button id="assistedTransferCompleteBtn" class="primary-btn" type="button"><i data-lucide="check"></i>Confirmar</button>
-            <button id="assistedTransferCancelBtn" class="secondary-btn danger" type="button"><i data-lucide="x"></i>Cancelar</button>
+            <button id="assistedTransferCompleteBtn" class="primary-btn" type="button" ${state.extensionCall.transferPhase === "consulting" ? "" : "disabled"}><i data-lucide="check"></i>Confirmar</button>
+            <button id="assistedTransferCancelBtn" class="secondary-btn danger" type="button" ${state.extensionCall.transferBusy ? "disabled" : ""}><i data-lucide="x"></i>Voltar ao cliente</button>
           </div>
         </div>
       ` : ""}
@@ -3029,12 +3071,31 @@ async function toggleSoftphoneHold() {
 }
 
 async function transferSoftphone() {
-  const targetNumber = String(state.extensionCall.transferTarget || "").trim();
-  const session = state.extensionCall.session;
-  if (!targetNumber || !session?.refer) throw new Error("Transferencia SIP indisponivel");
-  const target = SIP.UserAgent.makeURI(`sip:${targetNumber}@${state.extensionPortal.sip.domain}`);
-  await session.refer(target);
-  setExtensionMessage("Transferencia enviada.", "ok");
+  return startAssistedTransfer();
+}
+
+function assistedTransferController() {
+  if (!state.extensionCall.transferController) {
+    state.extensionCall.transferController = window.AssistedTransfer.create({
+      SIP: window.SIP,
+      getSession: () => state.extensionCall.session,
+      getAgent: () => state.extensionCall.ua,
+      getMuted: () => state.extensionCall.muted,
+      getDomain: () => state.extensionPortal.sip.domain,
+      audio: attachRemoteAudio,
+      report: error => setExtensionMessage(error.message, "error"),
+      changed: ({ phase, target, busy }) => {
+        state.extensionCall.transferPhase = phase;
+        state.extensionCall.transferBusy = busy;
+        state.extensionCall.consultSession = state.extensionCall.transferController?.consult || null;
+        state.extensionCall.consultTarget = target;
+        state.extensionCall.consultStatus = ({ holding: "Colocando cliente em espera", calling: "Chamando destino", consulting: "Em consulta. Cliente em espera", completing: "Concluindo transferência", returning: "Voltando ao cliente", held: "Cliente em espera. Clique em Voltar ao cliente" })[phase] || "";
+        state.extensionCall.held = phase !== "idle";
+        renderExtensionPortal();
+      }
+    });
+  }
+  return state.extensionCall.transferController;
 }
 
 function watchConsultTransferSession(session) {
@@ -3059,46 +3120,12 @@ function watchConsultTransferSession(session) {
 }
 
 async function startAssistedTransfer() {
-  const targetNumber = String(state.extensionCall.transferTarget || "").trim();
-  const session = state.extensionCall.session;
-  if (!targetNumber || !session?.refer || !state.extensionCall.ua) throw new Error("Transferencia assistida indisponivel");
-  if (state.extensionCall.consultSession) throw new Error("Ja existe uma consulta em andamento");
-
-  await setSoftphoneHold(true);
-  const target = SIP.UserAgent.makeURI(`sip:${targetNumber}@${state.extensionPortal.sip.domain}`);
-  if (!target || !SIP.Inviter) throw new Error("Nao foi possivel chamar o ramal de destino");
-
-  const consultSession = new SIP.Inviter(state.extensionCall.ua, target, {
-    sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } }
-  });
-  state.extensionCall.consultSession = consultSession;
-  state.extensionCall.consultTarget = targetNumber;
-  state.extensionCall.consultStatus = "Chamando ramal";
-  watchConsultTransferSession(consultSession);
-  renderExtensionPortal();
-  try {
-    await consultSession.invite();
-    setExtensionMessage(`Consultando ramal ${targetNumber}. Cliente em espera.`, "info");
-  } catch (error) {
-    clearConsultTransferState();
-    await setSoftphoneHold(false);
-    throw error;
-  }
+  await assistedTransferController().start(String(state.extensionCall.transferTarget || "").trim());
 }
 
 async function completeAssistedTransfer() {
-  const session = state.extensionCall.session;
-  const consultSession = state.extensionCall.consultSession;
-  if (!session?.refer || !consultSession) throw new Error("Nenhuma transferencia assistida em andamento");
-  const sessionState = window.SIP?.SessionState || {};
-  if (consultSession.state !== sessionState.Established) throw new Error("Aguarde o ramal de destino atender para confirmar");
-
-  await session.refer(consultSession);
+  await assistedTransferController().complete();
   setExtensionMessage("Transferencia assistida confirmada.", "ok");
-  setTimeout(() => {
-    terminateSipSession(session).catch(() => {});
-    terminateSipSession(consultSession).catch(() => {});
-  }, 700);
   state.extensionCall.endedAt = Date.now();
   addExtensionCallHistory("Encerrada");
   state.extensionCall.session = null;
@@ -3110,9 +3137,7 @@ async function completeAssistedTransfer() {
 }
 
 async function cancelAssistedTransfer() {
-  await terminateSipSession(state.extensionCall.consultSession);
-  clearConsultTransferState();
-  await setSoftphoneHold(false);
+  await assistedTransferController().cancel();
   setExtensionMessage("Transferencia assistida cancelada. Cliente voltou da espera.", "info");
 }
 
@@ -3650,7 +3675,7 @@ function renderStatus() {
           <div class="monitor-queue-head">
             <div>
               <h3>${escapeHtml(queue.name || queue.id)}</h3>
-              <span class="hint">Fila ${escapeHtml(queue.id)} · ${escapeHtml(queue.strategy || "sem estrategia")}</span>
+              <span class="hint">Fila ${escapeHtml(queue.id)} · ${escapeHtml(queueStrategyLabel(queue.strategy))}</span>
             </div>
             <div class="queue-summary">
               <span class="available">Disponivel: <strong>${monitorNumber(counts.available)}</strong></span>
@@ -4111,125 +4136,143 @@ function renderMonitorPreferencesSurface() {
 
 function renderTrunk() {
   const trunks = ensureConfigTrunks();
-  const cards = trunks
+  const editingIndex = Number.isInteger(state.editingTrunkIndex) && trunks[state.editingTrunkIndex] ? state.editingTrunkIndex : null;
+  const editing = editingIndex === null ? null : trunks[editingIndex];
+  const summaryCards = trunks
     .map(
       (trunk, index) => `
-      <article class="trunk-config-card" data-trunk-card data-index="${index}">
+      <article class="trunk-list-card" data-trunk-summary-index="${index}">
         <div class="panel-header compact-card-header">
           <div>
+            <p class="eyebrow">Tronco SIP</p>
             <h3>${escapeHtml(trunkLabel(trunk))}</h3>
-            <p class="microcopy">${escapeHtml(trunk.id)} Â· ${escapeHtml((trunk.transport || "udp").toUpperCase())} Â· ${trunk.active === false ? "Inativo" : "Ativo"}</p>
+            <p class="microcopy">${escapeHtml(trunk.id)} · ${escapeHtml((trunk.transport || "udp").toUpperCase())} · ${trunk.active === false ? "Inativo" : "Ativo"}</p>
           </div>
-          <div class="compact-card-actions">
-            <span class="badge">${escapeHtml(trunk.mainNumber || trunk.sipUser || "SIP")}</span>
-            ${index > 0 ? `<button class="icon-btn danger" data-remove-trunk="${index}" type="button" title="Remover tronco"><i data-lucide="trash-2"></i></button>` : ""}
-          </div>
+          <span class="badge ${trunk.active === false ? "warn" : "ok"}">${trunk.active === false ? "Inativo" : "Ativo"}</span>
         </div>
-        <div class="field-grid compact-field-grid">
-          ${fieldBlock("Nome", "Nome simples para identificar esse tronco no painel.", `<input data-trunk-field="name" value="${escapeHtml(trunk.name || "")}" placeholder="Operadora principal" />`)}
-          ${fieldBlock("ID interno", "Identificador tecnico usado no Asterisk. Use letras, numeros e hifen.", `<input data-trunk-field="id" value="${escapeHtml(trunk.id)}" ${index === 0 ? "readonly" : ""} />`)}
-          ${fieldBlock("Numero principal", "Numero que a operadora entrega para receber e apresentar chamadas. Use so numeros.", `<input data-trunk-field="mainNumber" value="${escapeHtml(trunk.mainNumber || "")}" placeholder="Ex: 3431950817" />`)}
-          ${fieldBlock("Usuario SIP", "Login que a operadora forneceu para registrar o tronco no servidor SIP.", `<input data-trunk-field="sipUser" value="${escapeHtml(trunk.sipUser || "")}" />`)}
-          ${fieldBlock("Senha SIP", "Senha do tronco SIP da operadora. Se estiver errada, o tronco nao registra.", `<input class="masked-secret" data-trunk-field="sipPassword" type="text" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore value="${escapeHtml(trunk.sipPassword || "")}" />`)}
-          ${fieldBlock("Servidor SIP", "Endereco IP ou dominio do servidor da operadora.", `<input data-trunk-field="sipServer" value="${escapeHtml(trunk.sipServer || "")}" placeholder="sip.operadora.com.br" />`, "wide")}
-          ${fieldBlock("Porta", "Porta de registro SIP. Em geral 5060 para UDP/TCP ou 5061 para TLS.", `<select data-trunk-field="port">${option("5060", String(trunk.port || 5060), "5060 UDP/TCP")}${option("5061", String(trunk.port || 5060), "5061 TLS")}</select>`)}
-          ${fieldBlock("Transporte", "Escolha UDP para o comum ou TLS quando a operadora exigir sinalizacao segura.", `<select data-trunk-field="transport">${option("udp", trunk.transport || "udp", "UDP")}${option("tcp", trunk.transport || "udp", "TCP")}${option("tls", trunk.transport || "udp", "TLS")}</select>`)}
-          ${fieldBlock("Chamadas simultaneas", "Limite de chamadas externas ao mesmo tempo nesse tronco.", `<select data-trunk-field="simultaneousCalls">${Array.from({ length: 20 }, (_, optIndex) => option(String(optIndex + 1), String(trunk.simultaneousCalls || 4), `${optIndex + 1}`)).join("")}</select>`)}
-          ${fieldBlock("Status", "Desative para tirar esse tronco do discador e da geracao SIP sem apagar os dados.", `<select data-trunk-field="active">${option("true", String(trunk.active !== false), "Ativo")}${option("false", String(trunk.active !== false), "Inativo")}</select>`)}
-          ${fieldBlock("Codecs", "Formatos de audio liberados para esse tronco. Separe por virgula.", `<input data-trunk-field="codecs" value="${escapeHtml((trunk.codecs || []).join(", "))}" placeholder="alaw, ulaw" />`, "wide")}
-          ${fieldBlock("Destino de entrada", "Escolha qual URA, fila, grupo ou ramal atende as chamadas que chegam por este tronco.", `<div class="destination-picker">${trunkInboundChoices(trunk.inboundDestinationType || "ivr", trunk.inboundDestination || "main")}</div>`, "wide")}
+        <div class="list-card-meta">
+          <span><strong>Numero principal</strong>${escapeHtml(trunk.mainNumber || "Nao informado")}</span>
+          <span><strong>Servidor SIP</strong>${escapeHtml(trunk.sipServer || "Nao informado")}</span>
+          <span><strong>Transporte</strong>${escapeHtml((trunk.transport || "udp").toUpperCase())}</span>
+        </div>
+        <div class="compact-card-actions">
+          <button class="primary-btn compact" data-edit-trunk="${index}" type="button"><i data-lucide="pencil"></i>Editar</button>
+          ${index > 0 ? `<button class="icon-btn danger" data-remove-trunk="${index}" type="button" title="Remover tronco"><i data-lucide="trash-2"></i></button>` : `<span class="badge"><i data-lucide="shield-check"></i>Principal protegida</span>`}
         </div>
       </article>`
     )
     .join("");
-  pages.trunk.innerHTML = `
-    <div class="section-grid">
+  const editor = editing
+    ? `
+      <section class="panel entity-editor-shell">
+        <div class="panel-header entity-editor-header">
+          <div>
+            <p class="eyebrow">Editar tronco SIP</p>
+            <h3>${escapeHtml(trunkLabel(editing))}</h3>
+            <p class="microcopy">Edite somente este tronco. As alteracoes ficam em rascunho ate salvar e aplicar.</p>
+          </div>
+          <div class="compact-card-actions">
+            <button class="secondary-btn" data-cancel-trunk-edit type="button"><i data-lucide="arrow-left"></i>Voltar para lista</button>
+            ${editingIndex > 0 ? `<button class="icon-btn danger" data-remove-trunk="${editingIndex}" type="button" title="Remover tronco"><i data-lucide="trash-2"></i></button>` : ""}
+          </div>
+        </div>
+        <article class="trunk-config-card" data-trunk-card data-entity-editor data-index="${editingIndex}">
+          <div class="field-grid compact-field-grid">
+            ${fieldBlock("Nome", "Nome simples para identificar esse tronco no painel.", `<input data-trunk-field="name" value="${escapeHtml(editing.name || "")}" placeholder="Operadora principal" />`)}
+            ${fieldBlock("ID interno", "Identificador tecnico usado no Asterisk. Use letras, numeros e hifen.", `<input data-trunk-field="id" value="${escapeHtml(editing.id)}" ${editingIndex === 0 ? "readonly" : ""} />`)}
+            ${fieldBlock("Numero principal", "Numero que a operadora entrega para receber e apresentar chamadas. Use so numeros.", `<input data-trunk-field="mainNumber" value="${escapeHtml(editing.mainNumber || "")}" placeholder="Ex: 3431950817" />`)}
+            ${fieldBlock("Usuario SIP", "Login que a operadora forneceu para registrar o tronco no servidor SIP.", `<input data-trunk-field="sipUser" value="${escapeHtml(editing.sipUser || "")}" />`)}
+            ${fieldBlock("Senha SIP", "Senha do tronco SIP da operadora. Se estiver errada, o tronco nao registra.", `<input class="masked-secret" data-trunk-field="sipPassword" type="text" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore value="${escapeHtml(editing.sipPassword || "")}" />`)}
+            ${fieldBlock("Servidor SIP", "Endereco IP ou dominio do servidor da operadora.", `<input data-trunk-field="sipServer" value="${escapeHtml(editing.sipServer || "")}" placeholder="sip.operadora.com.br" />`, "wide")}
+            ${fieldBlock("Porta", "Porta de registro SIP. Em geral 5060 para UDP/TCP ou 5061 para TLS.", `<select data-trunk-field="port">${option("5060", String(editing.port || 5060), "5060 UDP/TCP")}${option("5061", String(editing.port || 5060), "5061 TLS")}</select>`)}
+            ${fieldBlock("Transporte", "Escolha UDP para o comum ou TLS quando a operadora exigir sinalizacao segura.", `<select data-trunk-field="transport">${option("udp", editing.transport || "udp", "UDP")}${option("tcp", editing.transport || "udp", "TCP")}${option("tls", editing.transport || "udp", "TLS")}</select>`)}
+            ${fieldBlock("Chamadas simultaneas", "Limite de chamadas externas ao mesmo tempo nesse tronco.", `<select data-trunk-field="simultaneousCalls">${Array.from({ length: 20 }, (_, optIndex) => option(String(optIndex + 1), String(editing.simultaneousCalls || 4), `${optIndex + 1}`)).join("")}</select>`)}
+            ${fieldBlock("Status", "Desative para tirar esse tronco do discador e da geracao SIP sem apagar os dados.", `<select data-trunk-field="active">${option("true", String(editing.active !== false), "Ativo")}${option("false", String(editing.active !== false), "Inativo")}</select>`)}
+            ${fieldBlock("Codecs", "Formatos de audio liberados para esse tronco. Separe por virgula.", `<input data-trunk-field="codecs" value="${escapeHtml((editing.codecs || []).join(", "))}" placeholder="alaw, ulaw" />`, "wide")}
+            ${fieldBlock("Destino de entrada", "Escolha qual URA, fila, grupo ou ramal atende as chamadas que chegam por este tronco.", `<div class="destination-picker">${trunkInboundChoices(editing.inboundDestinationType || "ivr", editing.inboundDestination || "main")}</div>`, "wide")}
+          </div>
+        </article>
+      </section>`
+    : `
       <section class="panel">
         <div class="panel-header">
           <div>
+            <p class="eyebrow">Telefonia</p>
             <h3>Troncos da operadora</h3>
-            <p class="microcopy">Cadastre quantos troncos SIP precisar e use o rodizio no Discador.</p>
+            <p class="microcopy">Consulte os troncos cadastrados e abra somente o registro que deseja editar.</p>
           </div>
-          <button id="addTrunkBtn" class="secondary-btn" type="button"><i data-lucide="plus"></i>Novo tronco</button>
+          <button id="addTrunkBtn" class="primary-btn" type="button"><i data-lucide="plus"></i>Novo tronco</button>
         </div>
-        <div class="trunk-grid">
-          ${cards}
-        </div>
-      </section>
-    </div>
-  `;
+        <div class="trunk-grid">${summaryCards || `<div class="governance-empty"><i data-lucide="radio-tower"></i><strong>Nenhum tronco cadastrado</strong><span>Cadastre o primeiro tronco para conectar a operadora.</span></div>`}</div>
+      </section>`;
+  pages.trunk.innerHTML = `<div class="section-grid">${editor || editor === "" ? editor : ""}</div>`;
 }
 
 function renderExtensions() {
-  const cards = state.config.extensions
-    .map((ext, index) => {
-      const detailsOpen = Boolean(state.openExtensionDetails[ext.number || index]);
-      const permissions = (ext.permissions || []).map((item) => permissionLabels[item] || item).join(", ") || "Sem saida externa";
-      return `
-      <article class="extension-card compact-config-card ${detailsOpen ? "details-open" : "details-closed"}" data-extension-card data-index="${index}">
+  const extensions = state.config.extensions || [];
+  const editingIndex = Number.isInteger(state.editingExtensionIndex) && extensions[state.editingExtensionIndex] ? state.editingExtensionIndex : null;
+  const editing = editingIndex === null ? null : extensions[editingIndex];
+  const cards = extensions.map((ext, index) => {
+    const permissions = (ext.permissions || []).map((item) => permissionLabels[item] || item).join(", ") || "Sem saida externa";
+    return `
+      <article class="extension-card entity-list-card" data-extension-summary-index="${index}">
         <div class="panel-header compact-card-header">
           <div>
+            <p class="eyebrow">Ramal SIP</p>
             <h3>${escapeHtml(ext.number)} ${escapeHtml(ext.name)}</h3>
             <p class="microcopy">${escapeHtml(ext.department || "Geral")} · ${escapeHtml(ext.extensionType || "Padrao")} · ${escapeHtml(permissions)}</p>
           </div>
-          <div class="compact-card-actions">
-            <span class="badge">${escapeHtml(ext.number)}</span>
-            <button class="secondary-btn compact" data-toggle-extension-details="${index}" type="button"><i data-lucide="${detailsOpen ? "minimize-2" : "sliders-horizontal"}"></i>${detailsOpen ? "Reduzir" : "Mostrar tudo"}</button>
-            <button class="icon-btn" data-remove-extension="${index}" title="Remover ramal"><i data-lucide="trash-2"></i></button>
-          </div>
+          <span class="badge ${ext.blockExtension ? "warn" : "ok"}">${ext.blockExtension ? "Bloqueado" : "Ativo"}</span>
         </div>
+        <div class="list-card-meta">
+          <span><strong>Grupo de discagem</strong>${escapeHtml(ext.dialGroup || "PADRAO")}</span>
+          <span><strong>Gravacao</strong>${ext.recordCalls ? "Ativada" : "Desativada"}</span>
+          <span><strong>Permissoes</strong>${escapeHtml(permissions)}</span>
+        </div>
+        <div class="compact-card-actions">
+          <button class="primary-btn compact" data-edit-extension="${index}" type="button"><i data-lucide="pencil"></i>Editar</button>
+          <button class="icon-btn danger" data-remove-extension="${index}" type="button" title="Remover ramal"><i data-lucide="trash-2"></i></button>
+        </div>
+      </article>`;
+  }).join("");
+  const editor = editing ? `
+    <section class="panel entity-editor-shell">
+      <div class="panel-header entity-editor-header">
+        <div><p class="eyebrow">Editar ramal SIP</p><h3>${escapeHtml(editing.number)} ${escapeHtml(editing.name)}</h3><p class="microcopy">Edite somente este ramal. As alteracoes ficam em rascunho ate salvar e aplicar.</p></div>
+        <button class="secondary-btn" data-cancel-extension-edit type="button"><i data-lucide="arrow-left"></i>Voltar para lista</button>
+      </div>
+      <article class="extension-card compact-config-card" data-extension-card data-entity-editor data-index="${editingIndex}">
         <div class="field-grid compact-field-grid">
-          ${fieldBlock("Numero do ramal", "Numero interno usado no softphone ou telefone IP.", `<input data-field="number" value="${escapeHtml(ext.number)}" />`)}
-          ${fieldBlock("Nome exibido", "Nome da pessoa ou setor que vai aparecer no painel.", `<input data-field="name" value="${escapeHtml(ext.name)}" />`)}
-          ${fieldBlock("Setor", "Ajuda a organizar filtros, relatorios e permissoes por equipe.", `<select data-field="department">${choiceOptions(departmentOptions, ext.department).map((item) => option(item, ext.department)).join("")}</select>`)}
-          ${fieldBlock("Senha SIP", "Senha usada para registrar esse ramal no softphone.", `<input class="masked-secret" data-field="secret" type="text" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore value="${escapeHtml(ext.secret)}" />`)}
+          ${fieldBlock("Numero do ramal", "Numero interno usado no softphone ou telefone IP.", `<input data-field="number" value="${escapeHtml(editing.number)}" />`)}
+          ${fieldBlock("Nome exibido", "Nome da pessoa ou setor que vai aparecer no painel.", `<input data-field="name" value="${escapeHtml(editing.name)}" />`)}
+          ${fieldBlock("Setor", "Ajuda a organizar filtros, relatorios e permissoes por equipe.", `<select data-field="department">${choiceOptions(departmentOptions, editing.department).map((item) => option(item, editing.department)).join("")}</select>`)}
+          ${fieldBlock("Senha SIP", "Senha usada para registrar esse ramal no softphone.", `<input class="masked-secret" data-field="secret" type="text" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore value="${escapeHtml(editing.secret)}" />`)}
         </div>
         <div class="advanced-config-fields">
           <div class="field-grid compact-field-grid">
-            ${fieldBlock("Tipo do ramal", "Escolha o perfil que mais combina com o uso desse ramal.", `<select data-field="extensionType">${choiceOptions(extensionTypeOptions, ext.extensionType || "Padrao").map((item) => option(item, ext.extensionType || "Padrao")).join("")}</select>`)}
-            ${fieldBlock("Grupo de discagem", "Serve para agrupar ramais com o mesmo perfil de saida.", `<select data-field="dialGroup">${choiceOptions(dialGroupOptions, ext.dialGroup || "PADRAO").map((item) => option(item, ext.dialGroup || "PADRAO")).join("")}</select>`)}
-            ${fieldBlock("Grupo de captura", "Permite que um ramal atenda a chamada de outro grupo.", `<select data-field="pickupGroup">${choiceOptions(pickupGroupOptions, ext.pickupGroup || "-").map((item) => option(item, ext.pickupGroup || "-")).join("")}</select>`)}
-            ${fieldBlock("Centro de custo", "Classifica chamadas e gastos por area da empresa.", `<select data-field="costCenter">${choiceOptions(costCenterOptions, ext.costCenter || "Padrao").map((item) => option(item, ext.costCenter || "Padrao")).join("")}</select>`)}
-            ${fieldBlock("Cota em reais", "Limite mensal em valor para chamadas externas desse ramal.", `<input data-field="monthlyQuotaValue" type="number" min="0" step="0.01" value="${escapeHtml(ext.monthlyQuotaValue ?? 0)}" />`)}
-            ${fieldBlock("Cota em minutos", "Limite mensal de minutos para chamadas externas.", `<input data-field="monthlyQuotaMinutes" type="number" min="0" value="${escapeHtml(ext.monthlyQuotaMinutes ?? 0)}" />`)}
-            ${fieldBlock("Tempo limite", "Tempo maximo de chamada externa, em segundos. Zero deixa sem limite.", `<input data-field="timeoutLimit" type="number" min="0" value="${escapeHtml(ext.timeoutLimit ?? 0)}" />`)}
+            ${fieldBlock("Tipo do ramal", "Escolha o perfil que mais combina com o uso desse ramal.", `<select data-field="extensionType">${choiceOptions(extensionTypeOptions, editing.extensionType || "Padrao").map((item) => option(item, editing.extensionType || "Padrao")).join("")}</select>`)}
+            ${fieldBlock("Grupo de discagem", "Serve para agrupar ramais com o mesmo perfil de saida.", `<select data-field="dialGroup">${choiceOptions(dialGroupOptions, editing.dialGroup || "PADRAO").map((item) => option(item, editing.dialGroup || "PADRAO")).join("")}</select>`)}
+            ${fieldBlock("Grupo de captura", "Permite que um ramal atenda a chamada de outro grupo.", `<select data-field="pickupGroup">${choiceOptions(pickupGroupOptions, editing.pickupGroup || "-").map((item) => option(item, editing.pickupGroup || "-")).join("")}</select>`)}
+            ${fieldBlock("Centro de custo", "Classifica chamadas e gastos por area da empresa.", `<select data-field="costCenter">${choiceOptions(costCenterOptions, editing.costCenter || "Padrao").map((item) => option(item, editing.costCenter || "Padrao")).join("")}</select>`)}
+            ${fieldBlock("Cota em reais", "Limite mensal em valor para chamadas externas desse ramal.", `<input data-field="monthlyQuotaValue" type="number" min="0" step="0.01" value="${escapeHtml(editing.monthlyQuotaValue ?? 0)}" />`)}
+            ${fieldBlock("Cota em minutos", "Limite mensal de minutos para chamadas externas.", `<input data-field="monthlyQuotaMinutes" type="number" min="0" value="${escapeHtml(editing.monthlyQuotaMinutes ?? 0)}" />`)}
+            ${fieldBlock("Tempo limite", "Tempo maximo de chamada externa, em segundos. Zero deixa sem limite.", `<input data-field="timeoutLimit" type="number" min="0" value="${escapeHtml(editing.timeoutLimit ?? 0)}" />`)}
           </div>
-          <div class="check-section">
-            <span class="field-title">Recursos do ramal ${helpIcon("Marque so o que esse ramal realmente precisa para manter a operacao simples e segura.")}</span>
-            <div class="check-row">
-              <label class="check-pill compact"><input data-field="blockExtension" type="checkbox" ${ext.blockExtension ? "checked" : ""} />Bloquear chamadas</label>
-              <label class="check-pill compact"><input data-field="bridgeMode" type="checkbox" ${ext.bridgeMode ? "checked" : ""} />Bridge</label>
-              <label class="check-pill compact"><input data-field="temporary" type="checkbox" ${ext.temporary ? "checked" : ""} />Temporario</label>
-              <label class="check-pill compact"><input data-field="recordCalls" type="checkbox" ${ext.recordCalls ? "checked" : ""} />Gravar chamadas</label>
-            </div>
-          </div>
-          <div class="check-section">
-            <span class="field-title">O que esse ramal pode discar ${helpIcon("Liberte so os tipos de ligacao que o usuario realmente precisa fazer.")}</span>
-            <div class="check-row">${renderPermissionChecks(ext.permissions || [], `extperm-${index}`)}</div>
-          </div>
+          <div class="check-section"><span class="field-title">Recursos do ramal ${helpIcon("Marque so o que esse ramal realmente precisa para manter a operacao simples e segura.")}</span><div class="check-row">
+            <label class="check-pill compact"><input data-field="blockExtension" type="checkbox" ${editing.blockExtension ? "checked" : ""} />Bloquear chamadas</label>
+            <label class="check-pill compact"><input data-field="bridgeMode" type="checkbox" ${editing.bridgeMode ? "checked" : ""} />Bridge</label>
+            <label class="check-pill compact"><input data-field="temporary" type="checkbox" ${editing.temporary ? "checked" : ""} />Temporario</label>
+            <label class="check-pill compact"><input data-field="recordCalls" type="checkbox" ${editing.recordCalls ? "checked" : ""} />Gravar chamadas</label>
+          </div></div>
+          <div class="check-section"><span class="field-title">O que esse ramal pode discar ${helpIcon("Liberte so os tipos de ligacao que o usuario realmente precisa fazer.")}</span><div class="check-row">${renderPermissionChecks(editing.permissions || [], `extperm-${editingIndex}`)}</div></div>
         </div>
-      </article>`;
-    })
-    .join("");
-
-  pages.extensions.innerHTML = `
-    <div class="section-grid">
-      <section class="panel">
-        <div class="panel-header">
-          <div>
-            <h3>Ramais internos</h3>
-            <p class="microcopy">Cada ramal pode ser expandido individualmente para editar permissoes, cotas e grupos.</p>
-          </div>
-          <div class="compact-card-actions">
-            <button class="secondary-btn" id="addExtensionBtn"><i data-lucide="plus"></i>Novo ramal</button>
-          </div>
-        </div>
-        <div class="extension-grid">
-          ${cards}
-        </div>
-      </section>
-    </div>
-  `;
+      </article>
+    </section>` : `
+    <section class="panel">
+      <div class="panel-header"><div><p class="eyebrow">Telefonia</p><h3>Ramais internos</h3><p class="microcopy">Consulte os ramais cadastrados e abra somente o registro que deseja editar.</p></div><button class="primary-btn" id="addExtensionBtn" type="button"><i data-lucide="plus"></i>Novo ramal</button></div>
+      <div class="extension-grid">${cards || `<div class="governance-empty"><i data-lucide="phone"></i><strong>Nenhum ramal cadastrado</strong><span>Cadastre o primeiro ramal para iniciar.</span></div>`}</div>
+    </section>`;
+  pages.extensions.innerHTML = `<div class="section-grid">${editor || editor === "" ? editor : ""}</div>`;
 }
 
 function renderPermissionChecks(selected, prefix) {
@@ -4246,20 +4289,31 @@ function renderRouting() {
   cfg.outbound = cfg.outbound || {};
   const preview = state.outboundDiagnostics?.preview;
   const trunks = ensureConfigTrunks();
-  const routes = cfg.inboundRoutes
-    .map((route, index) => ({ route, index }))
-    .map(
-      ({ route, index }) => `
-      <tr data-route-index="${index}">
-        <td><input data-field="name" aria-label="Nome da rota" value="${escapeHtml(route.name)}" /></td>
-        <td><select data-field="trunkId" aria-label="Tronco da rota">${trunkChoices(route.trunkId || trunks[0]?.id || "")}</select></td>
-        <td><input data-field="did" aria-label="Numero recebido" inputmode="tel" value="${escapeHtml(route.did || "")}" placeholder="Qualquer numero" /></td>
-        <td><div class="destination-picker">${destinationChoices(route.destinationType || "none", route.destination || "")}</div></td>
-        <td><input data-field="active" type="checkbox" aria-label="Rota ativa" ${route.active !== false ? "checked" : ""} /></td>
-        <td><button class="icon-btn danger" data-remove-inbound="${index}" type="button" title="Excluir rota"><i data-lucide="trash-2"></i></button></td>
-      </tr>`
-    )
-    .join("");
+  const inboundRoutes = cfg.inboundRoutes || [];
+  const editingIndex = Number.isInteger(state.editingRouteIndex) && inboundRoutes[state.editingRouteIndex] ? state.editingRouteIndex : null;
+  const editingRoute = editingIndex === null ? null : inboundRoutes[editingIndex];
+  const routes = inboundRoutes.map((route, index) => `
+      <article class="panel entity-list-card" data-route-summary-index="${index}">
+        <div class="panel-header"><h3>${escapeHtml(route.name || "Rota sem nome")}</h3><span class="badge ${route.active !== false ? "ok" : "warn"}">${route.active !== false ? "Ativa" : "Inativa"}</span></div>
+        <div class="list-card-meta">
+          <span><strong>Operadora</strong>${escapeHtml(trunks.find((trunk) => trunk.id === route.trunkId)?.name || route.trunkId || "Sem tronco")}</span>
+          <span><strong>Numero recebido</strong>${escapeHtml(route.did || "Qualquer numero")}</span>
+          <span><strong>Encaminhar para</strong>${escapeHtml(destinationLabel(route.destinationType || "none", route.destination || ""))}</span>
+        </div>
+        <div class="compact-card-actions"><button class="primary-btn compact" data-edit-route="${index}" type="button"><i data-lucide="pencil"></i>Editar</button><button class="icon-btn danger" data-remove-inbound="${index}" type="button" title="Excluir rota"><i data-lucide="trash-2"></i></button></div>
+      </article>`).join("");
+  const routeEditor = editingRoute ? `
+      <section class="panel entity-editor-shell">
+        <div class="panel-header entity-editor-header"><div><p class="eyebrow">Editar rota de entrada</p><h3>${escapeHtml(editingRoute.name || editingRoute.id || "Rota")}</h3><p class="microcopy">Edite somente esta rota. As alteracoes ficam em rascunho ate salvar e aplicar.</p></div><button class="secondary-btn" data-cancel-route-edit type="button"><i data-lucide="arrow-left"></i>Voltar para lista</button></div>
+        <div class="field-grid compact-field-grid" data-route-index="${editingIndex}" data-entity-editor>
+          ${fieldBlock("Nome", "Nome interno para identificar a rota.", `<input data-field="name" value="${escapeHtml(editingRoute.name || "")}" />`)}
+          ${fieldBlock("Tronco", "Tronco SIP que recebe esta chamada.", `<select data-field="trunkId">${trunkChoices(editingRoute.trunkId || trunks[0]?.id || "")}</select>`)}
+          ${fieldBlock("Numero recebido (DID)", "Deixe em branco para usar esta rota como destino padrao do tronco.", `<input data-field="did" inputmode="tel" value="${escapeHtml(editingRoute.did || "")}" placeholder="Qualquer numero" />`)}
+          ${fieldBlock("Ativa", "Desative sem apagar a rota para interromper temporariamente o atendimento.", `<input data-field="active" type="checkbox" ${editingRoute.active !== false ? "checked" : ""} />`)}
+          ${fieldBlock("Destino", "Destino que atendera as chamadas desta rota.", `<div class="destination-picker">${destinationChoices(editingRoute.destinationType || "none", editingRoute.destination || "")}</div>`, "wide")}
+        </div>
+      </section>` : `
+      <section class="panel full"><div class="panel-header"><h3>Rotas de entrada</h3><button id="addInboundBtn" class="primary-btn" type="button"><i data-lucide="plus"></i>Nova rota</button></div><div class="entity-list-grid">${routes || `<p class="hint">Nenhuma rota cadastrada.</p>`}</div></section>`;
 
   const permissionCards = cfg.extensions
     .map(
@@ -4279,18 +4333,10 @@ function renderRouting() {
 
   pages.routing.innerHTML = `
     <div class="section-grid">
-      <section class="panel full">
-        <div class="panel-header">
-          <h3>Rotas de entrada</h3>
-          <button id="addInboundBtn" class="primary-btn" type="button"><i data-lucide="plus"></i>Nova rota</button>
-        </div>
-        <div class="table-wrap">
-          <table class="inbound-route-table">
-            <thead><tr><th>Nome</th><th>Tronco</th><th>Numero recebido (DID)</th><th>Destino ${helpIcon("A rota do numero tem prioridade. Sem correspondencia, vale a rota sem DID ou o destino de entrada do tronco.")}</th><th>Ativa</th><th></th></tr></thead>
-            <tbody>${routes || `<tr><td colspan="6" class="empty-table-cell">Nenhuma rota cadastrada.</td></tr>`}</tbody>
-          </table>
-        </div>
-      </section>
+      ${routeEditor}
+      <details class="panel routing-advanced">
+        <summary>Regras de saida e permissoes ${helpIcon("Configuracoes que definem como os ramais fazem chamadas externas. Altere apenas quando precisar ajustar a operadora ou as permissoes de ligacao.")}</summary>
+        <div class="section-grid">
       <section class="panel">
         <div class="panel-header">
           <h3>Saida das chamadas</h3>
@@ -4323,16 +4369,8 @@ function renderRouting() {
           <div><span class="hint">Dial final</span><strong>${escapeHtml(preview?.dialString || "-")}</strong></div>
         </div>
       </section>
-      <section class="panel half">
-        <div class="panel-header"><h3>Modelo UAI</h3><span class="badge">Rotas de saida</span></div>
-        <div class="pill-row">
-          <span class="badge">Rotas de entrada</span>
-          <span class="badge">Rotas de saida</span>
-          <span class="badge">Troncos</span>
-          <span class="badge">Portabilidade</span>
         </div>
-        <p class="hint">Estamos espelhando a logica do PBX atual: tronco, padrao, remover digitos e adicionar prefixo/DDD na mesma area de rota.</p>
-      </section>
+      </details>
     </div>
   `;
 }
@@ -4842,7 +4880,7 @@ function dialerDestinationSelect(type, value) {
 function dialerTrunkOptions(selected = []) {
   const selectedSet = new Set(selected?.length ? selected : [state.config.outbound?.defaultTrunk || ensureConfigTrunks()[0]?.id || "trunk-operadora"]);
   const trunks = state.dialerTrunks.length ? state.dialerTrunks : ensureConfigTrunks().filter((trunk) => trunk.active !== false);
-  return trunks.map((trunk) => `<option value="${escapeHtml(trunk.id)}" ${selectedSet.has(trunk.id) ? "selected" : ""}>${escapeHtml(trunkLabel(trunk))}</option>`).join("");
+  return trunks.map((trunk) => `<label class="dialer-trunk-choice"><input type="checkbox" name="trunkIds" value="${escapeHtml(trunk.id)}" ${selectedSet.has(trunk.id) ? "checked" : ""}><span>${escapeHtml(trunkLabel(trunk))}</span><small class="dialer-trunk-selected">Selecionado</small></label>`).join("");
 }
 
 function dialerTrunkSummary(campaign) {
@@ -4879,7 +4917,7 @@ function currentDialerFormCampaign() {
 
 function renderDialerCampaignRows() {
   if (!state.dialerCampaigns.length) {
-    return `<tr><td colspan="9" class="empty-table-cell">Nenhuma campanha criada.</td></tr>`;
+    return `<div class="governance-empty"><i data-lucide="phone-call"></i><strong>Nenhuma campanha criada.</strong></div>`;
   }
   return state.dialerCampaigns
     .map((campaign) => {
@@ -4887,33 +4925,30 @@ function renderDialerCampaignRows() {
       const running = campaign.status === "running";
       const progress = dialerProgress(stats);
       return `
-        <tr>
-          <td>
-            <strong>${escapeHtml(campaign.name)}</strong>
-            <small>${escapeHtml(campaign.description || campaign.audio || "-")}</small>
-          </td>
-          <td><span class="dialer-status ${escapeHtml(campaign.status || "draft")}">${escapeHtml(dialerStatusLabel(campaign.status))}</span></td>
-          <td>
+        <article class="panel entity-list-card">
+          <div class="panel-header">
+            <h3>${escapeHtml(campaign.name)}</h3>
+            <span class="dialer-status ${escapeHtml(campaign.status || "draft")}">${escapeHtml(dialerStatusLabel(campaign.status))}</span>
+          </div>
+          <div>
             <div class="dialer-progress"><span style="width:${progress}%"></span></div>
-            <small>${progress}%</small>
-          </td>
-          <td>${escapeHtml(campaign.digit || "1")}</td>
-          <td>${escapeHtml(destinationLabel(campaign.destinationType, campaign.destination))}</td>
-          <td><small>${escapeHtml(dialerTrunkSummary(campaign))}</small></td>
-          <td>
-            <strong>${Number(stats.total || 0)}</strong>
+            <small>${progress}% concluido · ${Number(stats.total || 0)} numeros</small>
+          </div>
+          <div class="list-card-meta">
+            <span><strong>Encaminhar para</strong>${escapeHtml(destinationLabel(campaign.destinationType, campaign.destination))}</span>
+            <span><strong>Tecla</strong>${escapeHtml(campaign.digit || "1")}</span>
+          </div>
+          <div>
             <small>${Number(stats.pending || 0)} pendentes | ${Number(stats.inProgress || 0)} em andamento</small>
-          </td>
-          <td>${dialerResultSummary(stats)}</td>
-          <td>
-            <div class="table-actions">
+          </div>
+          ${dialerResultSummary(stats)}
+            <div class="compact-card-actions">
               <button class="icon-btn" type="button" data-edit-dialer="${escapeHtml(campaign.id)}" title="Editar campanha"><i data-lucide="pencil"></i></button>
               <button class="icon-btn ${running ? "danger" : ""}" type="button" data-dialer-action="${running ? "pause" : "start"}" data-dialer-id="${escapeHtml(campaign.id)}" title="${running ? "Pausar" : "Iniciar"}"><i data-lucide="${running ? "pause" : "play"}"></i></button>
               <button class="icon-btn" type="button" data-dialer-action="reset" data-dialer-id="${escapeHtml(campaign.id)}" title="Reiniciar lista"><i data-lucide="rotate-ccw"></i></button>
               <button class="icon-btn danger" type="button" data-delete-dialer="${escapeHtml(campaign.id)}" title="Excluir campanha"><i data-lucide="trash-2"></i></button>
             </div>
-          </td>
-        </tr>
+        </article>
       `;
     })
     .join("");
@@ -4929,64 +4964,43 @@ function renderDialerCampaignLiveData() {
 function renderDialer() {
   if (!pages.dialer || !state.config) return;
   const editing = currentDialerFormCampaign();
+  const showEditor = state.dialerEditorOpen || Boolean(editing);
   const firstQueue = state.config.queues?.[0]?.id || "";
   const firstExtension = state.config.extensions?.[0]?.number || "";
   const destinationType = editing?.destinationType || "queue";
   const destination = editing?.destination || (destinationType === "extension" ? firstExtension : firstQueue);
+  const editor = showEditor ? `
+    <section class="panel entity-editor-shell">
+      <div class="panel-header entity-editor-header">
+        <div><p class="eyebrow">Discador</p><h3>${editing ? "Editar campanha" : "Nova campanha"}</h3><p class="microcopy">${editing ? "Edite somente esta campanha." : "Cadastre uma nova campanha."} Os dados permanecem em rascunho ate salvar.</p></div>
+        <button class="secondary-btn" type="button" data-cancel-dialer-edit><i data-lucide="arrow-left"></i>Voltar para lista</button>
+      </div>
+      <form id="dialerCampaignForm" class="field-grid dialer-form">
+        <input type="hidden" name="id" value="${escapeHtml(editing?.id || "")}" />
+        ${fieldBlock("Nome", "Nome interno para localizar a campanha.", `<input name="name" value="${escapeHtml(editing?.name || "")}" placeholder="Ex: Boletos em aberto" required />`)}
+        ${fieldBlock("Áudio", "Mensagem que sera tocada quando o cliente atender. Apos enviar um novo audio, use Salvar e aplicar para disponibiliza-lo no PBX.", `<div class="audio-picker"><select name="audio" required>${audioChoices(editing?.audio || "")}</select><button class="icon-btn" type="button" data-upload-dialer-audio title="Adicionar áudio" aria-label="Adicionar áudio"><i data-lucide="plus"></i></button></div><input id="dialerAudioFile" type="file" accept=".wav,.mp3,.gsm,.ulaw,.alaw,.sln16" hidden />`)}
+        ${fieldBlock("Tecla", "Numero que o cliente deve apertar para falar com o atendimento.", `<input name="digit" inputmode="numeric" maxlength="1" value="${escapeHtml(editing?.digit || "1")}" required />`)}
+        ${fieldBlock("Destino", "Fila ou ramal que recebe o cliente quando ele aperta a tecla.", `<div class="dual-select">${dialerDestinationSelect(destinationType, destination)}</div>`, "wide")}
+        <fieldset class="dialer-trunk-picker wide"><legend class="field-title">Troncos da campanha ${helpIcon("Marque os troncos que fazem parte desta campanha. Com mais de um selecionado, o discador alterna entre eles.")}</legend><div class="dialer-trunk-options">${dialerTrunkOptions(editing?.trunkIds || [])}</div></fieldset>
+        ${fieldBlock("Chamadas por rodada", "Quantidade enviada ao Asterisk em cada disparo.", `<input name="maxConcurrent" type="number" min="1" max="10" value="${Number(editing?.maxConcurrent || 1)}" />`)}
+        ${fieldBlock("Intervalo", "Segundos entre uma rodada e outra.", `<input name="intervalSeconds" type="number" min="3" max="3600" value="${Number(editing?.intervalSeconds || 8)}" />`)}
+        ${fieldBlock("Tentativas", "Quantidade maxima de envio por numero.", `<input name="retryAttempts" type="number" min="1" max="5" value="${Number(editing?.retryAttempts || 1)}" />`)}
+        ${fieldBlock("Espera da tecla", "Segundos para aguardar a escolha depois do audio.", `<input name="responseTimeout" type="number" min="3" max="60" value="${Number(editing?.responseTimeout || 8)}" />`)}
+        ${fieldBlock("Identificador", "Numero apresentado quando o tronco permitir caller ID.", `<input name="callerId" value="${escapeHtml(editing?.callerId || state.config.trunk?.mainNumber || "")}" />`)}
+        ${fieldBlock("Descricao", "Observacao interna opcional.", `<input name="description" value="${escapeHtml(editing?.description || "")}" />`, "wide")}
+        ${fieldBlock("Numeros", "Cole um numero por linha, ou separados por virgula.", `<textarea name="numbers" rows="9" spellcheck="false" placeholder="31999999999&#10;31988888888" required>${escapeHtml(editing?.numberText || "")}</textarea>`, "wide")}
+        <div class="form-actions wide"><button class="primary-btn" type="submit"><i data-lucide="save"></i>${editing ? "Atualizar campanha" : "Salvar campanha"}</button></div>
+      </form>
+    </section>` : "";
   pages.dialer.innerHTML = `
     <div class="section-grid dialer-shell">
+      ${editor}
       <section class="panel">
-        <div class="panel-header">
-          <h3>${editing ? "Editar campanha" : "Nova campanha"}</h3>
-          <span class="badge" data-dialer-campaign-count>${state.dialerCampaigns.length} campanhas</span>
-        </div>
-        <form id="dialerCampaignForm" class="field-grid dialer-form">
-          <input type="hidden" name="id" value="${escapeHtml(editing?.id || "")}" />
-          ${fieldBlock("Nome", "Nome interno para localizar a campanha.", `<input name="name" value="${escapeHtml(editing?.name || "")}" placeholder="Ex: Boletos em aberto" required />`)}
-          ${fieldBlock("Audio", "Mensagem que sera tocada quando o cliente atender.", `<select name="audio" required>${audioChoices(editing?.audio || "")}</select>`)}
-          ${fieldBlock("Tecla", "Numero que o cliente deve apertar para falar com o atendimento.", `<input name="digit" inputmode="numeric" maxlength="1" value="${escapeHtml(editing?.digit || "1")}" required />`)}
-          ${fieldBlock("Destino", "Fila ou ramal que recebe o cliente quando ele aperta a tecla.", `<div class="dual-select">${dialerDestinationSelect(destinationType, destination)}</div>`, "wide")}
-          ${fieldBlock("Troncos da campanha", "Selecione um ou mais troncos. Com varios selecionados, o discador faz rodizio.", `<select name="trunkIds" multiple size="4" required>${dialerTrunkOptions(editing?.trunkIds || [])}</select>`, "wide")}
-          ${fieldBlock("Chamadas por rodada", "Quantidade enviada ao Asterisk em cada disparo.", `<input name="maxConcurrent" type="number" min="1" max="10" value="${Number(editing?.maxConcurrent || 1)}" />`)}
-          ${fieldBlock("Intervalo", "Segundos entre uma rodada e outra.", `<input name="intervalSeconds" type="number" min="3" max="3600" value="${Number(editing?.intervalSeconds || 8)}" />`)}
-          ${fieldBlock("Tentativas", "Quantidade maxima de envio por numero.", `<input name="retryAttempts" type="number" min="1" max="5" value="${Number(editing?.retryAttempts || 1)}" />`)}
-          ${fieldBlock("Espera da tecla", "Segundos para aguardar a escolha depois do audio.", `<input name="responseTimeout" type="number" min="3" max="60" value="${Number(editing?.responseTimeout || 8)}" />`)}
-          ${fieldBlock("Identificador", "Numero apresentado quando o tronco permitir caller ID.", `<input name="callerId" value="${escapeHtml(editing?.callerId || state.config.trunk?.mainNumber || "")}" />`)}
-          ${fieldBlock("Descricao", "Observacao interna opcional.", `<input name="description" value="${escapeHtml(editing?.description || "")}" />`, "wide")}
-          ${fieldBlock("Numeros", "Cole um numero por linha, ou separados por virgula.", `<textarea name="numbers" rows="9" spellcheck="false" placeholder="31999999999&#10;31988888888" required>${escapeHtml(editing?.numberText || "")}</textarea>`, "wide")}
-          <div class="form-actions wide">
-            <button class="primary-btn" type="submit"><i data-lucide="save"></i>${editing ? "Atualizar campanha" : "Salvar campanha"}</button>
-            ${editing ? `<button class="secondary-btn" type="button" data-cancel-dialer-edit><i data-lucide="x"></i>Cancelar</button>` : ""}
-          </div>
-        </form>
+        <div class="panel-header"><div><p class="eyebrow">Operacao</p><h3>Campanhas</h3><p class="microcopy">Consulte as campanhas e abra somente aquela que deseja editar.</p></div><div class="compact-card-actions"><button class="secondary-btn compact" type="button" data-refresh-dialer><i data-lucide="refresh-cw"></i>Atualizar</button><button class="primary-btn compact" type="button" data-new-dialer><i data-lucide="plus"></i>Nova campanha</button></div></div>
+        <span class="badge" data-dialer-campaign-count>${state.dialerCampaigns.length} campanhas</span>
+        <div class="entity-list-grid" data-dialer-campaign-rows>${renderDialerCampaignRows()}</div>
       </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h3>Campanhas</h3>
-          <button class="secondary-btn compact" type="button" data-refresh-dialer><i data-lucide="refresh-cw"></i>Atualizar</button>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Campanha</th>
-                <th>Status</th>
-                <th>Avanco</th>
-                <th>Tecla</th>
-                <th>Destino</th>
-                <th>Troncos</th>
-                <th>Lista</th>
-                <th>Resultados</th>
-                <th>Acoes</th>
-              </tr>
-            </thead>
-            <tbody data-dialer-campaign-rows>${renderDialerCampaignRows()}</tbody>
-          </table>
-        </div>
-      </section>
-    </div>
-  `;
+    </div>`;
 }
 
 function recordingPartyNumber(call = {}) {
@@ -5212,93 +5226,83 @@ function collectFinalDestination(item, value) {
   item.fallback = value || "";
 }
 
+function queueStrategyLabel(strategy) {
+  return ({ rrmemory: "Rodízio entre agentes", ringall: "Tocar em todos ao mesmo tempo", leastrecent: "Há mais tempo sem atender", fewestcalls: "Menor número de chamadas atendidas", random: "Distribuição aleatória", linear: "Ordem dos agentes", roundrobin: "Rodízio entre agentes", wrandom: "Distribuição aleatória por peso", rrordered: "Rodízio ordenado" })[strategy] || strategy || "Não definida";
+}
+
 function renderQueues() {
   const ring = state.config.ringGroups[0];
+  const queues = state.config.queues || [];
   const queueStrategies = ["rrmemory", "ringall", "leastrecent", "fewestcalls"];
-  const queueOptions = state.config.queues.length
-    ? state.config.queues.map((queue, index) => option(queue.id, state.config.queues[0]?.id || "", `${queueLabel(queue, index)} (${queue.id})`)).join("")
+  const strategyLabels = { rrmemory: "Rodízio entre agentes", ringall: "Tocar em todos ao mesmo tempo", leastrecent: "Há mais tempo sem atender", fewestcalls: "Menor número de chamadas atendidas" };
+  const queueOptions = queues.length
+    ? queues.map((queue, index) => option(queue.id, queues[0]?.id || "", `${queueLabel(queue, index)} (${queue.id})`)).join("")
     : `<option value="">Nenhuma fila cadastrada</option>`;
   const extensionOptions = state.config.extensions.map((ext) => option(ext.number, state.config.extensions[0]?.number || "", `${ext.number} ${ext.name}`)).join("");
   const fallbackOptions = finalDestinationChoices();
-  const queueCards = state.config.queues
-    .map((queue, index) => {
-      const detailsOpen = Boolean(state.openQueueDetails[queue.id || index]);
-      const memberChips = (queue.members || [])
-        .map((member) => {
-          const ext = state.config.extensions.find((item) => item.number === member);
-          return `
-            <span class="member-chip">
-              <strong>${escapeHtml(member)}</strong>
-              <small>${escapeHtml(ext?.name || "Ramal")}</small>
-              <button type="button" data-remove-queue-member="${index}" data-member="${escapeHtml(member)}" title="Remover ramal"><i data-lucide="x"></i></button>
-            </span>`;
-        })
-        .join("");
-
-      return `
-        <section class="panel queue-config-card compact-config-card ${detailsOpen ? "details-open" : "details-closed"}" data-queue-index="${index}">
-          <div class="panel-header compact-card-header">
-            <div>
-              <h3>${escapeHtml(queue.name || queue.id)}</h3>
-              <p class="microcopy">Ramal ${escapeHtml(queueDialNumber(queue, index))} · ${escapeHtml(queue.strategy || "ringall")} · ${(queue.members || []).length} membro(s)</p>
-            </div>
-            <div class="compact-card-actions">
-              <span class="badge">${escapeHtml(queueDialNumber(queue, index))}</span>
-              <button class="secondary-btn compact" data-toggle-queue-details="${index}" type="button"><i data-lucide="${detailsOpen ? "minimize-2" : "sliders-horizontal"}"></i>${detailsOpen ? "Reduzir" : "Mostrar tudo"}</button>
-              <button class="secondary-btn compact danger" data-remove-queue="${index}" type="button"><i data-lucide="trash-2"></i>Excluir</button>
-            </div>
-          </div>
-          <div class="field-grid compact-field-grid">
-            ${fieldBlock("Nome", "Nome amigavel da fila.", `<input data-key="name" value="${escapeHtml(queue.name || "")}" />`)}
-            ${fieldBlock("Codigo", "Identificador usado pelo Asterisk para esta fila.", `<input data-key="id" value="${escapeHtml(queue.id || "")}" />`)}
-            ${fieldBlock("Ramal da fila", "Numero virtual para transferir chamadas diretamente para esta fila.", `<input data-key="number" inputmode="numeric" value="${escapeHtml(queueDialNumber(queue, index))}" />`)}
-            ${fieldBlock("Agentes", "Ramais que devem aparecer online nesta fila quando estiverem registrados no SIP.", `<input data-key="members" value="${escapeHtml((queue.members || []).join(", "))}" />`, "wide")}
-          </div>
-          <div class="advanced-config-fields">
-            <div class="field-grid compact-field-grid">
-              ${fieldBlock("Estrategia", "Define como a fila distribui chamadas entre os agentes.", `<select data-key="strategy">${queueStrategies.map((item) => option(item, queue.strategy)).join("")}</select>`)}
-              ${fieldBlock("Timeout", "Tempo maximo que cada agente toca por tentativa.", `<input data-key="timeout" type="number" value="${escapeHtml(queue.timeout)}" />`)}
-              ${fieldBlock("Espera maxima", "Tempo maximo de fila antes de mandar para o destino final.", `<input data-key="maxWait" type="number" value="${escapeHtml(queue.maxWait)}" />`)}
-              ${fieldBlock("Destino final", "Outra fila apos a espera maxima. Nenhum encerra a chamada sem encaminhamento.", `<select data-key="fallbackDestination">${finalDestinationChoices(queue, queue.id)}</select>`)}
-            </div>
-            <div class="member-chip-row">${memberChips || `<span class="hint">Nenhum ramal nesta fila.</span>`}</div>
-          </div>
-        </section>`;
-    })
-    .join("");
-
-  pages.queues.innerHTML = `
-    <div class="section-grid">
-      <section class="panel">
-        <div class="panel-header"><h3>Cadastrar nova fila</h3><span class="badge">Asterisk Queue</span></div>
-        <div class="inline-form queue-create-form">
-          <label>Ramal da fila<input id="newQueueNumber" inputmode="numeric" value="${escapeHtml(nextQueueDialNumber())}" /></label>
-          <label>Codigo<input id="newQueueId" placeholder="ex: suporte-n2" /></label>
-          <label>Nome<input id="newQueueName" placeholder="Fila Suporte N2" /></label>
-          <label>Estrategia<select id="newQueueStrategy">${queueStrategies.map((item) => option(item, "ringall")).join("")}</select></label>
-          <label>Destino final<select id="newQueueFallback">${fallbackOptions}</select></label>
-          <button id="createQueueBtn" class="primary-btn" type="button"><i data-lucide="list-plus"></i>Cadastrar fila</button>
+  const editingIndex = Number.isInteger(state.editingQueueIndex) && queues[state.editingQueueIndex] ? state.editingQueueIndex : null;
+  const editing = editingIndex === null ? null : queues[editingIndex];
+  const queueCards = queues.map((queue, index) => `
+    <article class="panel entity-list-card" data-queue-summary-index="${index}">
+      <div class="panel-header compact-card-header">
+        <div>
+          <p class="eyebrow">Fila de atendimento</p>
+          <h3>${escapeHtml(queue.name || queue.id)}</h3>
+          <p class="microcopy">${escapeHtml(queue.id || "fila")} · Ramal ${escapeHtml(queueDialNumber(queue, index))} · ${escapeHtml(queueStrategyLabel(queue.strategy || "ringall"))}</p>
         </div>
-      </section>
-      <section class="panel">
-        <div class="panel-header"><h3>Adicionar ramal em uma fila</h3><span class="badge">${state.config.queues.length} filas</span></div>
-        <div class="inline-form queue-add-form">
-          <label>Fila<select id="queueMemberQueue">${queueOptions}</select></label>
-          <label>Ramal<select id="queueMemberExtension">${extensionOptions}</select></label>
-          <button id="addQueueMemberBtn" class="primary-btn" type="button"><i data-lucide="user-plus"></i>Adicionar</button>
+        <span class="badge ok">${(queue.members || []).length} agente(s)</span>
+      </div>
+      <div class="list-card-meta">
+        <span><strong>Agentes</strong>${escapeHtml((queue.members || []).join(", ") || "Nenhum cadastrado")}</span>
+        <span><strong>Espera maxima</strong>${escapeHtml(`${queue.maxWait || 0}s`)}</span>
+        <span><strong>Destino final</strong>${escapeHtml(queue.fallbackType === "queue" && queue.fallback ? destinationLabel("queue", queue.fallback) : "Nenhum")}</span>
+      </div>
+      <div class="compact-card-actions">
+        <button class="primary-btn compact" data-edit-queue="${index}" type="button"><i data-lucide="pencil"></i>Editar</button>
+        <button class="icon-btn danger" data-remove-queue="${index}" type="button" title="Excluir fila"><i data-lucide="trash-2"></i></button>
+      </div>
+    </article>`).join("");
+  const memberChips = editing ? (editing.members || []).map((member) => {
+    const ext = state.config.extensions.find((item) => item.number === member);
+    return `<span class="member-chip"><strong>${escapeHtml(member)}</strong><small>${escapeHtml(ext?.name || "Ramal")}</small><button type="button" data-remove-queue-member="${editingIndex}" data-member="${escapeHtml(member)}" title="Remover ramal"><i data-lucide="x"></i></button></span>`;
+  }).join("") : "";
+  const editor = editing ? `
+    <section class="panel entity-editor-shell">
+      <div class="panel-header entity-editor-header">
+        <div><p class="eyebrow">Editar fila</p><h3>${escapeHtml(editing.name || editing.id)}</h3><p class="microcopy">Edite somente esta fila. As alteracoes ficam em rascunho ate salvar e aplicar.</p></div>
+        <div class="compact-card-actions"><button class="secondary-btn" data-cancel-queue-edit type="button"><i data-lucide="arrow-left"></i>Voltar para lista</button><button class="icon-btn danger" data-remove-queue="${editingIndex}" type="button" title="Excluir fila"><i data-lucide="trash-2"></i></button></div>
+      </div>
+      <section class="panel queue-config-card" data-queue-index="${editingIndex}" data-entity-editor>
+        <div class="field-grid compact-field-grid">
+          ${fieldBlock("Nome", "Nome amigavel da fila.", `<input data-key="name" value="${escapeHtml(editing.name || "")}" />`)}
+          ${fieldBlock("Codigo", "Identificador usado pelo Asterisk para esta fila.", `<input data-key="id" value="${escapeHtml(editing.id || "")}" />`)}
+          ${fieldBlock("Ramal da fila", "Numero virtual para transferir chamadas diretamente para esta fila.", `<input data-key="number" inputmode="numeric" value="${escapeHtml(queueDialNumber(editing, editingIndex))}" />`)}
+          ${fieldBlock("Agentes", "Ramais que devem aparecer online nesta fila quando estiverem registrados no SIP.", `<input data-key="members" value="${escapeHtml((editing.members || []).join(", "))}" />`, "wide")}
         </div>
-      </section>
-      <section class="panel">
-        <div class="panel-header"><h3>Grupo de toque da recepcao</h3><span class="badge">${escapeHtml(ring.strategy)}</span></div>
-        <div class="field-grid" data-scope="ring">
-          ${fieldBlock("Membros", "Ramais que vao tocar juntos. Separe por virgula.", `<input data-key="members" value="${escapeHtml((ring.members || []).join(", "))}" />`, "wide")}
-          ${fieldBlock("Tempo de toque", "Quanto tempo o grupo tenta tocar antes de cair no destino final.", `<input data-key="timeout" type="number" value="${escapeHtml(ring.timeout)}" />`)}
-          ${fieldBlock("Destino final", "Fila que recebe a chamada se ninguem atender o grupo. Nenhum encerra a chamada.", `<select data-key="fallbackDestination">${finalDestinationChoices(ring)}</select>`)}
+        <div class="field-grid compact-field-grid">
+          ${fieldBlock("Estratégia", "Define como a fila distribui chamadas entre os agentes.", `<select data-key="strategy">${queueStrategies.map((item) => option(item, editing.strategy, strategyLabels[item])).join("")}</select>`)}
+          ${fieldBlock("Timeout", "Tempo maximo que cada agente toca por tentativa.", `<input data-key="timeout" type="number" value="${escapeHtml(editing.timeout ?? 20)}" />`)}
+          ${fieldBlock("Espera maxima", "Tempo maximo de fila antes de mandar para o destino final.", `<input data-key="maxWait" type="number" value="${escapeHtml(editing.maxWait ?? 300)}" />`)}
+          ${fieldBlock("Destino final", "Outra fila apos a espera maxima. Nenhum encerra a chamada sem encaminhamento.", `<select data-key="fallbackDestination">${finalDestinationChoices(editing, editing.id)}</select>`)}
         </div>
+        <div class="member-chip-row">${memberChips || `<span class="hint">Nenhum ramal nesta fila. Use o campo Agentes ou a acao de adicionar na lista.</span>`}</div>
       </section>
-      ${queueCards}
-    </div>
-  `;
+    </section>` : `
+    <section class="panel">
+      <div class="panel-header"><div><p class="eyebrow">Telefonia</p><h3>Filas de atendimento</h3><p class="microcopy">Consulte as filas cadastradas e abra somente a fila que deseja editar.</p></div><button id="createQueueBtn" class="primary-btn" type="button"><i data-lucide="plus"></i>Nova fila</button></div>
+      <div class="entity-list-grid">${queueCards || `<div class="governance-empty"><i data-lucide="headphones"></i><strong>Nenhuma fila cadastrada</strong><span>Cadastre uma fila para distribuir chamadas.</span></div>`}</div>
+    </section>`;
+  const auxiliary = editing ? "" : `
+    <section class="panel queue-auxiliary-panel">
+      <div class="panel-header"><h3>Adicionar ramal em uma fila</h3><span class="badge">${queues.length} filas</span></div>
+      <div class="inline-form queue-add-form"><label>Fila<select id="queueMemberQueue">${queueOptions}</select></label><label>Ramal<select id="queueMemberExtension">${extensionOptions}</select></label><button id="addQueueMemberBtn" class="primary-btn" type="button"><i data-lucide="user-plus"></i>Adicionar</button></div>
+    </section>
+    <section class="panel queue-auxiliary-panel"><div class="panel-header"><h3>Grupo de toque da recepcao</h3><span class="badge">${escapeHtml(queueStrategyLabel(ring.strategy))}</span></div><div class="field-grid" data-scope="ring">
+      ${fieldBlock("Membros", "Ramais que vao tocar juntos. Separe por virgula.", `<input data-key="members" value="${escapeHtml((ring.members || []).join(", "))}" />`, "wide")}
+      ${fieldBlock("Tempo de toque", "Quanto tempo o grupo tenta tocar antes de cair no destino final.", `<input data-key="timeout" type="number" value="${escapeHtml(ring.timeout)}" />`)}
+      ${fieldBlock("Destino final", "Fila que recebe a chamada se ninguem atender o grupo. Nenhum encerra a chamada.", `<select data-key="fallbackDestination">${finalDestinationChoices(ring)}</select>`)}
+    </div></section>`;
+  pages.queues.innerHTML = `<div class="section-grid">${editing ? editor : `${editor}${auxiliary}`}</div>`;
 }
 
 function renderSecurity() {
@@ -5611,7 +5615,7 @@ function renderReports() {
       <section class="reports-hero">
         <div>
           <p class="eyebrow">Relatorios PBX</p>
-          <h3>Chamadas, duracao, status e gravacoes em uma visao limpa.</h3>
+          <h3>Relatório de chamadas</h3>
         </div>
         <div class="report-actions">
           <a class="secondary-btn" href="${downloadUrl("/api/pbx/reports/export/csv")}"><i data-lucide="file-text"></i>CSV</a>
@@ -5943,111 +5947,39 @@ function renderAudit() {
 
 function renderUsers() {
   const users = state.users.length ? state.users : [state.user].filter(Boolean);
+  const editingIndex = Number.isInteger(state.editingUserIndex) && users[state.editingUserIndex] ? state.editingUserIndex : null;
+  const editing = editingIndex === null ? null : users[editingIndex];
+  const isAdmin = editing?.role === "admin";
+  const enabledMenuCount = editing ? Object.values(menuPermissions).filter((key) => isAdmin || editing.permissions?.menus?.[key]).length : 0;
   const rows = users.map((user, index) => {
-    const isAdmin = user.role === "admin";
-    const enabledMenuCount = Object.values(menuPermissions).filter((key) => isAdmin || user.permissions?.menus?.[key]).length;
-    const menuGroups = userMenuGroups.map((group) => `
-      <section class="user-permission-group">
-        <div class="user-permission-group-title">
-          <i data-lucide="${group.icon}"></i>
-          <strong>${group.label}</strong>
-          <span>${group.tabs.length}</span>
-        </div>
-        <div class="user-permission-list">
-          ${group.tabs.map((tab) => {
-            const key = menuPermissions[tab];
-            return `<label class="user-permission-option">
-              <input type="checkbox" data-user-menu="${key}" ${(isAdmin || user.permissions?.menus?.[key]) ? "checked" : ""} ${isAdmin ? "disabled" : ""}/>
-              <span>${escapeHtml(titleByTab[tab] || tab)}</span>
-            </label>`;
-          }).join("")}
-        </div>
-      </section>`).join("");
-
+    const userIsAdmin = user.role === "admin";
+    const userEnabledMenuCount = Object.values(menuPermissions).filter((key) => userIsAdmin || user.permissions?.menus?.[key]).length;
     return `
-    <article class="panel user-card" data-user-index="${index}">
-      <div class="panel-header">
-        <div class="user-card-title">
-          <span class="user-avatar"><i data-lucide="user-round"></i></span>
-          <div>
-            <h3>${escapeHtml(user.username || "novo")}</h3>
-            <span>${isAdmin ? "Administrador com acesso total" : "Acesso personalizado"}</span>
-          </div>
-        </div>
-        <button class="icon-btn danger" data-remove-user="${index}" ${user.username === "admin" ? "disabled" : ""} title="Remover usuario"><i data-lucide="trash-2"></i></button>
-      </div>
-      <div class="field-grid compact-grid">
-        <label>Usuario<input data-user-field="username" value="${escapeHtml(user.username || "")}" ${user.username === "admin" ? "readonly" : ""} /></label>
-        <label>Nova senha<input data-user-field="password" type="password" placeholder="Manter senha atual" /></label>
-        <label>Perfil<select data-user-field="role">${["admin", "supervisor", "user"].map((role) => option(role, user.role || "user", role)).join("")}</select></label>
-        <label>Ramal<input data-user-field="extension" value="${escapeHtml(user.extension || "")}" /></label>
-        <label class="wide">Ramais permitidos<input data-user-field="allowedExtensions" value="${escapeHtml((user.allowedExtensions || []).join(", "))}" placeholder="201, 202" /></label>
-        <label class="wide">Departamentos<input data-user-field="departments" value="${escapeHtml((user.departments || []).join(", "))}" placeholder="Recepcao, Financeiro" /></label>
-      </div>
-      <section class="user-access-block">
-        <div class="user-access-heading">
-          <div>
-            <strong>Acesso aos modulos</strong>
-            <span>Defina quais areas ficam disponiveis para este usuario.</span>
-          </div>
-          <div class="user-access-actions">
-            <span class="user-permission-summary" data-user-menu-count>${enabledMenuCount} de ${Object.keys(menuPermissions).length} modulos</span>
-            ${isAdmin
-              ? `<span class="badge ok">Acesso total</span>`
-              : `<button class="secondary-btn compact" type="button" data-user-toggle-menus="${index}">
-                  <i data-lucide="check-check"></i><span data-user-toggle-label>${enabledMenuCount === Object.keys(menuPermissions).length ? "Limpar" : "Selecionar todos"}</span>
-                </button>`}
-          </div>
-        </div>
-        <div class="user-permission-groups">${menuGroups}</div>
-      </section>
-      <section class="user-access-block user-account-permissions">
-        <div class="user-access-heading">
-          <div>
-            <strong>Gravacoes e monitoramento</strong>
-            <span>Permissoes complementares da conta.</span>
-          </div>
-        </div>
-        <div class="user-setting-list">
-          <label class="user-setting-option">
-            <input type="checkbox" data-user-permission="listenRecordings" ${user.permissions?.listenRecordings ? "checked" : ""}/>
-            <span><strong>Escutar gravacoes</strong><small>Reproduzir audios das chamadas.</small></span>
-          </label>
-          <label class="user-setting-option">
-            <input type="checkbox" data-user-permission="downloadRecordings" ${user.permissions?.downloadRecordings ? "checked" : ""}/>
-            <span><strong>Baixar gravacoes</strong><small>Salvar uma copia do audio.</small></span>
-          </label>
-          <label class="user-setting-option">
-            <input type="checkbox" data-user-permission="interveneCalls" ${user.permissions?.interveneCalls ? "checked" : ""}/>
-            <span><strong>Intervir em chamadas</strong><small>Usar sussurro e intervencao ao vivo.</small></span>
-          </label>
-          <label class="user-setting-option">
-            <input type="checkbox" data-user-field="mustChangePassword" ${user.mustChangePassword ? "checked" : ""}/>
-            <span><strong>Trocar senha no proximo login</strong><small>Solicitar uma nova senha ao entrar.</small></span>
-          </label>
-        </div>
-      </section>
-    </article>`;
+      <article class="panel user-card entity-list-card" data-user-summary-index="${index}">
+        <div class="user-card-title"><span class="user-avatar"><i data-lucide="user-round"></i></span><div><h3>${escapeHtml(user.username || "novo")}</h3><span>${userIsAdmin ? "Administrador com acesso total" : `${escapeHtml(user.role || "user")} · ${userEnabledMenuCount} modulos`}</span></div></div>
+        <div class="list-card-meta"><span><strong>Ramal</strong>${escapeHtml(user.extension || "Nao vinculado")}</span><span><strong>Departamentos</strong>${escapeHtml((user.departments || []).join(", ") || "Todos")}</span><span><strong>Acesso</strong>${userIsAdmin ? "Total" : `${userEnabledMenuCount} modulo(s)`}</span></div>
+        <div class="compact-card-actions"><button class="primary-btn compact" data-edit-user="${index}" type="button"><i data-lucide="pencil"></i>Editar</button><button class="icon-btn danger" data-remove-user="${index}" ${user.username === "admin" ? "disabled" : ""} title="Remover usuario"><i data-lucide="trash-2"></i></button></div>
+      </article>`;
   }).join("");
-
-  pages.users.innerHTML = `
-    <div class="section-grid">
-      <section class="panel">
-        <div class="panel-header">
-          <div>
-            <p class="eyebrow">Usuarios</p>
-            <h3>Permissoes de acesso por menu</h3>
-          </div>
-          <div class="report-header-actions">
-            <button id="addUserBtn" class="secondary-btn"><i data-lucide="user-plus"></i>Novo</button>
-            <button id="saveUsersBtn" class="primary-btn"><i data-lucide="save"></i>Salvar usuarios</button>
-          </div>
-        </div>
-      </section>
-      ${rows}
-    </div>
-  `;
+  const menuGroups = editing ? userMenuGroups.map((group) => `
+      <section class="user-permission-group">
+        <div class="user-permission-group-title"><i data-lucide="${group.icon}"></i><strong>${group.label}</strong><span>${group.tabs.length}</span></div>
+        <div class="user-permission-list">${group.tabs.map((tab) => {
+          const key = menuPermissions[tab];
+          return `<label class="user-permission-option"><input type="checkbox" data-user-menu="${key}" ${(isAdmin || editing.permissions?.menus?.[key]) ? "checked" : ""} ${isAdmin ? "disabled" : ""}/><span>${escapeHtml(titleByTab[tab] || tab)}</span></label>`;
+        }).join("")}</div>
+      </section>`).join("") : "";
+  const editor = editing ? `
+    <article class="panel user-card entity-editor-shell" data-user-index="${editingIndex}" data-entity-editor>
+      <div class="panel-header entity-editor-header"><div class="user-card-title"><span class="user-avatar"><i data-lucide="user-round"></i></span><div><p class="eyebrow">Editar usuario</p><h3>${escapeHtml(editing.username || "novo")}</h3><span>${isAdmin ? "Administrador com acesso total" : "Acesso personalizado"}</span></div></div><div class="compact-card-actions"><button class="secondary-btn" data-cancel-user-edit type="button"><i data-lucide="arrow-left"></i>Voltar para lista</button><button id="saveUsersBtn" class="primary-btn compact" type="button"><i data-lucide="save"></i>Salvar usuario</button><button class="icon-btn danger" data-remove-user="${editingIndex}" ${editing.username === "admin" ? "disabled" : ""} title="Remover usuario"><i data-lucide="trash-2"></i></button></div></div>
+      <div class="field-grid compact-grid"><label>Usuario<input data-user-field="username" value="${escapeHtml(editing.username || "")}" ${editing.username === "admin" ? "readonly" : ""} /></label><label>Nova senha<input data-user-field="password" type="password" placeholder="Manter senha atual" /></label><label>Perfil<select data-user-field="role">${["admin", "supervisor", "user"].map((role) => option(role, editing.role || "user", role)).join("")}</select></label><label>Ramal<input data-user-field="extension" value="${escapeHtml(editing.extension || "")}" /></label><label class="wide">Ramais permitidos<input data-user-field="allowedExtensions" value="${escapeHtml((editing.allowedExtensions || []).join(", "))}" placeholder="201, 202" /></label><label class="wide">Departamentos<input data-user-field="departments" value="${escapeHtml((editing.departments || []).join(", "))}" placeholder="Recepcao, Financeiro" /></label></div>
+      <section class="user-access-block"><div class="user-access-heading"><div><strong>Acesso aos modulos</strong><span>Defina quais areas ficam disponiveis para este usuario.</span></div><div class="user-access-actions"><span class="user-permission-summary" data-user-menu-count>${enabledMenuCount} de ${Object.keys(menuPermissions).length} modulos</span>${isAdmin ? `<span class="badge ok">Acesso total</span>` : `<button class="secondary-btn compact" type="button" data-user-toggle-menus="${editingIndex}"><i data-lucide="check-check"></i><span data-user-toggle-label>${enabledMenuCount === Object.keys(menuPermissions).length ? "Limpar" : "Selecionar todos"}</span></button>`}</div></div><div class="user-permission-groups">${menuGroups}</div></section>
+      <section class="user-access-block user-account-permissions"><div class="user-access-heading"><div><strong>Gravacoes e monitoramento</strong><span>Permissoes complementares da conta.</span></div></div><div class="user-setting-list"><label class="user-setting-option"><input type="checkbox" data-user-permission="listenRecordings" ${editing.permissions?.listenRecordings ? "checked" : ""}/><span><strong>Escutar gravacoes</strong><small>Reproduzir audios das chamadas.</small></span></label><label class="user-setting-option"><input type="checkbox" data-user-permission="downloadRecordings" ${editing.permissions?.downloadRecordings ? "checked" : ""}/><span><strong>Baixar gravacoes</strong><small>Salvar uma copia do audio.</small></span></label><label class="user-setting-option"><input type="checkbox" data-user-permission="interveneCalls" ${editing.permissions?.interveneCalls ? "checked" : ""}/><span><strong>Intervir em chamadas</strong><small>Usar sussurro e intervencao ao vivo.</small></span></label><label class="user-setting-option"><input type="checkbox" data-user-field="mustChangePassword" ${editing.mustChangePassword ? "checked" : ""}/><span><strong>Trocar senha no proximo login</strong><small>Solicitar uma nova senha ao entrar.</small></span></label></div></section>
+    </article>` : `
+    <section class="panel"><div class="panel-header"><div><p class="eyebrow">Administracao</p><h3>Usuarios</h3><p class="microcopy">Consulte os usuarios cadastrados e abra somente a conta que deseja editar.</p></div><div class="report-header-actions"><button id="addUserBtn" class="primary-btn" type="button"><i data-lucide="plus"></i>Novo usuario</button><button id="saveUsersBtn" class="secondary-btn" type="button"><i data-lucide="save"></i>Salvar usuarios</button></div></div><div class="entity-list-grid">${rows || `<div class="governance-empty"><i data-lucide="users"></i><strong>Nenhum usuario cadastrado</strong><span>Cadastre um usuario para liberar acessos.</span></div>`}</div></section>`;
+  pages.users.innerHTML = `<div class="section-grid">${editor || `<section class="panel"><div class="panel-header"><div><p class="eyebrow">Administracao</p><h3>Usuarios</h3><p class="microcopy">Consulte os usuarios cadastrados e abra somente a conta que deseja editar.</p></div><div class="report-header-actions"><button id="addUserBtn" class="primary-btn" type="button"><i data-lucide="plus"></i>Novo usuario</button><button id="saveUsersBtn" class="secondary-btn" type="button"><i data-lucide="save"></i>Salvar usuarios</button></div></div><div class="entity-list-grid">${rows || `<div class="governance-empty"><i data-lucide="users"></i><strong>Nenhum usuario cadastrado</strong><span>Cadastre um usuario para liberar acessos.</span></div>`}</div></section>`}</div>`;
 }
+
 
 function collectConfig() {
   const cfg = state.config;
@@ -6056,8 +5988,11 @@ function collectConfig() {
   const trunkRoot = pages.trunk.classList.contains("active") ? pages.trunk : activeRoot;
   const trunkCards = $all("[data-trunk-card]", trunkRoot);
   if (trunkCards.length) {
-    cfg.trunks = trunkCards.map((card, index) => {
-      const current = cfg.trunks?.[index] || {};
+    const currentTrunks = cfg.trunks || [];
+    const updatedTrunks = currentTrunks.slice();
+    const readTrunkCard = (card, fallbackIndex) => {
+      const cardIndex = Number.isInteger(Number(card.dataset.index)) ? Number(card.dataset.index) : fallbackIndex;
+      const current = currentTrunks[cardIndex] || {};
       const trunk = { ...current };
       $all("[data-trunk-field]", card).forEach((input) => {
         const key = input.dataset.trunkField;
@@ -6068,9 +6003,14 @@ function collectConfig() {
       });
       trunk.inboundDestinationType = $("[data-trunk-inbound-type]", card)?.value || trunk.inboundDestinationType || "ivr";
       trunk.inboundDestination = trunk.inboundDestinationType === "none" ? "" : $("[data-trunk-inbound-value]", card)?.value || trunk.inboundDestination || "main";
-      trunk.id = (trunk.id || (index === 0 ? "trunk-operadora" : `trunk-${index + 1}`)).replace(/[^a-zA-Z0-9_.-]/g, "-");
+      trunk.id = (trunk.id || (cardIndex === 0 ? "trunk-operadora" : `trunk-${cardIndex + 1}`)).replace(/[^a-zA-Z0-9_.-]/g, "-");
       return trunk;
+    };
+    trunkCards.forEach((card, index) => {
+      const cardIndex = Number.isInteger(Number(card.dataset.index)) ? Number(card.dataset.index) : index;
+      updatedTrunks[cardIndex] = readTrunkCard(card, index);
     });
+    cfg.trunks = updatedTrunks;
     cfg.trunk = { ...(cfg.trunk || {}), ...(cfg.trunks[0] || {}) };
     (cfg.inboundRoutes || []).filter((route) => route.id === "main" && !route.trunkId).forEach((route) => {
       route.destinationType = cfg.trunk.inboundDestinationType;
@@ -6082,7 +6022,7 @@ function collectConfig() {
     }
   }
 
-  $all("[data-extension-card], tbody tr", pages.extensions.classList.contains("active") ? pages.extensions : document.createElement("div")).forEach((row) => {
+  $all("[data-extension-card]", pages.extensions.classList.contains("active") ? pages.extensions : document.createElement("div")).forEach((row) => {
     const ext = cfg.extensions[Number(row.dataset.index)];
     if (!ext) return;
     $all("[data-field]", row).forEach((input) => {
@@ -6475,8 +6415,15 @@ async function loadReports(extra = {}) {
 }
 
 function collectUsersFromDom() {
-  return $all("[data-user-index]", pages.users).map((card) => {
-    const permissions = { menus: {} };
+  const users = (state.users || []).map((user) => ({
+    ...user,
+    permissions: { ...(user.permissions || {}), menus: { ...(user.permissions?.menus || {}) } }
+  }));
+  $all("[data-user-index]", pages.users).forEach((card) => {
+    const index = Number(card.dataset.userIndex);
+    if (!Number.isInteger(index)) return;
+    const current = users[index] || {};
+    const permissions = { ...(current.permissions || {}), menus: { ...(current.permissions?.menus || {}) } };
     $all("[data-user-menu]", card).forEach((input) => {
       permissions.menus[input.dataset.userMenu] = input.checked;
     });
@@ -6484,7 +6431,8 @@ function collectUsersFromDom() {
       permissions[input.dataset.userPermission] = input.checked;
     });
     const field = (name) => $(`[data-user-field='${name}']`, card);
-    return {
+    users[index] = {
+      ...current,
       username: field("username")?.value || "",
       password: field("password")?.value || "",
       role: field("role")?.value || "user",
@@ -6495,6 +6443,7 @@ function collectUsersFromDom() {
       permissions
     };
   });
+  return users;
 }
 
 async function loadUsers() {
@@ -6511,6 +6460,8 @@ async function saveUsers() {
     body: JSON.stringify({ users })
   });
   state.users = response.users || [];
+  state.editingUserIndex = null;
+  state.editingUserNew = false;
   setMessage("Usuarios e permissoes salvos.", "ok");
   renderUsers();
   iconRefresh();
@@ -6610,12 +6561,19 @@ async function loadDialerCampaigns({ preserveDraft = false, background = false }
 async function saveDialerCampaign(form) {
   const payload = Object.fromEntries(new FormData(form));
   payload.trunkIds = new FormData(form).getAll("trunkIds");
+  if (!payload.trunkIds.length) {
+    setMessage("Selecione pelo menos um tronco para a campanha.", "error");
+    form.querySelector('[name="trunkIds"]')?.focus();
+    return;
+  }
   const response = await api("/api/dialer/campaigns", {
     method: "POST",
     body: JSON.stringify(payload)
   });
   state.dialerCampaigns = response.campaigns || [];
   state.dialerEditingId = "";
+  state.dialerEditorOpen = false;
+  state.dialerEditingNew = false;
   renderDialer();
   iconRefresh();
   setMessage("Campanha salva.", "ok");
@@ -6858,6 +6816,7 @@ document.addEventListener("submit", async (event) => {
         body: JSON.stringify(Object.fromEntries(formData))
       });
       state.user = response.user;
+      restoreViewPreferences();
       renderShell();
       if (!state.user.mustChangePassword) {
         await loadConfig();
@@ -6927,6 +6886,10 @@ document.addEventListener("submit", async (event) => {
 });
 
 document.addEventListener("click", async (event) => {
+  if (event.target.closest("[data-upload-dialer-audio]")) {
+    document.getElementById("dialerAudioFile")?.click();
+    return;
+  }
   if (state.extensionSession) prepareIncomingRingtone();
   if (state.extensionSession && !event.target.closest("#extensionNotificationBtn") && desktopNotificationPermission() === "default") {
     requestDesktopNotificationPermission({ silent: true }).catch(() => {});
@@ -6946,10 +6909,19 @@ document.addEventListener("click", async (event) => {
   const removeQueueMemberButton = event.target.closest("[data-remove-queue-member]");
   const removeQueueButton = event.target.closest("[data-remove-queue]");
   const removeTrunkButton = event.target.closest("[data-remove-trunk]");
+  const editTrunkButton = event.target.closest("[data-edit-trunk]");
+  const cancelTrunkEditButton = event.target.closest("[data-cancel-trunk-edit]");
   const deleteIvrAudioButton = event.target.closest("[data-delete-ivr-audio]");
   const editDialerButton = event.target.closest("[data-edit-dialer]");
+  const newDialerButton = event.target.closest("[data-new-dialer]");
   const dialerActionButton = event.target.closest("[data-dialer-action]");
   const deleteDialerButton = event.target.closest("[data-delete-dialer]");
+  const editExtensionButton = event.target.closest("[data-edit-extension]");
+  const cancelExtensionEditButton = event.target.closest("[data-cancel-extension-edit]");
+  const editQueueButton = event.target.closest("[data-edit-queue]");
+  const cancelQueueEditButton = event.target.closest("[data-cancel-queue-edit]");
+  const editRouteButton = event.target.closest("[data-edit-route]");
+  const cancelRouteEditButton = event.target.closest("[data-cancel-route-edit]");
   const toggleExtensionDetailsButton = event.target.closest("[data-toggle-extension-details]");
   const toggleQueueDetailsButton = event.target.closest("[data-toggle-queue-details]");
   const addIvrOptionButton = event.target.closest("[data-add-ivr-option]");
@@ -6978,6 +6950,8 @@ document.addEventListener("click", async (event) => {
   const monitorSpyButton = event.target.closest("[data-monitor-spy]");
   const monitorSpyModeButton = event.target.closest("[data-monitor-spy-mode]");
   const removeUserButton = event.target.closest("[data-remove-user]");
+  const editUserButton = event.target.closest("[data-edit-user]");
+  const cancelUserEditButton = event.target.closest("[data-cancel-user-edit]");
   const toggleUserMenusButton = event.target.closest("[data-user-toggle-menus]");
   const dialKeyButton = event.target.closest("[data-dial-key]");
 
@@ -7136,6 +7110,16 @@ document.addEventListener("click", async (event) => {
 
     if (tabButton) {
       await setActiveTab(tabButton.dataset.tab, { push: true, collect: true, load: true });
+      window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+      return;
+    }
+
+    if (newDialerButton) {
+      state.dialerEditingId = "";
+      state.dialerEditorOpen = true;
+      state.dialerEditingNew = true;
+      renderDialer();
+      iconRefresh();
       return;
     }
 
@@ -7147,7 +7131,104 @@ document.addEventListener("click", async (event) => {
 
     if (event.target.closest("[data-cancel-dialer-edit]")) {
       state.dialerEditingId = "";
+      state.dialerEditorOpen = false;
+      state.dialerEditingNew = false;
       renderDialer();
+      iconRefresh();
+      return;
+    }
+
+    if (editTrunkButton) {
+      collectConfig();
+      state.editingTrunkIndex = Number(editTrunkButton.dataset.editTrunk);
+      state.editingTrunkNew = false;
+      renderTrunk();
+      iconRefresh();
+      return;
+    }
+
+    if (cancelTrunkEditButton) {
+      collectConfig();
+      if (state.editingTrunkNew) state.config.trunks.pop();
+      state.editingTrunkIndex = null;
+      state.editingTrunkNew = false;
+      renderTrunk();
+      iconRefresh();
+      return;
+    }
+
+    if (editExtensionButton) {
+      collectConfig();
+      state.editingExtensionIndex = Number(editExtensionButton.dataset.editExtension);
+      state.editingExtensionNew = false;
+      renderExtensions();
+      iconRefresh();
+      return;
+    }
+
+    if (cancelExtensionEditButton) {
+      collectConfig();
+      if (state.editingExtensionNew) state.config.extensions.splice(state.editingExtensionIndex, 1);
+      state.editingExtensionIndex = null;
+      state.editingExtensionNew = false;
+      renderExtensions();
+      iconRefresh();
+      return;
+    }
+
+    if (editQueueButton) {
+      collectConfig();
+      state.editingQueueIndex = Number(editQueueButton.dataset.editQueue);
+      state.editingQueueNew = false;
+      renderQueues();
+      iconRefresh();
+      return;
+    }
+
+    if (cancelQueueEditButton) {
+      collectConfig();
+      if (state.editingQueueNew) state.config.queues.splice(state.editingQueueIndex, 1);
+      state.editingQueueIndex = null;
+      state.editingQueueNew = false;
+      renderQueues();
+      iconRefresh();
+      return;
+    }
+
+    if (editRouteButton) {
+      collectConfig();
+      state.editingRouteIndex = Number(editRouteButton.dataset.editRoute);
+      state.editingRouteNew = false;
+      renderRouting();
+      iconRefresh();
+      return;
+    }
+
+    if (cancelRouteEditButton) {
+      collectConfig();
+      if (state.editingRouteNew) state.config.inboundRoutes.splice(state.editingRouteIndex, 1);
+      state.editingRouteIndex = null;
+      state.editingRouteNew = false;
+      renderRouting();
+      iconRefresh();
+      return;
+    }
+
+    if (editUserButton) {
+      state.users = collectUsersFromDom();
+      state.editingUserIndex = Number(editUserButton.dataset.editUser);
+      state.editingUserNew = false;
+      renderUsers();
+      iconRefresh();
+      return;
+    }
+
+    if (cancelUserEditButton) {
+      state.users = collectUsersFromDom();
+      if (state.editingUserNew) state.users.splice(state.editingUserIndex, 1);
+      state.editingUserIndex = null;
+      state.editingUserNew = false;
+      renderUsers();
       iconRefresh();
       return;
     }
@@ -7171,6 +7252,8 @@ document.addEventListener("click", async (event) => {
         inboundDestination: "main",
         active: true
       });
+      state.editingTrunkIndex = state.config.trunks.length - 1;
+      state.editingTrunkNew = true;
       renderTrunk();
       iconRefresh();
       setTimeout(() => {
@@ -7189,6 +7272,8 @@ document.addEventListener("click", async (event) => {
       if (!window.confirm(`Remover o tronco ${trunkLabel(trunk)}?`)) return;
       state.config.trunks.splice(index, 1);
       if (state.config.outbound?.defaultTrunk === trunk.id) state.config.outbound.defaultTrunk = state.config.trunks[0]?.id || "trunk-operadora";
+      state.editingTrunkIndex = null;
+      state.editingTrunkNew = false;
       renderTrunk();
       iconRefresh();
       setMessage("Tronco removido. Salve e aplique para atualizar o Asterisk.", "ok");
@@ -7197,6 +7282,8 @@ document.addEventListener("click", async (event) => {
 
     if (editDialerButton) {
       state.dialerEditingId = editDialerButton.dataset.editDialer || "";
+      state.dialerEditorOpen = true;
+      state.dialerEditingNew = false;
       renderDialer();
       iconRefresh();
       return;
@@ -7223,6 +7310,16 @@ document.addEventListener("click", async (event) => {
 
     if (transferWaitingButton) {
       const channel = transferWaitingButton.dataset.transferWaiting || "";
+      const session = state.extensionCall.session;
+      if (session?.state !== window.SIP?.SessionState.Established) {
+        setMessage("Para conversar com o destino antes de transferir, atenda esta chamada no seu ramal e use Transferir no telefone.", "info");
+        return;
+      }
+      const ownCall = state.extensionStatus?.active?.some(item => item.channel === channel);
+      if (!ownCall) {
+        setMessage("Use Transferir no ramal que está atendendo esta chamada para conversar com o destino.", "info");
+        return;
+      }
       const choices = [
         ...(state.config.extensions || []).map((ext) => `${ext.number} ${ext.name || ""}`.trim()),
         ...(state.config.queues || []).map((queue, index) => `${queue.id} ${queueLabel(queue, index)}`.trim())
@@ -7230,12 +7327,8 @@ document.addEventListener("click", async (event) => {
       const target = window.prompt(`Transferir para qual ramal ou fila?\n${choices}`, "");
       if (!target) return;
       const cleanTarget = target.trim().split(/\s+/)[0];
-      const response = await api("/api/pbx/monitor/action", {
-        method: "POST",
-        body: JSON.stringify({ action: "transfer-waiting", channel, target: cleanTarget })
-      });
-      setMessage(response.output || "Chamada transferida.", "ok");
-      await loadPbxStatus();
+      state.extensionCall.transferTarget = cleanTarget;
+      await startAssistedTransfer();
       return;
     }
 
@@ -7287,7 +7380,7 @@ document.addEventListener("click", async (event) => {
         method: "POST",
         body: JSON.stringify({ action: "hangup-channel", channel, target })
       });
-      setMessage(response.output || "Chamada desconectada.", "ok");
+      setMessage("Chamada desconectada.", "ok");
       await loadPbxStatus();
       return;
     }
@@ -7387,6 +7480,8 @@ document.addEventListener("click", async (event) => {
         permissions: { menus: { overview: true, reports: true } },
         mustChangePassword: true
       });
+      state.editingUserIndex = state.users.length - 1;
+      state.editingUserNew = true;
       renderUsers();
       iconRefresh();
       return;
@@ -7394,7 +7489,12 @@ document.addEventListener("click", async (event) => {
 
     if (removeUserButton) {
       state.users = collectUsersFromDom();
-      state.users.splice(Number(removeUserButton.dataset.removeUser), 1);
+      const index = Number(removeUserButton.dataset.removeUser);
+      const user = state.users[index];
+      if (!user || user.username === "admin" || !window.confirm(`Remover o usuario ${user.username || "selecionado"}?`)) return;
+      state.users.splice(index, 1);
+      state.editingUserIndex = null;
+      state.editingUserNew = false;
       renderUsers();
       iconRefresh();
       return;
@@ -7435,6 +7535,7 @@ document.addEventListener("click", async (event) => {
     }
 
     if (event.target.closest("#logoutBtn")) {
+      persistViewPreferences();
       await api("/api/logout", { method: "POST", body: "{}" });
       state.user = null;
       state.config = null;
@@ -7465,26 +7566,27 @@ document.addEventListener("click", async (event) => {
         pickupGroup: "-",
         costCenter: "Padrao"
       });
+      state.editingExtensionIndex = state.config.extensions.length - 1;
+      state.editingExtensionNew = true;
       renderExtensions();
       iconRefresh();
-      return;
-    }
-
-    if (toggleExtensionDetailsButton) {
-      collectConfig();
-      const ext = state.config.extensions[Number(toggleExtensionDetailsButton.dataset.toggleExtensionDetails)];
-      if (ext) {
-        const key = ext.number || toggleExtensionDetailsButton.dataset.toggleExtensionDetails;
-        state.openExtensionDetails[key] = !state.openExtensionDetails[key];
-      }
-      renderExtensions();
-      iconRefresh();
+      requestAnimationFrame(() => {
+        const editor = pages.extensions.querySelector('[data-entity-editor]');
+        editor?.scrollIntoView({ block: "start", behavior: "auto" });
+        editor?.querySelector('input[data-field="number"]')?.focus({ preventScroll: true });
+      });
       return;
     }
 
     if (removeExtension) {
       collectConfig();
-      state.config.extensions.splice(Number(removeExtension.dataset.removeExtension), 1);
+      const index = Number(removeExtension.dataset.removeExtension);
+      const extension = state.config.extensions[index];
+      if (!extension || !window.confirm(`Remover o ramal ${extension.number || "selecionado"}? As referencias serao ajustadas.`)) return;
+      state.config.extensions.splice(index, 1);
+      removeExtensionReferences(extension.number);
+      state.editingExtensionIndex = null;
+      state.editingExtensionNew = false;
       renderExtensions();
       iconRefresh();
       return;
@@ -7501,6 +7603,8 @@ document.addEventListener("click", async (event) => {
         destinationType: "none",
         destination: ""
       });
+      state.editingRouteIndex = state.config.inboundRoutes.length - 1;
+      state.editingRouteNew = true;
       renderRouting();
       iconRefresh();
       return;
@@ -7512,6 +7616,8 @@ document.addEventListener("click", async (event) => {
       const index = Number(removeInbound.dataset.removeInbound);
       if (!window.confirm(`Excluir a rota ${state.config.inboundRoutes[index]?.name || "selecionada"}?`)) return;
       state.config.inboundRoutes.splice(index, 1);
+      state.editingRouteIndex = null;
+      state.editingRouteNew = false;
       renderRouting();
       iconRefresh();
       return;
@@ -8019,40 +8125,25 @@ document.addEventListener("click", async (event) => {
 
     if (event.target.closest("#createQueueBtn")) {
       collectConfig();
-      const name = $("#newQueueName")?.value.trim() || "Nova fila";
-      const id = uniqueQueueId($("#newQueueId")?.value || name);
-      const number = String($("#newQueueNumber")?.value || nextQueueDialNumber()).replace(/\D/g, "") || nextQueueDialNumber();
-      if (queueDialNumberConflict(number)) {
-        setMessage("O ramal da fila ja esta em uso por outro ramal ou fila.", "error");
-        return;
-      }
-      const fallback = $("#newQueueFallback")?.value || "";
+      const name = "Nova fila";
+      const id = uniqueQueueId(name);
+      const number = nextQueueDialNumber();
       state.config.queues.push({
         id,
         number,
         name,
-        strategy: $("#newQueueStrategy")?.value || "ringall",
+        strategy: "ringall",
         members: [],
         timeout: 20,
         maxWait: 300,
-        fallbackType: fallback ? "queue" : "none",
-        fallback
+        fallbackType: "none",
+        fallback: ""
       });
+      state.editingQueueIndex = state.config.queues.length - 1;
+      state.editingQueueNew = true;
       renderQueues();
       iconRefresh();
       setMessage("Fila cadastrada. Adicione ramais, salve e aplique para atualizar o Asterisk.", "ok");
-      return;
-    }
-
-    if (toggleQueueDetailsButton) {
-      collectConfig();
-      const queue = state.config.queues[Number(toggleQueueDetailsButton.dataset.toggleQueueDetails)];
-      if (queue) {
-        const key = queue.id || toggleQueueDetailsButton.dataset.toggleQueueDetails;
-        state.openQueueDetails[key] = !state.openQueueDetails[key];
-      }
-      renderQueues();
-      iconRefresh();
       return;
     }
 
@@ -8066,6 +8157,8 @@ document.addEventListener("click", async (event) => {
       state.config.queues.splice(index, 1);
       removeQueueReferences(queue.id);
       delete state.openQueueDetails[queue.id || index];
+      state.editingQueueIndex = null;
+      state.editingQueueNew = false;
       renderQueues();
       iconRefresh();
       setMessage("Fila excluida. Salve e aplique para atualizar o Asterisk.", "ok");
@@ -8079,6 +8172,8 @@ document.addEventListener("click", async (event) => {
       const queue = state.config.queues.find((item) => item.id === queueId);
       if (queue && extension) {
         queue.members = [...new Set([...(queue.members || []), extension])];
+        state.editingQueueIndex = state.config.queues.indexOf(queue);
+        state.editingQueueNew = false;
         renderQueues();
         iconRefresh();
         setMessage("Ramal adicionado na fila. Salve e aplique para atualizar o Asterisk.", "ok");
@@ -8150,6 +8245,8 @@ document.addEventListener("click", async (event) => {
       const queue = state.config.queues[Number(removeQueueMemberButton.dataset.removeQueueMember)];
       if (queue) {
         queue.members = (queue.members || []).filter((member) => member !== removeQueueMemberButton.dataset.member);
+        state.editingQueueIndex = state.config.queues.indexOf(queue);
+        state.editingQueueNew = false;
         renderQueues();
         iconRefresh();
         setMessage("Ramal removido da fila. Salve e aplique para atualizar o Asterisk.", "ok");
@@ -8555,7 +8652,33 @@ document.addEventListener("input", (event) => {
   }
 });
 
-document.addEventListener("change", (event) => {
+document.addEventListener("change", async (event) => {
+  if (event.target.id === "dialerAudioFile") {
+    const input = event.target;
+    const file = input.files?.[0];
+    if (!file) return;
+    const form = input.closest("form");
+    const button = form.querySelector("[data-upload-dialer-audio]");
+    button.disabled = true;
+    try {
+      const body = new FormData();
+      body.append("audio", file);
+      const response = await fetch("/api/ivr-audios", { method: "POST", credentials: "same-origin", body });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Falha ao enviar áudio.");
+      state.ivrAudios = data.audios || [];
+      const select = form.querySelector('select[name="audio"]');
+      select.innerHTML = audioChoices(data.audio?.playback || "");
+      select.value = data.audio?.playback || "";
+      setMessage("Áudio selecionado. Salve a campanha e, em URAs, use Salvar e aplicar antes de iniciar.", "ok");
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      button.disabled = false;
+      input.value = "";
+    }
+    return;
+  }
   const userMenuInput = event.target.closest("[data-user-menu]");
   if (userMenuInput) {
     const card = userMenuInput.closest("[data-user-index]");
@@ -8677,6 +8800,7 @@ async function boot() {
     api("/api/extensions/me")
   ]);
   state.user = adminResponse.user;
+  restoreViewPreferences();
   state.extensionSession = state.user ? null : extensionResponse.extension;
   renderShell();
   updateTopbarActions();
@@ -8745,3 +8869,4 @@ setInterval(() => {
 }, 1000);
 
 window.addEventListener("pagehide", notifyExtensionLogoutOnClose);
+window.addEventListener("pagehide", persistViewPreferences);
