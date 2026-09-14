@@ -100,3 +100,8 @@ test("background refreshes preserve unfinished form input", () => {
   assert.ok(backgroundRenderers);
   assert.doesNotMatch(backgroundRenderers[1], /security|reports/);
 });
+
+test("softphone answers without the SIP.js five-second ICE delay", () => {
+  assert.match(appSource, /WEBRTC_ICE_GATHERING_TIMEOUT_MS\s*=\s*750/);
+  assert.match(appSource, /iceGatheringTimeout:\s*WEBRTC_ICE_GATHERING_TIMEOUT_MS/);
+});

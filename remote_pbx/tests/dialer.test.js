@@ -112,6 +112,7 @@ test("dialer accepts negotiated trunk DTMF and waits at least 15 seconds", () =>
   config.trunks = [{ id: "trunk-main", active: true, sipServer: "192.0.2.10", sipUser: "1000", sipPassword: "secret", codecs: ["alaw", "ulaw"] }];
   assert.match(renderPjsip(config), /\[trunk-main\][\s\S]*dtmf_mode=auto/);
   const dialplan = renderExtensions(config);
+  assert.match(dialplan, /Set\(PJSIP_DTMF_MODE\(\)=inband\)/);
   assert.match(dialplan, /WaitExten\(\$\{DIALER_TIMEOUT\}\)/);
   const callFile = _test.dialerCallFileContent(config, { responseTimeout: 8, trunkIds: ["trunk-main"] }, { number: "34991708282" });
   assert.match(callFile, /^Setvar: DIALER_TIMEOUT=15$/m);

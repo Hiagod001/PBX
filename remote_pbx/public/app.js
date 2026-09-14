@@ -1,6 +1,7 @@
 const MONITOR_REFRESH_MS = 1000;
 const BACKGROUND_STATUS_REFRESH_MS = 15000;
 const WEB_SIP_REGISTER_EXPIRES_SECONDS = 8 * 60 * 60;
+const WEBRTC_ICE_GATHERING_TIMEOUT_MS = 750;
 const PAUSE_REASONS = ["Cafezinho", "Almoço", "Treinamento", "Atendimento presencial"];
 const CONFIG_SECTION_KEYS = [
   "company", "trunk", "trunks", "extensions", "inboundRoutes", "ivr", "ringGroups",
@@ -2875,7 +2876,8 @@ async function startSoftphone() {
     displayName: state.extensionPortal.sip.displayName,
     transportOptions: { server: state.extensionPortal.sip.wsServer },
     sessionDescriptionHandlerFactoryOptions: {
-      constraints: { audio: true, video: false }
+      constraints: { audio: true, video: false },
+      iceGatheringTimeout: WEBRTC_ICE_GATHERING_TIMEOUT_MS
     }
   });
 
@@ -3026,7 +3028,12 @@ async function answerSoftphone() {
   state.extensionCall.startedAt = Date.now();
   state.extensionCall.endedAt = null;
   addExtensionCallHistory("Atendendo");
-  await session.accept({ sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } } });
+  await session.accept({
+    sessionDescriptionHandlerOptions: {
+      constraints: { audio: true, video: false },
+      iceGatheringTimeout: WEBRTC_ICE_GATHERING_TIMEOUT_MS
+    }
+  });
 }
 
 async function hangupSoftphone() {

@@ -237,6 +237,7 @@ function renderDialerContext(lines) {
   lines.push("", "[dialer-interactive]");
   lines.push("exten => s,1,NoOp(Discador campanha ${DIALER_CAMPAIGN_ID} para ${DIALER_TARGET})");
   lines.push(" same => n,Answer()");
+  lines.push(" same => n,Set(PJSIP_DTMF_MODE()=inband)");
   lines.push(" same => n,Set(CDR(direction)=dialer)");
   lines.push(" same => n,Set(CDR(campaign)=${DIALER_CAMPAIGN_ID})");
   lines.push(" same => n,Set(CDR(trunk)=${TRUNK_ENDPOINT})");
