@@ -2395,7 +2395,7 @@ function renderExtensionPortal() {
           <strong>${escapeHtml(state.extensionCall.consultTarget || "-")}</strong>
           <small>${escapeHtml(state.extensionCall.consultStatus || "Consultando ramal")}</small>
           <div>
-            <button id="assistedTransferCompleteBtn" class="primary-btn" type="button" ${state.extensionCall.transferPhase === "consulting" ? "" : "disabled"}><i data-lucide="check"></i>Confirmar</button>
+            <button id="assistedTransferCompleteBtn" class="primary-btn" type="button" ${state.extensionCall.transferPhase === "consulting" ? "" : "disabled"}><i data-lucide="check"></i>Concluir a transferência</button>
             <button id="assistedTransferCancelBtn" class="secondary-btn danger" type="button" ${state.extensionCall.transferBusy ? "disabled" : ""}><i data-lucide="x"></i>Voltar ao cliente</button>
           </div>
         </div>
