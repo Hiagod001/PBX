@@ -57,6 +57,30 @@ const historyBtn = document.querySelector("#historyBtn");
 const transferPanel = document.querySelector("#transferPanel");
 const transferTargetInput = document.querySelector("#transferTargetInput");
 const confirmTransferBtn = document.querySelector("#confirmTransferBtn");
+const completeTransferBtn = document.querySelector("#completeTransferBtn");
+const cancelTransferBtn = document.querySelector("#cancelTransferBtn");
+const transferStatus = document.querySelector("#transferStatus");
+const assistedTransfer = window.AssistedTransfer.create({
+  SIP: window.SIP,
+  getSession: () => state.session,
+  getAgent: () => state.ua,
+  getMuted: () => micMuted,
+  getDomain: () => state.portal?.sip?.domain || SIP.UserAgent.makeURI(state.portal?.sip?.uri)?.host,
+  constraints: () => ({ audio: audioConstraints(), video: false }),
+  audio: attachRemoteAudio,
+  report: error => setError(error, "Não foi possível voltar ao cliente. Tente novamente."),
+  changed: ({ phase, target, busy }) => {
+    const active = phase !== "idle";
+    transferTargetInput.disabled = active;
+    confirmTransferBtn.disabled = busy || active;
+    completeTransferBtn.classList.toggle("hidden", !active);
+    completeTransferBtn.disabled = busy || phase !== "consulting";
+    cancelTransferBtn.classList.toggle("hidden", !active);
+    cancelTransferBtn.disabled = busy;
+    transferStatus.textContent = ({ holding: "Colocando cliente em espera…", calling: `Chamando ${target}. Cliente em espera.`, consulting: `Conversando com ${target}. Cliente em espera.`, completing: "Concluindo transferência…", returning: "Voltando ao cliente…", held: "Cliente em espera. Clique em Voltar ao cliente." })[phase] || "";
+    if (active) transferPanel.classList.remove("hidden");
+  }
+});
 const pauseReasonPanel = document.querySelector("#pauseReasonPanel");
 const cancelPauseReasonBtn = document.querySelector("#cancelPauseReasonBtn");
 const volumeSlider = document.querySelector("#volumeSlider");
@@ -113,14 +137,18 @@ function isSipRegistered() {
   );
 }
 
+function renderStatusBadge() {
+  const display = PhoneState.displayStatus(state, paused);
+  registrationBadge.textContent = display.label;
+  for (const tone of ["connecting", "offline", "paused", "busy", "ringing"]) {
+    registrationBadge.classList.toggle(`is-${tone}`, display.tone === tone);
+  }
+}
+
 function setRegistrationStatus(nextStatus) {
   const status = ["online", "connecting", "offline"].includes(nextStatus) ? nextStatus : "offline";
   state.registrationStatus = status;
-  registrationBadge.textContent = status === "online" ? "Online" : status === "connecting" ? "Conectando" : "Offline";
-  registrationBadge.classList.toggle("is-connecting", status === "connecting");
-  registrationBadge.classList.toggle("is-offline", status === "offline");
-  if (status === "online" && paused) registrationBadge.textContent = "Em pausa";
-  registrationBadge.classList.toggle("is-paused", status === "online" && paused);
+  renderStatusBadge();
   if (!state.session && !state.callPending) callBtn.disabled = status !== "online";
 }
 
@@ -137,7 +165,6 @@ function scheduleSipReconnect(reason = "conexao indisponivel") {
   const delay = SIP_RECONNECT_DELAYS_MS[Math.min(attempt - 1, SIP_RECONNECT_DELAYS_MS.length - 1)];
   setRegistrationStatus("connecting");
   sipLog(`reconnect scheduled attempt=${attempt} delayMs=${delay} reason=${reason}`);
-  if (!state.session && !state.callPending) setMessage("Telefone offline. Reconectando...");
   state.reconnectTimer = setTimeout(() => {
     state.reconnectTimer = null;
     if (state.session || state.callPending) {
@@ -184,11 +211,10 @@ async function showPhone(extension) {
   logoutBtn.classList.remove("hidden");
   extensionLabel.textContent = `${extension.number || "Ramal"} ${extension.name || ""}`.trim();
   activeCallExtension.textContent = extension.number || "-";
-  callMessage.textContent = "Registrando telefone...";
-  callMessage.classList.add("ok");
+  setMessage("", true);
   scheduleStatusRefresh(0);
   await startSoftphone().catch((error) => {
-    setMessage(`Ramal entrou, mas o telefone nao registrou: ${error.message}`);
+    setError(error, "Não foi possível conectar o telefone. Tente entrar novamente.");
   });
   numberInput.focus();
 }
@@ -225,6 +251,7 @@ function clearPendingCallTimeout() {
 }
 
 function renderActiveCallPanel() {
+  renderStatusBadge();
   const active = Boolean(state.session || state.callPending);
   setActiveCallVisible(active);
   if (!active) return;
@@ -352,7 +379,7 @@ function playTone(audio, label) {
   if (!audio) return;
   audio.currentTime = 0;
   audio.play().catch((error) => {
-    setMessage(`Nao consegui tocar o ${label}: ${error.message || "audio bloqueado"}`);
+    setError(error, "Não foi possível reproduzir o som. Confira o dispositivo de áudio selecionado.");
   });
 }
 
@@ -361,7 +388,7 @@ function startNativeTone(kind, label) {
   activeTone = kind;
   window.pbxAPI.startTone?.(kind).catch((error) => {
     if (activeTone === kind) activeTone = "";
-    setMessage(`Falha no ${label} do Windows: ${error.message}`);
+    setError(error, "Não foi possível reproduzir o som. Confira o dispositivo de áudio selecionado.");
   });
 }
 
@@ -514,6 +541,7 @@ async function terminateSipSession(session) {
 }
 
 function finishSipCall(message = "Chamada encerrada.") {
+  assistedTransfer.dispose().catch(error => sipLog("transfer cleanup", error));
   clearPendingCallTimeout();
   stopRingtone();
   stopRingback();
@@ -712,7 +740,7 @@ async function startSoftphone() {
         if (state.autoAnswerNext) {
           state.autoAnswerNext = false;
           setMessage("Conectando chamada...", true);
-          await answerSipCall(invitation).catch((error) => setMessage(`Falha ao atender: ${error.message}`));
+          await answerSipCall(invitation).catch((error) => setError(error, "Não foi possível atender a chamada. Tente novamente."));
           return;
         }
         state.currentDirection = "entrada";
@@ -748,7 +776,6 @@ async function startSoftphone() {
       if (nextState === SIP.RegistererState.Registered) {
         state.reconnectAttempts = 0;
         setRegistrationStatus("online");
-        setMessage("Telefone online.", true);
       } else if (nextState === SIP.RegistererState.Unregistered || nextState === SIP.RegistererState.Terminated) {
         setRegistrationStatus("offline");
         scheduleSipReconnect(`registro ${nextState}`);
@@ -771,6 +798,7 @@ async function startSoftphone() {
 }
 
 async function stopSoftphone() {
+  await assistedTransfer.dispose();
   state.stoppingSoftphone = true;
   clearSipReconnectTimer();
   clearPendingCallTimeout();
@@ -817,6 +845,31 @@ function normalizeCallerNumber(value) {
   const digits = cleanNumber(raw) || quotedDigits || cleanNumber(text);
   return digits || text.replace(/^"|"$/g, "");
 }
+
+function friendlyError(error, fallback) {
+  sipLog(`Operation failed: ${error?.message || String(error || "Unknown error")}`);
+  return PhoneErrors.message(error, fallback);
+}
+
+function setError(error, fallback) {
+  setMessage(friendlyError(error, fallback));
+}
+
+function reportUnexpectedError(error) {
+  const message = friendlyError(error);
+  if (state.extension) setMessage(message);
+  else loginMessage.textContent = message;
+}
+
+window.addEventListener("error", event => {
+  if (!event.error && !event.message) return;
+  reportUnexpectedError(event.error || event.message);
+  event.preventDefault();
+});
+window.addEventListener("unhandledrejection", event => {
+  reportUnexpectedError(event.reason);
+  event.preventDefault();
+});
 
 function setMessage(text, ok = false) {
   callMessage.textContent = text;
@@ -926,6 +979,11 @@ function scheduleStatusRefresh(delay = 2000) {
 }
 
 async function startPause(reason) {
+  if (PhoneState.callInProgress(state)) {
+    pauseReasonPanel.classList.add("hidden");
+    setMessage("Encerre a liga\u00e7\u00e3o antes de colocar o ramal em pausa.");
+    return;
+  }
   if (pauseInFlight) return;
   pauseInFlight = true;
   pauseRevision += 1;
@@ -940,7 +998,7 @@ async function startPause(reason) {
     setMessage(`Ramal pausado: ${pauseReason}.`, true);
   } catch (error) {
     setPaused(false);
-    setMessage(error.message || "Nao foi possivel pausar.");
+    setError(error, "Não foi possível pausar o ramal. Tente novamente.");
   } finally {
     pauseInFlight = false;
     pauseRevision += 1;
@@ -958,7 +1016,7 @@ async function resumePause() {
     setPaused(false);
     setMessage("Ramal voltou da pausa.", true);
   } catch (error) {
-    setMessage(error.message || "Nao foi possivel voltar da pausa.");
+    setError(error, "Não foi possível voltar da pausa. Tente novamente.");
   } finally {
     pauseInFlight = false;
     pauseRevision += 1;
@@ -979,7 +1037,7 @@ loginForm.addEventListener("submit", async (event) => {
     localStorage.setItem("uai:lastExtension", extensionInput.value.trim());
     await showPhone(result.extension);
   } catch (error) {
-    showLogin(error.message || "Nao foi possivel entrar no ramal.");
+    showLogin(friendlyError(error, "Não foi possível entrar no ramal. Tente novamente."));
   }
 });
 
@@ -1010,8 +1068,14 @@ loginTestRingBtn.addEventListener("click", () => testTone("ringtone"));
 
 document.querySelectorAll("[data-digit]").forEach((button) => {
   button.addEventListener("click", () => {
-    numberInput.value = `${numberInput.value || ""}${button.dataset.digit}`;
+    numberInput.value = PhoneState.sanitizeNumber(`${numberInput.value || ""}${button.dataset.digit}`);
     numberInput.focus();
+  });
+});
+
+[[numberInput, 20], [transferTargetInput, 20], [extensionInput, 8]].forEach(([input, limit]) => {
+  input.addEventListener("input", () => {
+    input.value = PhoneState.sanitizeNumber(input.value, limit);
   });
 });
 
@@ -1040,13 +1104,17 @@ callBtn.addEventListener("click", async () => {
     setBusy(callBtn, false, "Ligar");
     return;
   }
-  const number = cleanNumber(numberInput.value);
+  let number;
+  try { number = PhoneState.validateNumber(numberInput.value); }
+  catch (error) { setError(error); numberInput.focus(); return; }
   callMessage.classList.remove("ok");
   if (!number) {
-    callMessage.textContent = "Informe o numero para ligar.";
+    callMessage.textContent = "Informe o n\u00famero para ligar.";
     return;
   }
   setBusy(callBtn, true, "Ligando...");
+  state.dialStarting = true;
+  renderStatusBadge();
   setMessage(`Preparando telefone para ${number}...`);
   try {
     await startSoftphone();
@@ -1078,7 +1146,7 @@ callBtn.addEventListener("click", async () => {
         stopCallTimer();
         renderActiveCallPanel();
         setBusy(callBtn, false, "Ligar");
-        setMessage("O Asterisk aceitou a chamada, mas o telefone nao recebeu a conexao. Verifique o registro SIP do ramal.");
+        setMessage("Não foi possível conectar a chamada. Tente novamente ou entre novamente com seu ramal.");
       }
     }, 20000);
     refreshStatus();
@@ -1091,8 +1159,10 @@ callBtn.addEventListener("click", async () => {
     state.currentProtocol = "";
     stopCallTimer();
     renderActiveCallPanel();
-    setMessage(error.message || "Nao foi possivel iniciar a chamada.");
+    setError(error, "Não foi possível iniciar a chamada. Tente novamente.");
   } finally {
+    state.dialStarting = false;
+    renderStatusBadge();
     if (!state.session && !state.callPending) setBusy(callBtn, false, "Ligar");
     else callBtn.disabled = false;
   }
@@ -1107,7 +1177,7 @@ activeAnswerBtn.addEventListener("click", async () => {
   try {
     await answerSipCall(state.session);
   } catch (error) {
-    setMessage(`Falha ao atender: ${error.message}`);
+    setError(error, "Não foi possível atender a chamada. Tente novamente.");
   } finally {
     activeAnswerBtn.disabled = false;
     activeAnswerBtn.textContent = "Atender";
@@ -1120,6 +1190,10 @@ activeMuteBtn.addEventListener("click", () => muteMicBtn.click());
 pauseBtn.addEventListener("click", async () => {
   if (paused) {
     await resumePause();
+    return;
+  }
+  if (PhoneState.callInProgress(state)) {
+    setMessage("Encerre a liga\u00e7\u00e3o antes de colocar o ramal em pausa.");
     return;
   }
   pauseReasonPanel.classList.toggle("hidden");
@@ -1138,7 +1212,7 @@ resumeOverlayBtn.addEventListener("click", async () => {
   try {
     await resumePause();
   } catch (error) {
-    setMessage(error.message || "Nao foi possivel voltar da pausa.");
+    setError(error, "Não foi possível voltar da pausa. Tente novamente.");
   } finally {
     setBusy(resumeOverlayBtn, false, "Voltar da pausa");
   }
@@ -1153,15 +1227,26 @@ confirmTransferBtn.addEventListener("click", async () => {
   const target = transferTargetInput.value.trim();
   setBusy(confirmTransferBtn, true, "Transferindo...");
   try {
-    const result = await window.pbxAPI.transfer({ target });
-    setMessage(`Transferencia enviada para ${result.transfer?.target || target}.`, true);
-    transferPanel.classList.add("hidden");
-    transferTargetInput.value = "";
+    await assistedTransfer.start(target);
   } catch (error) {
-    setMessage(error.message || "Nao foi possivel transferir.");
+    setError(error, "Não foi possível transferir a chamada. Confira o destino e tente novamente.");
   } finally {
     setBusy(confirmTransferBtn, false, "Confirmar transferencia");
+    confirmTransferBtn.disabled = assistedTransfer.phase !== "idle";
   }
+});
+
+completeTransferBtn.addEventListener("click", async () => {
+  try {
+    await assistedTransfer.complete();
+    transferPanel.classList.add("hidden");
+    transferTargetInput.value = "";
+    finishSipCall("Transferência concluída.");
+  } catch (error) { setError(error, "Não foi possível concluir a transferência. Você pode voltar ao cliente."); }
+});
+cancelTransferBtn.addEventListener("click", async () => {
+  try { await assistedTransfer.cancel(); }
+  catch (error) { setError(error, "Não foi possível voltar ao cliente. Tente novamente."); }
 });
 
 historyBtn.addEventListener("click", async () => {
@@ -1184,7 +1269,7 @@ muteMicBtn.addEventListener("click", () => {
   micMuted = !micMuted;
   muteMicBtn.classList.toggle("warn", micMuted);
   muteMicBtn.textContent = micMuted ? "Mic off" : "Mic";
-  state.session?.sessionDescriptionHandler?.peerConnection?.getSenders().forEach((sender) => {
+  (assistedTransfer.consult || state.session)?.sessionDescriptionHandler?.peerConnection?.getSenders().forEach((sender) => {
     if (sender.track?.kind === "audio") sender.track.enabled = !micMuted;
   });
   renderActiveCallPanel();
@@ -1202,7 +1287,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     await loadAudioDevices();
     showLogin();
   } catch (error) {
-    showLogin(`Nao foi possivel preparar o telefone: ${error.message}`);
+    showLogin(friendlyError(error, "Não foi possível preparar o telefone. Feche o aplicativo e tente novamente."));
   }
 });
 

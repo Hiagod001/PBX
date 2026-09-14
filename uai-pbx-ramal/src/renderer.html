@@ -18,11 +18,11 @@
         <form id="loginForm" class="stack">
           <label>
             Ramal
-            <input id="extensionInput" inputmode="numeric" autocomplete="username" placeholder="505" required />
+            <input id="extensionInput" inputmode="numeric" autocomplete="username" placeholder="505" maxlength="8" pattern="[0-9]{2,8}" required />
           </label>
           <label>
             Senha
-            <input id="passwordInput" type="password" autocomplete="current-password" required />
+            <input id="passwordInput" type="password" autocomplete="current-password" maxlength="160" required />
           </label>
           <button id="loginBtn" class="primary-btn" type="submit" disabled>Preparando telefone...</button>
         </form>
@@ -33,7 +33,7 @@
 
       <section id="phoneView" class="phone hidden">
         <div class="status-card">
-          <span id="registrationBadge" class="status-badge is-offline">Offline</span>
+          <span id="registrationBadge" class="status-badge is-offline" role="status" aria-live="polite">Offline</span>
           <strong id="extensionLabel">Ramal</strong>
         </div>
 
@@ -58,7 +58,7 @@
           </div>
         </section>
 
-        <input id="numberInput" class="number-input dial-ui" inputmode="tel" placeholder="Numero" />
+        <input id="numberInput" class="number-input dial-ui" inputmode="numeric" maxlength="20" pattern="[0-9]*" placeholder="Número" aria-label="Número para ligar" />
 
         <div class="dialpad dial-ui">
           <button type="button" data-digit="1">1</button>
@@ -89,9 +89,12 @@
         <section id="transferPanel" class="subpanel hidden">
           <label>
             Transferir para
-            <input id="transferTargetInput" inputmode="numeric" placeholder="Ramal ou fila" />
+            <input id="transferTargetInput" inputmode="numeric" maxlength="20" pattern="[0-9]*" placeholder="Ramal ou fila" />
           </label>
           <button id="confirmTransferBtn" class="secondary-btn" type="button">Confirmar transferencia</button>
+          <p id="transferStatus" role="status" aria-live="polite"></p>
+          <button id="completeTransferBtn" class="secondary-btn hidden" type="button">Concluir transferência</button>
+          <button id="cancelTransferBtn" class="secondary-btn hidden" type="button">Voltar ao cliente</button>
         </section>
 
         <section id="pauseReasonPanel" class="subpanel hidden">
@@ -167,6 +170,8 @@
     <script src="../assets/vendor/sip.js"></script>
     <script src="../assets/vendor/lucide.js"></script>
     <script src="phone-state.js"></script>
+    <script src="user-errors.js"></script>
+    <script src="assisted-transfer.js"></script>
     <script src="login-motion.js"></script>
     <script src="renderer.js"></script>
   </body>

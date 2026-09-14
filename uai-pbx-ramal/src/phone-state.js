@@ -1,5 +1,24 @@
 (function (root) {
   const api = {
+    displayStatus(state = {}, paused = false) {
+      if (state.session) return state.incoming ? { label: 'Recebendo', tone: 'ringing' } : { label: 'Ocupado', tone: 'busy' };
+      if (state.callPending || state.dialStarting) return { label: 'Chamando', tone: 'ringing' };
+      if (state.registrationStatus === 'connecting') return { label: 'Conectando', tone: 'connecting' };
+      if (state.registrationStatus !== 'online') return { label: 'Offline', tone: 'offline' };
+      return paused ? { label: 'Em pausa', tone: 'paused' } : { label: 'Online', tone: 'online' };
+    },
+    sanitizeNumber(value, limit = 20) {
+      return String(value || "").replace(/\D/g, "").slice(0, limit);
+    },
+    validateNumber(value) {
+      const number = String(value || "").trim();
+      if (!number) throw new Error("Informe o n\u00famero para ligar.");
+      if (!/^\d{1,20}$/.test(number)) throw new Error("Use somente n\u00fameros, com no m\u00e1ximo 20 d\u00edgitos.");
+      return number;
+    },
+    callInProgress(state = {}) {
+      return Boolean(state.session || state.callPending || state.dialStarting);
+    },
     terminationAction(session, states) {
       if (!session || session.state === states.Terminated || session.state === states.Terminating) return null;
       if (session.state === states.Established) return "bye";

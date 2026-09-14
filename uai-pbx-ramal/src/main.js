@@ -3,6 +3,7 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
+const PhoneState = require("./phone-state");
 
 const PBX_URL = process.env.UAI_PBX_URL || "https://uaipbx.uaitelecom.com.br";
 const APP_PARTITION = "persist:uai-pbx-ramal";
@@ -266,6 +267,8 @@ ipcMain.handle("app:incoming-call", async (_event, payload) => {
 });
 
 ipcMain.handle("extension:login", async (_event, credentials) => {
+  if (!/^\d{2,8}$/.test(String(credentials?.extension || "").trim())) throw new Error("Informe um ramal com 2 a 8 d\u00edgitos.");
+  if (String(credentials?.password || "").length > 160) throw new Error("A senha deve ter no m\u00e1ximo 160 caracteres.");
   await resetRamalSession();
   const data = await pbxFetch("/api/extensions/login", {
     method: "POST",
@@ -302,9 +305,8 @@ ipcMain.handle("extension:protocol", async (_event, payload) => {
 });
 
 ipcMain.handle("extension:call", async (_event, payload) => {
-  const number = String(payload?.number || "").replace(/\D+/g, "");
+  const number = PhoneState.validateNumber(payload?.number);
   if (!currentExtension) throw new Error("Entre com o ramal antes de ligar.");
-  if (!number) throw new Error("Informe o numero para ligar.");
   const data = await pbxFetch("/api/extensions/call", {
     method: "POST",
     body: JSON.stringify({ number })
@@ -347,6 +349,7 @@ ipcMain.handle("extension:transfer", async (_event, payload) => {
   const target = String(payload?.target || "").trim();
   if (!currentExtension) throw new Error("Entre com o ramal antes de transferir.");
   if (!target) throw new Error("Informe o ramal ou fila de destino.");
+  if (!/^\d{1,20}$/.test(target)) throw new Error("Informe um destino com apenas n\u00fameros, limitado a 20 d\u00edgitos.");
   const data = await pbxFetch("/api/extensions/transfer", {
     method: "POST",
     body: JSON.stringify({ target })
