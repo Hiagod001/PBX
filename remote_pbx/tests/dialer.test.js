@@ -60,6 +60,43 @@ test("classifies accepted, busy and unanswered calls", () => {
   assert.equal(_test.dialerResultFromReport({ disposition: "FAILED" }, "completed").status, "failed");
 });
 
+test("prefers the accepted CDR when an earlier answered CDR has the same attempt", () => {
+  const reports = [
+    { accountCode: "dlr-same", disposition: "ANSWERED", userField: "dialer:dlr-same:answered:3499" },
+    { accountCode: "dlr-same", disposition: "ANSWERED", userField: "dialer:dlr-same:accepted:3499" }
+  ];
+  const report = _test.dialerReportForAttempt(reports, "dlr-same");
+  assert.match(report.userField, /:accepted:/);
+  assert.equal(_test.dialerResultFromReport(report, "completed").status, "accepted");
+});
+
+test("keeps the newest report rows regardless of database row order", () => {
+  const reports = Array.from({ length: 205 }, (_, index) => ({ startedAt: new Date(Date.UTC(2026, 8, 1, 0, index)).toISOString(), id: index }));
+  const recent = _test.recentReportCalls(reports, 200);
+  assert.equal(recent[0].id, 204);
+  assert.equal(recent.at(-1).id, 5);
+});
+
+test("does not replace an empty database user field with the linked call id", () => {
+  const call = _test.mapDbCdrRow({
+    calldate: new Date("2026-09-14T15:19:49.000Z"),
+    start_at: new Date("2026-09-14T15:19:49.000Z"),
+    uniqueid: "1789399189.522",
+    linkedid: "1789399176.519",
+    userfield: ""
+  }, 0, defaultConfig);
+  assert.equal(call.linkedId, "1789399176.519");
+  assert.equal(call.userField, "");
+});
+
+test("keeps accepted dialer metadata when call legs are grouped", () => {
+  const [call] = _test.collapseReportCallLegs([
+    { id: "agent", linkedId: "linked-1", userField: "linked-1", status: "answered", billsec: 30, duration: 35, destinationChannel: "PJSIP/705", lastApp: "Dial" },
+    { id: "customer", linkedId: "linked-1", userField: "dialer:dlr-grouped:accepted:3499", status: "no_answer", billsec: 3, duration: 3, destinationChannel: "Local/705", lastApp: "Queue" }
+  ]);
+  assert.equal(call.userField, "dialer:dlr-grouped:accepted:3499");
+});
+
 test("queues keep dialer callers waiting while busy agents are skipped", () => {
   const output = renderQueues({ queues: [{ id: "85", strategy: "ringall", timeout: 20, members: ["777", "505"] }] });
   assert.match(output, /autofill=yes/);

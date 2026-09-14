@@ -120,8 +120,8 @@ function rowFromColumns(columns) {
     row.trunk = nullable(columns[20]);
     row.did = nullable(columns[21]);
     row.queue = nullable(columns[22]);
-    row.userfield = nullable(columns[23]) || row.userfield;
-    row.sequence = nullable(columns[24]) || row.sequence;
+    row.userfield = nullable(columns[23]);
+    row.sequence = nullable(columns[24]);
   } else if (!isAsteriskCsv && columns.length >= 22) {
     row.recordingfile = nullable(columns[18]);
     row.trunk = nullable(columns[19]);

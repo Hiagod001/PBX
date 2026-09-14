@@ -1003,6 +1003,11 @@ function reportMatchesDialerAttempt(report, attemptId) {
   return String(report?.accountCode || report?.accountcode || "") === attemptId || String(report?.userField || report?.userfield || "").includes(attemptId);
 }
 
+function dialerReportForAttempt(reports, attemptId) {
+  const matches = (reports || []).filter((report) => reportMatchesDialerAttempt(report, attemptId));
+  return matches.find((report) => String(report?.userField || report?.userfield || "").toLowerCase().includes(":accepted:")) || matches[0] || null;
+}
+
 function finishDialerLead(campaign, lead, result, now = Date.now()) {
   lead.completedAt = new Date(now).toISOString();
   lead.callFile = "";
@@ -1019,7 +1024,10 @@ function finishDialerLead(campaign, lead, result, now = Date.now()) {
 
 async function reconcileDialerCampaigns(config, campaigns) {
   const queued = campaigns.flatMap((campaign) => (campaign.numbers || []).filter((lead) => lead.status === "queued").map((lead) => ({ campaign, lead })));
-  if (!queued.length) return;
+  const recentAnswered = campaigns.flatMap((campaign) => (campaign.numbers || [])
+    .filter((lead) => lead.status === "answered" && lead.attemptId && Date.now() - (Date.parse(lead.completedAt || lead.lastAttemptAt || "") || 0) < 7 * 24 * 60 * 60 * 1000)
+    .map((lead) => ({ campaign, lead })));
+  if (!queued.length && !recentAnswered.length) return;
   let reports = null;
   for (const { campaign, lead } of queued) {
     const callFile = path.basename(String(lead.callFile || ""));
@@ -1039,9 +1047,21 @@ async function reconcileDialerCampaigns(config, campaigns) {
     const archiveStat = await fs.stat(archivedPath).catch(() => null);
     const archiveStatus = parseDialerArchiveStatus(await fs.readFile(archivedPath, "utf8").catch(() => ""));
     if (!reports) reports = await readReports(config).catch(() => []);
-    const report = reports.find((item) => reportMatchesDialerAttempt(item, lead.attemptId));
+    const report = dialerReportForAttempt(reports, lead.attemptId);
     if (!report && archiveStatus === "completed" && archiveStat && Date.now() - archiveStat.mtimeMs < 5000) continue;
+    if (report && dialerResultFromReport(report, archiveStatus).status !== "accepted" && archiveStat && Date.now() - archiveStat.mtimeMs < 15000) continue;
     finishDialerLead(campaign, lead, dialerResultFromReport(report, archiveStatus));
+  }
+  if (recentAnswered.length) {
+    if (!reports) reports = await readReports(config).catch(() => []);
+    for (const { lead } of recentAnswered) {
+      const report = dialerReportForAttempt(reports, lead.attemptId);
+      const result = dialerResultFromReport(report, "completed");
+      if (result.status === "accepted") {
+        lead.status = result.status;
+        lead.lastResult = result.label;
+      }
+    }
   }
 }
 
@@ -1831,10 +1851,14 @@ async function readPbxStatus(config, { fresh = false } = {}) {
   }
 }
 
+function recentReportCalls(calls, limit = 200) {
+  return [...calls].sort((left, right) => reportCallTime(right) - reportCallTime(left)).slice(0, limit);
+}
+
 async function readReports(sourceConfig = null) {
   const config = sourceConfig || await getConfig();
   const calls = await readPbxReportCalls(config, { skipRecordingScan: true });
-  return calls.slice(-200).reverse().map((call) => ({
+  return recentReportCalls(calls).map((call) => ({
     callerId: call.callerId,
     source: call.source,
     destination: call.destination,
@@ -2136,8 +2160,8 @@ function mapCdrColumns(columns, index, config) {
     raw.trunk = columns[20] || "";
     raw.did = columns[21] || "";
     raw.queue = columns[22] || "";
-    raw.userfield = columns[23] || raw.userfield;
-    raw.sequence = columns[24] || raw.sequence;
+    raw.userfield = columns[23] || "";
+    raw.sequence = columns[24] || "";
     raw.direction = columns[25] || "";
   } else if (!isAsteriskCsv && columns.length >= 22) {
     raw.recordingfile = columns[18] || "";
@@ -2435,6 +2459,22 @@ function reportCallRank(call) {
   return rank;
 }
 
+function preferredReportUserField(primary, secondary) {
+  const fields = [primary.userField, secondary.userField].filter(Boolean);
+  return fields.sort((left, right) => {
+    const score = (value) => {
+      const text = String(value).toLowerCase();
+      if (text.includes(":accepted:")) return 100;
+      if (text.startsWith("dialer:")) return 80;
+      if (text.startsWith("ivr:")) return 60;
+      if (text.startsWith("pbx-supervision")) return 40;
+      if (text === String(primary.linkedId || secondary.linkedId || "").toLowerCase()) return -10;
+      return 0;
+    };
+    return score(right) - score(left);
+  })[0] || "";
+}
+
 function mergeReportCallLegs(primary, secondary) {
   const started = [primary.startedAt, secondary.startedAt].filter(Boolean).sort((left, right) => reportCallTime({ startedAt: left }) - reportCallTime({ startedAt: right }))[0];
   const ended = [primary.endedAt, secondary.endedAt].filter(Boolean).sort((left, right) => reportCallTime({ startedAt: right }) - reportCallTime({ startedAt: left }))[0];
@@ -2465,7 +2505,7 @@ function mergeReportCallLegs(primary, secondary) {
     extension,
     extensionName: primary.extensionName || secondary.extensionName,
     department: primary.department || secondary.department,
-    userField: primary.userField || secondary.userField,
+    userField: preferredReportUserField(primary, secondary),
     protocol: primary.protocol || secondary.protocol,
     sequence: primary.sequence || secondary.sequence,
     technicalLogs: [...(primary.technicalLogs || []), ...(secondary.technicalLogs || [])]
@@ -4620,6 +4660,9 @@ module.exports = {
     normalizeDialerNumbers,
     parseDialerArchiveStatus,
     reportMatchesDialerAttempt,
+    dialerReportForAttempt,
+    recentReportCalls,
+    mapDbCdrRow,
     parseIvrOutcome,
     spaRoutes
   }

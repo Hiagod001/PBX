@@ -5,6 +5,16 @@ process.env.PBX_DATABASE_ENABLED = "false";
 
 const { hasLikelyCdrDate, parseCsvLine, rowFromColumns } = require("../scripts/import-cdr");
 
+test("extended CDR rows keep an empty user field empty", () => {
+  const columns = Array(28).fill("");
+  columns[8] = "2026-09-14 12:19:49";
+  columns[16] = "unique-1";
+  columns[17] = "linked-1";
+  const row = rowFromColumns(columns);
+  assert.equal(row.linkedid, "linked-1");
+  assert.equal(row.userfield, null);
+});
+
 test("CSV parser preserves commas inside quoted fields", () => {
   assert.deepEqual(parseCsvLine('"caller, name","505","85"'), ["caller, name", "505", "85"]);
 });
