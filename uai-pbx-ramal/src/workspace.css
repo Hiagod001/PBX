@@ -52,6 +52,13 @@ html[data-theme="light"] .status-badge.is-ringing { background:#d8edf8; color:#1
 .active-call-panel > strong { font-size:25px; line-height:1.25; font-weight:600; }
 .active-call-grid b,.active-call-grid small { font-weight:500; }
 .subpanel,.audio-panel,.history-panel { border:0; border-top:1px solid var(--line); background:transparent; padding:12px 0 0; border-radius:0; }
+.transfer-actions { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+.transfer-actions button { width:100%; min-width:0; padding:8px 10px; line-height:1.2; }
+.transfer-actions .success { background:var(--green); border-color:var(--green); color:#fff; }
+.transfer-actions .success:hover:not(:disabled) { filter:brightness(1.12); }
+.transfer-actions .success:disabled { background:var(--panel-soft); border-color:var(--line); color:var(--muted); }
+#transferStatus { min-height:20px; margin:0; }
+@media(max-width:720px) { .transfer-actions { grid-template-columns:1fr; } }
 .settings-panel,.pause-card { background:var(--panel); border-color:var(--line); box-shadow:none; }
 .message { color:var(--error); font-weight:400; }
 .message.ok { color:var(--status-ink); }

@@ -91,10 +91,12 @@
             Transferir para
             <input id="transferTargetInput" inputmode="numeric" maxlength="20" pattern="[0-9]*" placeholder="Ramal ou fila" />
           </label>
-          <button id="confirmTransferBtn" class="secondary-btn" type="button">Confirmar transferencia</button>
+          <div class="transfer-actions">
+            <button id="confirmTransferBtn" class="secondary-btn" type="button">Confirmar transferência</button>
+            <button id="completeTransferBtn" class="secondary-btn success hidden" type="button">Concluir a transferência</button>
+            <button id="cancelTransferBtn" class="secondary-btn hidden" type="button">Voltar ao cliente</button>
+          </div>
           <p id="transferStatus" role="status" aria-live="polite"></p>
-          <button id="completeTransferBtn" class="secondary-btn hidden" type="button">Concluir a transferência</button>
-          <button id="cancelTransferBtn" class="secondary-btn hidden" type="button">Voltar ao cliente</button>
         </section>
 
         <section id="pauseReasonPanel" class="subpanel hidden">
