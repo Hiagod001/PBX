@@ -321,6 +321,31 @@ function outboundCallerIdStep(config) {
   return ` same => n,Set(CALLERID(num)=${callerId})`;
 }
 
+function outboundNumberTarget(config, number) {
+  const digits = String(number || "").replace(/\D/g, "");
+  let rule = "";
+  let pattern = "";
+  if (/^055\d{10,11}$/.test(digits)) {
+    rule = "ddd";
+    pattern = "_055";
+  } else if (/^55\d{10,11}$/.test(digits)) {
+    rule = "ddd";
+    pattern = "_55";
+  } else if (/^0[1-9][1-9]\d{8,9}$/.test(digits)) {
+    rule = "ddd";
+    pattern = "_0";
+  } else if (/^[1-9][1-9]\d{8,9}$/.test(digits)) {
+    rule = "ddd";
+  } else if (/^09\d{8}$/.test(digits) || /^9\d{8}$/.test(digits)) {
+    rule = "mobile";
+    pattern = digits.startsWith("0") ? "_09XXXXXXXX" : "_9XXXXXXXX";
+  } else if (/^\d{7,8}$/.test(digits)) {
+    rule = "local";
+  }
+  // Reuse the same transformation as the generated outbound dialplan.
+  return outboundDialTargetForRule(config, rule, pattern).replace(/\$\{EXTEN(?::(\d+))?\}/g, (_match, offset) => digits.slice(Number(offset) || 0));
+}
+
 function renderPjsip(config) {
   const transportProtocol = ["udp", "tcp", "tls"].includes(config.trunk.transport) ? config.trunk.transport : "udp";
   const system = section("system", [
@@ -1005,6 +1030,7 @@ async function generateAsteriskConfigs(config, targetDir = generatedDir) {
 }
 
 module.exports = {
+  outboundNumberTarget,
   generateAsteriskConfigs,
   renderPjsip,
   renderExtensions,

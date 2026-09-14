@@ -14,11 +14,21 @@ fi
 
 channel_belongs_to_extension() {
   local channel="$1"
-  /usr/sbin/asterisk -rx "core show channels concise" | awk -F'!' -v channel="$channel" -v ext="$EXTENSION" '
-    $1 == channel { requested_linked = $NF }
-    $1 ~ ("^(PJSIP/(web-)?" ext "[-/]|Local/" ext "@)") { owned[$NF] = 1; if ($1 == channel) direct = 1 }
-    END { exit !(direct || (requested_linked != "" && owned[requested_linked])) }
-  '
+  local channels owned requested_linked owned_linked
+  channels="$(/usr/sbin/asterisk -rx "core show channels concise")" || return 1
+  if ! awk -F'!' -v channel="$channel" '$1 == channel { found = 1 } END { exit !found }' <<< "$channels"; then
+    return 1
+  fi
+  # The concise output ends with UniqueID, not the shared LinkedID.
+  requested_linked="$(/usr/sbin/asterisk -rx "core show channel ${channel}" | awk '$1 == "LinkedID:" { print $2 }')" || return 1
+  [[ -n "$requested_linked" ]] || return 1
+  while IFS= read -r owned; do
+    [[ -n "$owned" ]] || continue
+    [[ "$owned" == "$channel" ]] && return 0
+    owned_linked="$(/usr/sbin/asterisk -rx "core show channel ${owned}" | awk '$1 == "LinkedID:" { print $2 }')" || continue
+    [[ -n "$owned_linked" && "$owned_linked" == "$requested_linked" ]] && return 0
+  done < <(awk -F'!' -v ext="$EXTENSION" '$1 ~ ("^(PJSIP/(web-)?" ext "[-/]|Local/" ext "@)") { print $1 }' <<< "$channels")
+  return 1
 }
 
 case "$ACTION" in

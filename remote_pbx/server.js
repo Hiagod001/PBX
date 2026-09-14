@@ -14,6 +14,7 @@ const multer = require("multer");
 const { exec, execFile } = require("child_process");
 const { promisify } = require("util");
 const crypto = require("crypto");
+const { staticCacheHeaders, privateApiHeaders } = require("./src/http-cache");
 
 const {
   ensureStore,
@@ -29,7 +30,7 @@ const {
   writeRecordingAuditEvent,
   getReportCdrRows
 } = require("./src/store");
-const { generateAsteriskConfigs } = require("./src/asterisk");
+const { generateAsteriskConfigs, outboundNumberTarget } = require("./src/asterisk");
 const { validateConfig } = require("./src/validation");
 const { monitorSipPassword } = require("./src/runtime-secrets");
 
@@ -265,6 +266,15 @@ let pauseMutation = Promise.resolve();
 let monitorSpyOwner = null;
 function updateExtensionPause(number, paused, reason = "") {
   const operation = pauseMutation.catch(() => {}).then(async () => {
+    if (paused) {
+      const config = await getConfig();
+      const status = await readPbxStatus(config, { fresh: true });
+      if (channelsOwnedByExtension(status, config, number).length) {
+        const error = new Error("Encerre a ligação antes de colocar o ramal em pausa.");
+        error.status = 409;
+        throw error;
+      }
+    }
     const output = await runAsteriskControl(paused ? "queue-pause" : "queue-unpause", number, { reason });
     const pause = await setExtensionPause(number, paused, reason);
     pbxStatusCache = { revision: "", expiresAt: 0, value: null, pending: null };
@@ -938,7 +948,7 @@ function dialerCallFileContent(config, campaign, lead) {
   const trunk = String(lead.trunkId || campaign.trunkIds?.[0] || config.outbound?.defaultTrunk || "trunk-operadora").replace(/[^a-zA-Z0-9_.-]/g, "");
   const callerId = asteriskCallFileValue(campaign.callerId || config.trunk?.mainNumber || "Discador");
   return [
-    `Channel: PJSIP/${lead.number}@${trunk}`,
+    `Channel: PJSIP/${outboundNumberTarget(config, lead.number)}@${trunk}`,
     `CallerID: ${callerId}`,
     `Account: ${asteriskCallFileValue(lead.attemptId)}`,
     "MaxRetries: 0",
@@ -979,12 +989,13 @@ function dialerResultFromReport(report, archiveStatus = "") {
   if (userField.includes(":accepted:")) return { status: "accepted", label: "Cliente aceitou e foi encaminhado", retryable: false };
   const status = normalizeReportStatus(report?.dialstatus || report?.disposition || "");
   if (status === "busy") return { status: "busy", label: "Ocupado", retryable: true };
-  if (["no_answer", "canceled", "rejected"].includes(status) || archiveStatus === "expired") {
+  if (status === "rejected") return { status: "failed", label: "Chamada rejeitada", retryable: true };
+  if (["no_answer", "canceled"].includes(status)) {
     return { status: status === "canceled" ? "canceled" : "no_answer", label: status === "canceled" ? "Cancelada" : "Nao atendeu", retryable: true };
   }
   if (status === "failed") return { status: "failed", label: "Falha ao completar", retryable: true };
   if (status === "answered" || archiveStatus === "completed") return { status: "answered", label: "Atendida sem aceite", retryable: false };
-  return { status: "failed", label: "Falha ao completar", retryable: true };
+  return { status: "failed", label: archiveStatus === "expired" ? "Tentativa expirada sem confirmacao de toque" : "Falha ao completar", retryable: true };
 }
 
 function reportMatchesDialerAttempt(report, attemptId) {
@@ -3466,6 +3477,9 @@ app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev", {
   skip: (req) => req.path === "/api/pbx-status" || req.path === "/api/extensions/status"
 }));
 app.use(express.json({ limit: "1mb" }));
+// Public assets do not need a session lookup or a rolling session cookie.
+app.use(express.static(path.join(__dirname, "public"), { setHeaders: staticCacheHeaders }));
+app.use("/api", privateApiHeaders);
 app.use(
   session({
     name: "pbx.sid",
@@ -3524,8 +3538,6 @@ app.use(
     legacyHeaders: false
   })
 );
-
-app.use(express.static(path.join(__dirname, "public")));
 
 const expensiveApiLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -3655,6 +3667,8 @@ app.post("/api/extensions/protocol", requireExtensionAuth, async (req, res) => {
 });
 
 app.post("/api/extensions/call", requireExtensionAuth, async (req, res) => {
+  const requestedNumber = String(req.body?.number || "").trim();
+  if (!/^\d{1,20}$/.test(requestedNumber)) return res.status(400).json({ error: requestedNumber ? "Use somente números, com no máximo 20 dígitos." : "Informe o número para ligar." });
   const config = await getConfig();
   const rawNumber = normalizeDigits(req.body?.number || "");
   const internal = (config.extensions || []).find((extension) => String(extension.number) === rawNumber);
@@ -3720,7 +3734,7 @@ app.post("/api/extensions/action", requireExtensionAuth, async (req, res) => {
     const output = await runAsteriskControl(action, req.session.extension.number, { reason: pauseReason, channel });
     res.json({ ok: true, output });
   } catch (error) {
-    res.status(503).json({ error: "Comando indisponivel no host Asterisk", detail: error.message });
+    res.status(error.status || 503).json({ error: error.status === 409 ? error.message : "Comando indisponivel no host Asterisk", detail: error.message });
   }
 });
 

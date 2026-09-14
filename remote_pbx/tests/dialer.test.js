@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const { _test } = require("../server");
-const { renderModules } = require("../src/asterisk");
+const { renderModules, outboundNumberTarget } = require("../src/asterisk");
 
 test("loads the Asterisk modules required by call files and DTMF events", () => {
   const modules = renderModules();
@@ -54,8 +54,32 @@ test("parses archived call file results", () => {
 test("classifies accepted, busy and unanswered calls", () => {
   assert.equal(_test.dialerResultFromReport({ userField: "dialer:dlr-a:accepted:3199", disposition: "ANSWERED" }, "completed").status, "accepted");
   assert.equal(_test.dialerResultFromReport({ disposition: "BUSY" }, "completed").status, "busy");
-  assert.equal(_test.dialerResultFromReport(null, "expired").status, "no_answer");
+  assert.equal(_test.dialerResultFromReport(null, "expired").status, "failed");
   assert.equal(_test.dialerResultFromReport({ disposition: "FAILED" }, "completed").status, "failed");
+});
+
+test("expired archives preserve the actual call result", () => {
+  for (const disposition of ["FAILED", "CONGESTION", "CHANUNAVAIL", "REJECTED"]) {
+    assert.equal(_test.dialerResultFromReport({ disposition }, "expired").status, "failed");
+  }
+  assert.equal(_test.dialerResultFromReport({ disposition: "NO ANSWER" }, "expired").status, "no_answer");
+  assert.equal(_test.dialerResultFromReport({ disposition: "ANSWERED" }, "expired").status, "answered");
+});
+
+test("campaign calls apply outbound numbering while retaining the original target", () => {
+  const config = { outbound: { nationalPrefix: "0", areaCode: "34" } };
+  const content = _test.dialerCallFileContent(config, { trunkIds: ["trunk-main"] }, { number: "34991708282" });
+  assert.match(content, /^Channel: PJSIP\/034991708282@trunk-main$/m);
+  assert.match(content, /^Setvar: DIALER_TARGET=34991708282$/m);
+  assert.equal(outboundNumberTarget(config, "034991708282"), "034991708282");
+  assert.equal(outboundNumberTarget(config, "991708282"), "034991708282");
+  assert.equal(outboundNumberTarget(config, "0991708282"), "034991708282");
+  assert.equal(outboundNumberTarget(config, "38221234"), "03438221234");
+  assert.equal(outboundNumberTarget(config, "5534991708282"), "34991708282");
+  assert.equal(outboundNumberTarget(config, "05534991708282"), "34991708282");
+  assert.equal(outboundNumberTarget({}, "34991708282"), "34991708282");
+  assert.equal(outboundNumberTarget({ outbound: { areaCode: "34", prependAreaCodeToLocal: false } }, "991708282"), "991708282");
+  assert.equal(outboundNumberTarget({ outbound: { dialPrefix: "55", stripDigits: 1 } }, "034991708282"), "5534991708282");
 });
 
 test("audit snapshot excludes customer phone numbers", () => {

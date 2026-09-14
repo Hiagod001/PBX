@@ -84,7 +84,9 @@ reload_asterisk_configs() {
   if [[ "$changed" == *" extensions.conf "* ]]; then
     /usr/sbin/asterisk -rx "dialplan reload"
   fi
-  if [[ "$changed" == *" queues.conf "* ]]; then
+  if [[ "$changed" == *" queues.conf "* || "$changed" == *" extensions.conf "* ]]; then
+    # Rebuild queue hint subscriptions after dialplan changes, even if members are unchanged.
+    touch /etc/asterisk/queues.conf
     /usr/sbin/asterisk -rx "module reload app_queue.so"
   fi
   if [[ "$changed" == *" voicemail.conf "* ]] && /usr/sbin/asterisk -rx "module show like app_voicemail.so" | grep -q '^app_voicemail.so'; then
