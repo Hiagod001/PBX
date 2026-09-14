@@ -4,8 +4,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const { _test } = require("../server");
+const { defaultConfig } = require("../src/store");
 const { renderQueues } = require("../src/asterisk");
-const { renderModules, outboundNumberTarget } = require("../src/asterisk");
+const { renderModules, renderPjsip, renderExtensions, outboundNumberTarget } = require("../src/asterisk");
 
 test("loads the Asterisk modules required by call files and DTMF events", () => {
   const modules = renderModules();
@@ -67,6 +68,15 @@ test("queues keep dialer callers waiting while busy agents are skipped", () => {
   assert.match(output, /ringinuse=no/);
   assert.match(output, /member => Local\/777@queue-member\/n,1,777,hint:777@queue-state/);
   assert.match(output, /member => Local\/505@queue-member\/n,1,505,hint:505@queue-state/);
+});
+
+test("dialer accepts negotiated trunk DTMF and waits at least 15 seconds", () => {
+  const config = structuredClone(defaultConfig);
+  config.trunks = [{ id: "trunk-main", active: true, sipServer: "192.0.2.10", sipUser: "1000", sipPassword: "secret", codecs: ["alaw", "ulaw"] }];
+  assert.match(renderPjsip(config), /\[trunk-main\][\s\S]*dtmf_mode=auto/);
+  const dialplan = renderExtensions(config);
+  assert.match(dialplan, /Set\(DIALER_WAIT=\$\{IF\(\$\[\$\{DIALER_TIMEOUT\}<15\]\?15:\$\{DIALER_TIMEOUT\}\)\}\)/);
+  assert.match(dialplan, /WaitExten\(\$\{DIALER_WAIT\}\)/);
 });
 
 test("expired archives preserve the actual call result", () => {
