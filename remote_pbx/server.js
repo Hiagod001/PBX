@@ -965,7 +965,7 @@ function dialerCallFileContent(config, campaign, lead) {
     `Setvar: DIALER_DIGIT=${asteriskCallFileValue(campaign.digit)}`,
     `Setvar: DIALER_DEST_TYPE=${asteriskCallFileValue(campaign.destinationType)}`,
     `Setvar: DIALER_DESTINATION=${asteriskCallFileValue(campaign.destination)}`,
-    `Setvar: DIALER_TIMEOUT=${Number(campaign.responseTimeout) || 8}`,
+    `Setvar: DIALER_TIMEOUT=${Math.max(15, Number(campaign.responseTimeout) || 15)}`,
     "Archive: yes",
     ""
   ].join("\n");

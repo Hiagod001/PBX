@@ -242,10 +242,9 @@ function renderDialerContext(lines) {
   lines.push(" same => n,Set(CDR(trunk)=${TRUNK_ENDPOINT})");
   lines.push(" same => n,Set(CDR(accountcode)=${DIALER_ATTEMPT_ID})");
   lines.push(" same => n,Set(CDR(userfield)=dialer:${DIALER_ATTEMPT_ID}:answered:${DIALER_TARGET})");
-  lines.push(" same => n,Set(DIALER_WAIT=${IF($[${DIALER_TIMEOUT}<15]?15:${DIALER_TIMEOUT})})");
-  lines.push(" same => n,Set(TIMEOUT(response)=${DIALER_WAIT})");
+  lines.push(" same => n,Set(TIMEOUT(response)=${DIALER_TIMEOUT})");
   lines.push(" same => n,Background(${DIALER_AUDIO})");
-  lines.push(" same => n,WaitExten(${DIALER_WAIT})");
+  lines.push(" same => n,WaitExten(${DIALER_TIMEOUT})");
   lines.push(" same => n,Hangup()");
   lines.push("exten => _X,1,NoOp(Discador recebeu tecla ${EXTEN})");
   lines.push(" same => n,GotoIf($[\"${EXTEN}\"=\"${DIALER_DIGIT}\"]?accepted,1)");
@@ -392,6 +391,7 @@ function renderPjsip(config) {
           "media_use_received_transport=yes",
           "rtp_keepalive=30",
           "dtmf_mode=rfc4733",
+          "device_state_busy_at=1",
           "100rel=no",
           "timers=no",
           config.security.srtpEnabled ? "media_encryption=sdes" : ""
@@ -427,6 +427,7 @@ function renderPjsip(config) {
           "media_use_received_transport=yes",
           "rtp_keepalive=30",
           "dtmf_mode=rfc4733",
+          "device_state_busy_at=1",
           "100rel=no",
           "timers=no",
           "webrtc=yes",

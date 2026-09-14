@@ -75,8 +75,12 @@ test("dialer accepts negotiated trunk DTMF and waits at least 15 seconds", () =>
   config.trunks = [{ id: "trunk-main", active: true, sipServer: "192.0.2.10", sipUser: "1000", sipPassword: "secret", codecs: ["alaw", "ulaw"] }];
   assert.match(renderPjsip(config), /\[trunk-main\][\s\S]*dtmf_mode=auto/);
   const dialplan = renderExtensions(config);
-  assert.match(dialplan, /Set\(DIALER_WAIT=\$\{IF\(\$\[\$\{DIALER_TIMEOUT\}<15\]\?15:\$\{DIALER_TIMEOUT\}\)\}\)/);
-  assert.match(dialplan, /WaitExten\(\$\{DIALER_WAIT\}\)/);
+  assert.match(dialplan, /WaitExten\(\$\{DIALER_TIMEOUT\}\)/);
+  const callFile = _test.dialerCallFileContent(config, { responseTimeout: 8, trunkIds: ["trunk-main"] }, { number: "34991708282" });
+  assert.match(callFile, /^Setvar: DIALER_TIMEOUT=15$/m);
+  const endpoints = renderPjsip({ ...config, extensions: [{ ...config.extensions[0], number: "777" }] });
+  assert.match(endpoints, /\[777\][\s\S]*device_state_busy_at=1/);
+  assert.match(endpoints, /\[web-777\][\s\S]*device_state_busy_at=1/);
 });
 
 test("expired archives preserve the actual call result", () => {
