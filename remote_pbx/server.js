@@ -15,6 +15,7 @@ const { exec, execFile } = require("child_process");
 const { promisify } = require("util");
 const crypto = require("crypto");
 const { staticCacheHeaders, privateApiHeaders } = require("./src/http-cache");
+const { buildReportPdf } = require("./src/report-pdf");
 
 const {
   ensureStore,
@@ -3086,7 +3087,7 @@ function buildChartData(calls) {
 function callExportRows(calls) {
   return calls.map((call) => ({
     Protocolo: call.protocol || "",
-    "Data e hora": call.startedAt,
+    "Data e hora": parseFlexibleDate(call.startedAt)?.toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }) || call.startedAt,
     Origem: call.source,
     Destino: call.destination,
     Ramal: call.extension,
@@ -3124,51 +3125,25 @@ function rowsToCsv(rows) {
 function rowsToExcelXml(rows) {
   const headers = Object.keys(rows[0] || {});
   const xmlEscape = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  const columns = headers.map((header) => {
+    const longest = Math.max(header.length, ...rows.slice(0, 500).map((row) => String(row[header] ?? "").length));
+    return `<Column ss:AutoFitWidth="0" ss:Width="${Math.min(190, Math.max(60, longest * 6.2))}"/>`;
+  }).join("");
   const body = [
-    `<Row>${headers.map((header) => `<Cell><Data ss:Type="String">${xmlEscape(header)}</Data></Cell>`).join("")}</Row>`,
-    ...rows.map((row) => `<Row>${headers.map((header) => `<Cell><Data ss:Type="String">${xmlEscape(row[header])}</Data></Cell>`).join("")}</Row>`)
+    `<Row ss:Height="24">${headers.map((header) => `<Cell ss:StyleID="Header"><Data ss:Type="String">${xmlEscape(header)}</Data></Cell>`).join("")}</Row>`,
+    ...rows.map((row, index) => `<Row>${headers.map((header) => `<Cell ss:StyleID="${index % 2 ? "Alternate" : "Data"}"><Data ss:Type="String">${xmlEscape(row[header])}</Data></Cell>`).join("")}</Row>`)
   ].join("");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
-  <Worksheet ss:Name="Relatorios PBX"><Table>${body}</Table></Worksheet>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet" xmlns:x="urn:schemas-microsoft-com:office:excel">
+  <Styles>
+    <Style ss:ID="Default" ss:Name="Normal"><Font ss:FontName="Calibri" ss:Size="10"/><Alignment ss:Vertical="Center"/></Style>
+    <Style ss:ID="Header"><Font ss:FontName="Calibri" ss:Size="10" ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#7F1D1D" ss:Pattern="Solid"/><Alignment ss:Vertical="Center"/></Style>
+    <Style ss:ID="Data"><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E4E4E7"/></Borders></Style>
+    <Style ss:ID="Alternate"><Interior ss:Color="#F4F4F5" ss:Pattern="Solid"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E4E4E7"/></Borders></Style>
+  </Styles>
+  <Worksheet ss:Name="Chamadas"><Table>${columns}${body}</Table><WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane><ProtectObjects>False</ProtectObjects><ProtectScenarios>False</ProtectScenarios></WorksheetOptions></Worksheet>
 </Workbook>`;
-}
-
-function pdfEscape(value) {
-  return String(value ?? "").replace(/[\\()]/g, "\\$&").replace(/\r?\n/g, " ");
-}
-
-function buildSimplePdf({ title, subtitle, lines }) {
-  const contentLines = [
-    "BT",
-    "/F1 18 Tf",
-    `50 790 Td (${pdfEscape(title)}) Tj`,
-    "/F1 10 Tf",
-    `0 -18 Td (${pdfEscape(subtitle)}) Tj`,
-    ...lines.slice(0, 46).map((line) => `0 -14 Td (${pdfEscape(line).slice(0, 120)}) Tj`),
-    "ET"
-  ].join("\n");
-  const objects = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    `<< /Length ${Buffer.byteLength(contentLines)} >>\nstream\n${contentLines}\nendstream`
-  ];
-  let pdf = "%PDF-1.4\n";
-  const offsets = [0];
-  objects.forEach((object, index) => {
-    offsets.push(Buffer.byteLength(pdf));
-    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
-  });
-  const xrefOffset = Buffer.byteLength(pdf);
-  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  offsets.slice(1).forEach((offset) => {
-    pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
-  });
-  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
-  return Buffer.from(pdf, "binary");
 }
 
 async function writeAuditEvent(req, call, action) {
@@ -4325,18 +4300,15 @@ app.get("/api/pbx/reports/export/xlsx", requireAuth, async (req, res) => {
 app.get("/api/pbx/reports/export/pdf", requireAuth, async (req, res) => {
   const { config, filters, calls } = await reportDataForRequest(req);
   const dashboard = buildDashboard(calls);
-  const rows = callExportRows(sortReportCalls(calls, String(req.query.sortBy || "startedAt"), String(req.query.sortDir || "desc"))).slice(0, 36);
-  const filterPeriod = `${filters.dateStart || "inicio"} ate ${filters.dateEnd || "agora"}`;
-  const lines = [
-    `Empresa: ${config.company?.name || "PBX Empresarial"}`,
-    `Periodo analisado: ${filterPeriod}`,
-    `Emitido em: ${new Date().toLocaleString("pt-BR")}`,
-    `Total: ${dashboard.total} | Atendidas: ${dashboard.answered} | Perdidas: ${dashboard.missed} | Gravacoes: ${dashboard.recordings}`,
-    "",
-    "Chamadas",
-    ...rows.map((row) => `${row.Protocolo || "-"} | ${row["Data e hora"]} | ${row.Origem} -> ${row.Destino} | ${row.Ramal} | ${row.Tipo} | ${row.Status} | ${row["Duracao total"]}`)
-  ];
-  const pdf = buildSimplePdf({ title: "Relatorios PBX", subtitle: `Periodo: ${filterPeriod}`, lines });
+  const sortedCalls = sortReportCalls(calls, String(req.query.sortBy || "startedAt"), String(req.query.sortDir || "desc"));
+  const pdf = await buildReportPdf({
+    calls: sortedCalls,
+    dashboard,
+    companyName: config.company?.name || "PBX Empresarial",
+    filters,
+    requestedBy: req.session.user?.username || "Usuario",
+    roleLabel: userRole(req.session.user) === "admin" ? "Administrador" : "Usuario"
+  });
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="relatorios-pbx-${Date.now()}.pdf"`);
   res.send(pdf);
