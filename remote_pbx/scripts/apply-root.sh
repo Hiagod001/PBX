@@ -84,8 +84,8 @@ reload_asterisk_configs() {
   if [[ "$changed" == *" extensions.conf "* ]]; then
     /usr/sbin/asterisk -rx "dialplan reload"
   fi
-  if [[ "$changed" == *" queues.conf "* || "$changed" == *" extensions.conf "* ]]; then
-    # Rebuild queue hint subscriptions after dialplan changes, even if members are unchanged.
+  if [[ "$changed" == *" queues.conf "* || "$changed" == *" extensions.conf "* || "$changed" == *" pjsip.conf "* ]]; then
+    # Rebuild queue hint subscriptions when members, hints or SIP endpoints change.
     touch /etc/asterisk/queues.conf
     /usr/sbin/asterisk -rx "module reload app_queue.so"
   fi

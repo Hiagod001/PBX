@@ -789,6 +789,9 @@ function renderQueues(config) {
       section(queue.id, [
         `musicclass=default`,
         `strategy=${clean(queue.strategy)}`,
+        `autofill=yes`,
+        `joinempty=yes`,
+        `leavewhenempty=no`,
         `ringinuse=no`,
         `timeout=${Number(queue.timeout) || 20}`,
         `retry=3`,

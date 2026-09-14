@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const { _test } = require("../server");
+const { renderQueues } = require("../src/asterisk");
 const { renderModules, outboundNumberTarget } = require("../src/asterisk");
 
 test("loads the Asterisk modules required by call files and DTMF events", () => {
@@ -56,6 +57,16 @@ test("classifies accepted, busy and unanswered calls", () => {
   assert.equal(_test.dialerResultFromReport({ disposition: "BUSY" }, "completed").status, "busy");
   assert.equal(_test.dialerResultFromReport(null, "expired").status, "failed");
   assert.equal(_test.dialerResultFromReport({ disposition: "FAILED" }, "completed").status, "failed");
+});
+
+test("queues keep dialer callers waiting while busy agents are skipped", () => {
+  const output = renderQueues({ queues: [{ id: "85", strategy: "ringall", timeout: 20, members: ["777", "505"] }] });
+  assert.match(output, /autofill=yes/);
+  assert.match(output, /joinempty=yes/);
+  assert.match(output, /leavewhenempty=no/);
+  assert.match(output, /ringinuse=no/);
+  assert.match(output, /member => Local\/777@queue-member\/n,1,777,hint:777@queue-state/);
+  assert.match(output, /member => Local\/505@queue-member\/n,1,505,hint:505@queue-state/);
 });
 
 test("expired archives preserve the actual call result", () => {

@@ -27,5 +27,5 @@ test('background render restores icons before exposing the refreshed surface', (
 
 test('dialplan changes refresh queue subscriptions even when the member list is unchanged', () => {
   const source = fs.readFileSync(path.join(__dirname, '../scripts/apply-root.sh'), 'utf8');
-  assert.match(source, /if \[\[ "\$changed" == \*" queues\.conf "\* \|\| "\$changed" == \*" extensions\.conf "\* \]\]; then\s*#[^\n]*\n\s*touch \/etc\/asterisk\/queues\.conf\s*\/usr\/sbin\/asterisk -rx "module reload app_queue\.so"/);
+  assert.match(source, /if \[\[ "\$changed" == \*" queues\.conf "\* \|\| "\$changed" == \*" extensions\.conf "\* \|\| "\$changed" == \*" pjsip\.conf "\* \]\]; then\s*#[^\n]*\n\s*touch \/etc\/asterisk\/queues\.conf\s*\/usr\/sbin\/asterisk -rx "module reload app_queue\.so"/);
 });
