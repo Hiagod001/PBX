@@ -53,3 +53,15 @@ test('dialer audio upload selects the new audio and preserves the rest of the fo
   assert.equal(select.value, 'custom/new');
   assert.equal(button.disabled, false);
 });
+
+test('browser extension keeps the installed phone controls and input guards', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../public/app.js'), 'utf8');
+  assert.match(source, /id="softphoneClearBtn"/);
+  assert.match(source, /id="softphoneSpeakerBtn"/);
+  assert.match(source, /id="softphoneVolume"/);
+  assert.match(source, /id="softphoneCallDevice"/);
+  assert.match(source, /id="softphoneMicDevice"/);
+  assert.match(source, /id="assistedTransferCompleteBtn"/);
+  assert.match(source, /replace\(\/\[\^0-9\*#\]\//);
+  assert.match(source, /Encerre a ligação antes de colocar o ramal em pausa/);
+});

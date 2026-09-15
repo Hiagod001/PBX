@@ -105,6 +105,13 @@ function initialExtensionCallState(overrides = {}) {
     dialNumber: "",
     transferTarget: "",
     muted: false,
+    speakerMuted: false,
+    volume: 85,
+    audioSettingsOpen: false,
+    audioOutputs: [],
+    audioInputs: [],
+    callDeviceId: "",
+    micDeviceId: "",
     held: false,
     incoming: false,
     currentNumber: "",
@@ -2355,6 +2362,7 @@ function renderExtensionPortal() {
         <small>${escapeHtml(extensionStatusLabel())} - ${escapeHtml(callElapsed)}</small>
       <div class="active-call-actions">
         <button id="softphoneMuteBtn" class="icon-btn ${state.extensionCall.muted ? "active" : ""}" type="button" title="Mutar"><i data-lucide="${state.extensionCall.muted ? "mic-off" : "mic"}"></i></button>
+        <button id="softphoneSpeakerBtn" class="icon-btn ${state.extensionCall.speakerMuted ? "active" : ""}" type="button" title="${state.extensionCall.speakerMuted ? "Ativar som" : "Silenciar som"}"><i data-lucide="${state.extensionCall.speakerMuted ? "volume-x" : "volume-2"}"></i></button>
         <button id="softphoneHoldBtn" class="icon-btn ${state.extensionCall.held ? "active" : ""}" type="button" title="Espera"><i data-lucide="pause"></i></button>
         <button id="softphoneHangupBtn" class="icon-btn danger" type="button" title="Encerrar"><i data-lucide="phone-off"></i></button>
       </div>
@@ -2375,8 +2383,9 @@ function renderExtensionPortal() {
       </div>
       ${microphoneBlocked ? `<p class="softphone-warning">Microfone bloqueado em HTTP externo. Use HTTPS ou acesse localmente por http://127.0.0.1:3090 para fazer chamadas.</p>` : ""}
       ${activeCallStage}
-      <div class="phone-display">
-        <input id="extensionDialNumber" value="${escapeHtml(state.extensionCall.dialNumber)}" inputmode="tel" placeholder="Numero" ${callLocked} />
+      <div class="phone-display webphone-number-row">
+        <input id="extensionDialNumber" maxlength="20" pattern="[0-9*#]*" value="${escapeHtml(state.extensionCall.dialNumber)}" inputmode="numeric" placeholder="Numero" ${callLocked} />
+        <button id="softphoneClearBtn" class="icon-btn" type="button" title="Limpar numero" ${callLocked}><i data-lucide="delete"></i></button>
       </div>
       ${incomingBanner}
       <div class="dialpad">${dialpad}</div>
@@ -2385,9 +2394,21 @@ function renderExtensionPortal() {
         <button id="softphoneAnswerBtn" class="secondary-btn hidden" type="button"><i data-lucide="phone-forwarded"></i>Atender</button>
         <button id="softphoneHangupBtn" class="secondary-btn danger ${activeCall ? "hidden" : ""}" type="button"><i data-lucide="phone-off"></i>Encerrar</button>
       </div>
+      <div class="webphone-audio-bar">
+        <i data-lucide="volume-2"></i>
+        <input id="softphoneVolume" type="range" min="0" max="100" value="${Number(state.extensionCall.volume || 85)}" aria-label="Volume da ligacao" />
+        <button id="softphoneAudioSettingsBtn" class="icon-btn ${state.extensionCall.audioSettingsOpen ? "active" : ""}" type="button" title="Configurar audio"><i data-lucide="settings"></i></button>
+      </div>
+      ${state.extensionCall.audioSettingsOpen ? `
+        <section class="webphone-audio-settings">
+          <label><span>Áudio da chamada</span><select id="softphoneCallDevice">${extensionDeviceOptions(state.extensionCall.audioOutputs, state.extensionCall.callDeviceId, "Padrão do navegador")}</select></label>
+          <label><span>Microfone</span><select id="softphoneMicDevice">${extensionDeviceOptions(state.extensionCall.audioInputs, state.extensionCall.micDeviceId, "Padrão do navegador")}</select></label>
+          <button id="softphoneRefreshDevicesBtn" class="secondary-btn compact" type="button"><i data-lucide="refresh-cw"></i>Atualizar dispositivos</button>
+        </section>
+      ` : ""}
       ${activeChannel ? `<div class="call-actions"><button id="serverHangupBtn" class="icon-btn danger" type="button" data-channel="${escapeHtml(activeChannel.channel)}" title="Derrubar canal"><i data-lucide="unlink"></i></button></div>` : ""}
       <div class="transfer-box">
-        <input id="extensionTransferTarget" value="${escapeHtml(state.extensionCall.transferTarget)}" inputmode="tel" placeholder="Ramal para transferencia assistida" />
+        <input id="extensionTransferTarget" maxlength="20" pattern="[0-9]*" value="${escapeHtml(state.extensionCall.transferTarget)}" inputmode="numeric" placeholder="Ramal para transferencia assistida" />
         <button id="assistedTransferStartBtn" class="secondary-btn" type="button" ${state.extensionCall.transferPhase && state.extensionCall.transferPhase !== "idle" ? "disabled" : ""}><i data-lucide="messages-square"></i>Transferir</button>
       </div>
       ${consultActive ? `
@@ -2552,7 +2573,47 @@ function attachRemoteAudio(session) {
     if (receiver.track) stream.addTrack(receiver.track);
   });
   audio.srcObject = stream;
+  audio.muted = Boolean(state.extensionCall.speakerMuted);
+  audio.volume = Math.max(0, Math.min(1, Number(state.extensionCall.volume || 85) / 100));
+  if (typeof audio.setSinkId === "function") audio.setSinkId(state.extensionCall.callDeviceId || "").catch(() => {});
   audio.play().catch(() => {});
+}
+
+function extensionAudioConstraints() {
+  return state.extensionCall.micDeviceId ? { deviceId: { exact: state.extensionCall.micDeviceId } } : true;
+}
+
+function restoreExtensionAudioPreferences() {
+  try {
+    state.extensionCall.volume = Math.max(0, Math.min(100, Number(localStorage.getItem("uai:webphoneVolume") || 85)));
+    state.extensionCall.callDeviceId = localStorage.getItem("uai:webphoneCallDevice") || "";
+    state.extensionCall.micDeviceId = localStorage.getItem("uai:webphoneMicDevice") || "";
+  } catch (_error) {}
+}
+
+function saveExtensionAudioPreferences() {
+  try {
+    localStorage.setItem("uai:webphoneVolume", String(state.extensionCall.volume));
+    localStorage.setItem("uai:webphoneCallDevice", state.extensionCall.callDeviceId || "");
+    localStorage.setItem("uai:webphoneMicDevice", state.extensionCall.micDeviceId || "");
+  } catch (_error) {}
+  attachRemoteAudio(state.extensionCall.consultSession || state.extensionCall.session);
+}
+
+async function loadExtensionAudioDevices() {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  state.extensionCall.audioOutputs = devices.filter((device) => device.kind === "audiooutput");
+  state.extensionCall.audioInputs = devices.filter((device) => device.kind === "audioinput");
+  renderExtensionPortal();
+}
+
+function extensionDeviceOptions(devices, selected, fallback) {
+  const options = [`<option value="">${escapeHtml(fallback)}</option>`];
+  devices.forEach((device, index) => {
+    options.push(`<option value="${escapeHtml(device.deviceId)}" ${device.deviceId === selected ? "selected" : ""}>${escapeHtml(device.label || `Dispositivo ${index + 1}`)}</option>`);
+  });
+  return options.join("");
 }
 
 function attachMonitorSpyAudio(session) {
@@ -2876,7 +2937,7 @@ async function startSoftphone() {
     displayName: state.extensionPortal.sip.displayName,
     transportOptions: { server: state.extensionPortal.sip.wsServer },
     sessionDescriptionHandlerFactoryOptions: {
-      constraints: { audio: true, video: false },
+      constraints: { audio: extensionAudioConstraints(), video: false },
       iceGatheringTimeout: WEBRTC_ICE_GATHERING_TIMEOUT_MS
     }
   });
@@ -2937,6 +2998,7 @@ async function refreshSoftphoneRegistration() {
 
 async function autoRegisterSoftphone() {
   if (!state.extensionSession || state.extensionCall.ua) return;
+  restoreExtensionAudioPreferences();
   state.extensionCall.status = "registrando";
   renderExtensionPortal();
   try {
@@ -3030,7 +3092,7 @@ async function answerSoftphone() {
   addExtensionCallHistory("Atendendo");
   await session.accept({
     sessionDescriptionHandlerOptions: {
-      constraints: { audio: true, video: false },
+      constraints: { audio: extensionAudioConstraints(), video: false },
       iceGatheringTimeout: WEBRTC_ICE_GATHERING_TIMEOUT_MS
     }
   });
@@ -3055,6 +3117,13 @@ function toggleSoftphoneMute() {
   peerConnection?.getSenders().forEach((sender) => {
     if (sender.track?.kind === "audio") sender.track.enabled = !state.extensionCall.muted;
   });
+  renderExtensionPortal();
+}
+
+function toggleSoftphoneSpeaker() {
+  state.extensionCall.speakerMuted = !state.extensionCall.speakerMuted;
+  const audio = $("#remoteAudio");
+  if (audio) audio.muted = state.extensionCall.speakerMuted;
   renderExtensionPortal();
 }
 
@@ -3089,6 +3158,7 @@ function assistedTransferController() {
       getAgent: () => state.extensionCall.ua,
       getMuted: () => state.extensionCall.muted,
       getDomain: () => state.extensionPortal.sip.domain,
+      constraints: () => ({ audio: extensionAudioConstraints(), video: false }),
       audio: attachRemoteAudio,
       report: error => setExtensionMessage(error.message, "error"),
       changed: ({ phase, target, busy }) => {
@@ -6746,11 +6816,30 @@ async function openCallDetails(callId) {
 
 function handleSoftphoneInput(event) {
   if (event.target.closest("#extensionDialNumber")) {
-    state.extensionCall.dialNumber = event.target.value;
+    const value = String(event.target.value || "").replace(/[^0-9*#]/g, "").slice(0, 20);
+    event.target.value = value;
+    state.extensionCall.dialNumber = value;
     return true;
   }
   if (event.target.closest("#extensionTransferTarget")) {
-    state.extensionCall.transferTarget = event.target.value;
+    const value = String(event.target.value || "").replace(/\D/g, "").slice(0, 20);
+    event.target.value = value;
+    state.extensionCall.transferTarget = value;
+    return true;
+  }
+  if (event.target.closest("#softphoneVolume")) {
+    state.extensionCall.volume = Math.max(0, Math.min(100, Number(event.target.value || 0)));
+    saveExtensionAudioPreferences();
+    return true;
+  }
+  if (event.target.closest("#softphoneCallDevice")) {
+    state.extensionCall.callDeviceId = event.target.value || "";
+    saveExtensionAudioPreferences();
+    return true;
+  }
+  if (event.target.closest("#softphoneMicDevice")) {
+    state.extensionCall.micDeviceId = event.target.value || "";
+    saveExtensionAudioPreferences();
     return true;
   }
   return false;
@@ -6759,7 +6848,13 @@ function handleSoftphoneInput(event) {
 async function handleSoftphoneClick(event) {
   const dialKeyButton = event.target.closest("[data-dial-key]");
   if (dialKeyButton) {
-    state.extensionCall.dialNumber = `${state.extensionCall.dialNumber || ""}${dialKeyButton.dataset.dialKey}`;
+    state.extensionCall.dialNumber = `${state.extensionCall.dialNumber || ""}${dialKeyButton.dataset.dialKey}`.replace(/[^0-9*#]/g, "").slice(0, 20);
+    renderExtensionPortal();
+    return true;
+  }
+
+  if (event.target.closest("#softphoneClearBtn")) {
+    state.extensionCall.dialNumber = "";
     renderExtensionPortal();
     return true;
   }
@@ -6781,6 +6876,23 @@ async function handleSoftphoneClick(event) {
 
   if (event.target.closest("#softphoneMuteBtn")) {
     toggleSoftphoneMute();
+    return true;
+  }
+
+  if (event.target.closest("#softphoneSpeakerBtn")) {
+    toggleSoftphoneSpeaker();
+    return true;
+  }
+
+  if (event.target.closest("#softphoneAudioSettingsBtn")) {
+    state.extensionCall.audioSettingsOpen = !state.extensionCall.audioSettingsOpen;
+    renderExtensionPortal();
+    if (state.extensionCall.audioSettingsOpen) await loadExtensionAudioDevices();
+    return true;
+  }
+
+  if (event.target.closest("#softphoneRefreshDevicesBtn")) {
+    await loadExtensionAudioDevices();
     return true;
   }
 
@@ -7035,6 +7147,8 @@ document.addEventListener("click", async (event) => {
     if (event.target.closest("#queuePauseBtn")) {
       if (currentExtensionPauseInfo().paused) {
         await unpauseExtensionQueue();
+      } else if (isExtensionCallActive()) {
+        setExtensionMessage("Encerre a ligação antes de colocar o ramal em pausa.", "error");
       } else {
         state.extensionCall.pauseReasonPickerOpen = true;
         renderExtensionPortal();

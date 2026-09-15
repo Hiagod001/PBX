@@ -273,3 +273,14 @@ html:not([data-theme="dark"]) .command-queue-card .compact-agent-row.paused .pau
   .dialer-form .dialer-trunk-options { grid-template-columns: minmax(0, 1fr); }
   .dialer-form-actions .primary-btn { width: 100%; justify-content: center; }
 }
+
+.webphone-number-row { display: grid; grid-template-columns: minmax(0, 1fr) 48px; gap: 8px; }
+.webphone-number-row input { min-width: 0; }
+.webphone-number-row .icon-btn { width: 48px; min-height: 56px; }
+.webphone-audio-bar { display: grid; grid-template-columns: 20px minmax(0, 1fr) 40px; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); }
+.webphone-audio-bar > svg { width: 18px; height: 18px; color: var(--muted); }
+.webphone-audio-bar input[type="range"] { min-height: 28px; padding: 0; }
+.webphone-audio-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); }
+.webphone-audio-settings label { display: grid; gap: 6px; min-width: 0; font-size: 12px; color: var(--muted); }
+.webphone-audio-settings .secondary-btn { grid-column: 1 / -1; justify-self: end; }
+@media(max-width:620px) { .webphone-audio-settings { grid-template-columns: minmax(0, 1fr); } }
