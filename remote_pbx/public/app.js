@@ -4984,19 +4984,22 @@ function renderDialer() {
       </div>
       <form id="dialerCampaignForm" class="field-grid dialer-form">
         <input type="hidden" name="id" value="${escapeHtml(editing?.id || "")}" />
-        ${fieldBlock("Nome", "Nome interno para localizar a campanha.", `<input name="name" value="${escapeHtml(editing?.name || "")}" placeholder="Ex: Boletos em aberto" required />`)}
-        ${fieldBlock("Áudio", "Mensagem que sera tocada quando o cliente atender. Apos enviar um novo audio, use Salvar e aplicar para disponibiliza-lo no PBX.", `<div class="audio-picker"><select name="audio" required>${audioChoices(editing?.audio || "")}</select><button class="icon-btn" type="button" data-upload-dialer-audio title="Adicionar áudio" aria-label="Adicionar áudio"><i data-lucide="plus"></i></button></div><input id="dialerAudioFile" type="file" accept=".wav,.mp3,.gsm,.ulaw,.alaw,.sln16" hidden />`)}
-        ${fieldBlock("Tecla", "Numero que o cliente deve apertar para falar com o atendimento.", `<input name="digit" inputmode="numeric" maxlength="1" value="${escapeHtml(editing?.digit || "1")}" required />`)}
-        ${fieldBlock("Destino", "Fila ou ramal que recebe o cliente quando ele aperta a tecla.", `<div class="dual-select">${dialerDestinationSelect(destinationType, destination)}</div>`, "wide")}
-        <fieldset class="dialer-trunk-picker wide"><legend class="field-title">Troncos da campanha ${helpIcon("Marque os troncos que fazem parte desta campanha. Com mais de um selecionado, o discador alterna entre eles.")}</legend><div class="dialer-trunk-options">${dialerTrunkOptions(editing?.trunkIds || [])}</div></fieldset>
-        ${fieldBlock("Chamadas por rodada", "Quantidade enviada ao Asterisk em cada disparo.", `<input name="maxConcurrent" type="number" min="1" max="10" value="${Number(editing?.maxConcurrent || 1)}" />`)}
-        ${fieldBlock("Intervalo", "Segundos entre uma rodada e outra.", `<input name="intervalSeconds" type="number" min="3" max="3600" value="${Number(editing?.intervalSeconds || 8)}" />`)}
-        ${fieldBlock("Tentativas", "Quantidade maxima de envio por numero.", `<input name="retryAttempts" type="number" min="1" max="5" value="${Number(editing?.retryAttempts || 1)}" />`)}
-        ${fieldBlock("Espera da tecla", "Segundos para aguardar a escolha depois do audio.", `<input name="responseTimeout" type="number" min="3" max="60" value="${Number(editing?.responseTimeout || 8)}" />`)}
-        ${fieldBlock("Identificador", "Numero apresentado quando o tronco permitir caller ID.", `<input name="callerId" value="${escapeHtml(editing?.callerId || state.config.trunk?.mainNumber || "")}" />`)}
-        ${fieldBlock("Descricao", "Observacao interna opcional.", `<input name="description" value="${escapeHtml(editing?.description || "")}" />`, "wide")}
-        ${fieldBlock("Numeros", "Cole um numero por linha, ou separados por virgula.", `<textarea name="numbers" rows="9" spellcheck="false" placeholder="31999999999&#10;31988888888" required>${escapeHtml(editing?.numberText || "")}</textarea>`, "wide")}
-        <div class="form-actions wide"><button class="primary-btn" type="submit"><i data-lucide="save"></i>${editing ? "Atualizar campanha" : "Salvar campanha"}</button></div>
+        <div class="dialer-form-section-title"><span>Campanha e atendimento</span></div>
+        ${fieldBlock("Nome", "Nome interno para localizar a campanha.", `<input name="name" value="${escapeHtml(editing?.name || "")}" placeholder="Ex: Boletos em aberto" required />`, "dialer-field-name")}
+        ${fieldBlock("Áudio", "Mensagem que sera tocada quando o cliente atender. Apos enviar um novo audio, use Salvar e aplicar para disponibiliza-lo no PBX.", `<div class="audio-picker"><select name="audio" required>${audioChoices(editing?.audio || "")}</select><button class="icon-btn" type="button" data-upload-dialer-audio title="Adicionar áudio" aria-label="Adicionar áudio"><i data-lucide="plus"></i></button></div><input id="dialerAudioFile" type="file" accept=".wav,.mp3,.gsm,.ulaw,.alaw,.sln16" hidden />`, "dialer-field-audio")}
+        ${fieldBlock("Tecla", "Numero que o cliente deve apertar para falar com o atendimento.", `<input name="digit" inputmode="numeric" maxlength="1" value="${escapeHtml(editing?.digit || "1")}" required />`, "dialer-field-digit")}
+        ${fieldBlock("Identificador", "Numero apresentado quando o tronco permitir caller ID.", `<input name="callerId" value="${escapeHtml(editing?.callerId || state.config.trunk?.mainNumber || "")}" />`, "dialer-field-caller")}
+        ${fieldBlock("Destino", "Fila ou ramal que recebe o cliente quando ele aperta a tecla.", `<div class="dual-select">${dialerDestinationSelect(destinationType, destination)}</div>`, "dialer-field-destination")}
+        <fieldset class="dialer-trunk-picker"><legend class="field-title">Troncos da campanha ${helpIcon("Marque os troncos que fazem parte desta campanha. Com mais de um selecionado, o discador alterna entre eles.")}</legend><div class="dialer-trunk-options">${dialerTrunkOptions(editing?.trunkIds || [])}</div></fieldset>
+        <div class="dialer-form-section-title"><span>Ritmo das ligações</span></div>
+        ${fieldBlock("Chamadas por rodada", "Quantidade enviada ao Asterisk em cada disparo.", `<input name="maxConcurrent" type="number" min="1" max="10" value="${Number(editing?.maxConcurrent || 1)}" />`, "dialer-field-metric")}
+        ${fieldBlock("Intervalo", "Segundos entre uma rodada e outra.", `<input name="intervalSeconds" type="number" min="3" max="3600" value="${Number(editing?.intervalSeconds || 8)}" />`, "dialer-field-metric")}
+        ${fieldBlock("Tentativas", "Quantidade maxima de envio por numero.", `<input name="retryAttempts" type="number" min="1" max="5" value="${Number(editing?.retryAttempts || 1)}" />`, "dialer-field-metric")}
+        ${fieldBlock("Espera da tecla", "Segundos para aguardar a escolha depois do audio.", `<input name="responseTimeout" type="number" min="3" max="60" value="${Number(editing?.responseTimeout || 8)}" />`, "dialer-field-metric")}
+        <div class="dialer-form-section-title"><span>Lista de contatos</span></div>
+        ${fieldBlock("Descricao", "Observacao interna opcional.", `<input name="description" value="${escapeHtml(editing?.description || "")}" />`, "dialer-field-description")}
+        ${fieldBlock("Numeros", "Cole um numero por linha, ou separados por virgula.", `<textarea name="numbers" rows="5" spellcheck="false" placeholder="31999999999&#10;31988888888" required>${escapeHtml(editing?.numberText || "")}</textarea>`, "dialer-field-numbers")}
+        <div class="form-actions dialer-form-actions"><button class="primary-btn" type="submit"><i data-lucide="save"></i>${editing ? "Atualizar campanha" : "Salvar campanha"}</button></div>
       </form>
     </section>` : "";
   pages.dialer.innerHTML = `

@@ -243,3 +243,33 @@ html:not([data-theme="dark"]) .command-queue-card .compact-agent-row.paused .pau
 .dialer-trunk-choice:focus-within { outline: 2px solid #db6470; outline-offset: 2px; }
 .dialer-trunk-selected { margin-left: auto; visibility: hidden; font-size: 11px; }
 .dialer-trunk-choice:has(input:checked) .dialer-trunk-selected { visibility: visible; }
+
+/* The campaign editor has its own rhythm; generic entity spans made it look fragmented. */
+.tab-page .entity-editor-shell .dialer-form { grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px 20px; }
+.dialer-form-section-title { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+.dialer-form-section-title::after { content: ""; height: 1px; flex: 1; background: var(--line); }
+.tab-page .entity-editor-shell .dialer-form > .dialer-field-name { grid-column: span 3; }
+.tab-page .entity-editor-shell .dialer-form > .dialer-field-audio { grid-column: span 4; }
+.tab-page .entity-editor-shell .dialer-form > .dialer-field-digit { grid-column: span 2; }
+.tab-page .entity-editor-shell .dialer-form > .dialer-field-caller { grid-column: span 3; }
+.tab-page .entity-editor-shell .dialer-form > .dialer-field-destination,
+.tab-page .entity-editor-shell .dialer-form > .dialer-trunk-picker { grid-column: span 6; }
+.tab-page .entity-editor-shell .dialer-form > .dialer-field-metric { grid-column: span 3; }
+.tab-page .entity-editor-shell .dialer-form > .dialer-field-description { grid-column: span 4; }
+.tab-page .entity-editor-shell .dialer-form > .dialer-field-numbers { grid-column: span 8; }
+.dialer-form .dialer-trunk-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.dialer-form textarea { min-height: 122px; resize: vertical; }
+.dialer-form-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; padding-top: 2px; border-top: 0; }
+
+@media(max-width:1100px) {
+  .tab-page .entity-editor-shell .dialer-form > label,
+  .tab-page .entity-editor-shell .dialer-form > .dialer-trunk-picker { grid-column: span 6; }
+  .tab-page .entity-editor-shell .dialer-form > .dialer-field-numbers { grid-column: 1 / -1; }
+}
+
+@media(max-width:700px) {
+  .tab-page .entity-editor-shell .dialer-form > label,
+  .tab-page .entity-editor-shell .dialer-form > .dialer-trunk-picker { grid-column: 1 / -1; }
+  .dialer-form .dialer-trunk-options { grid-template-columns: minmax(0, 1fr); }
+  .dialer-form-actions .primary-btn { width: 100%; justify-content: center; }
+}
