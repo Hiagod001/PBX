@@ -2,11 +2,25 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 
 const publicDir = path.join(__dirname, "..", "public");
 const appSource = fs.readFileSync(path.join(publicDir, "app.js"), "utf8");
 const indexSource = fs.readFileSync(path.join(publicDir, "index.html"), "utf8");
 const stylesSource = fs.readFileSync(path.join(publicDir, "styles.css"), "utf8");
+
+test("overview counts a queue only when its real queue field or Queue application matches", () => {
+  const start = appSource.indexOf("function callMatchesOverviewQueue(");
+  const end = appSource.indexOf("function callMatchesOverviewExtension(", start);
+  const matches = vm.runInNewContext(`${appSource.slice(start, end)}; callMatchesOverviewQueue`);
+  const retention = { tokens: ["15"] };
+  const equipment = { tokens: ["DIscador-equipamento", "601"] };
+  assert.equal(matches({ context: "dialer-interactive", lastApp: "WaitExten", lastData: "15" }, retention), false);
+  assert.equal(matches({ context: "dialer-interactive", lastApp: "BackGround", lastData: "custom/audio-15" }, retention), false);
+  assert.equal(matches({ queue: "DIscador-equipamento", context: "dialer-interactive", lastData: "15" }, retention), false);
+  assert.equal(matches({ queue: "DIscador-equipamento", context: "dialer-interactive" }, equipment), true);
+  assert.equal(matches({ context: "dialer-interactive", lastApp: "Queue", lastData: "15,tT" }, retention), true);
+});
 
 test("live monitor keeps its dialog outside the one-second status render", () => {
   assert.match(indexSource, /id="monitorStatusContent"/);

@@ -236,3 +236,11 @@ test("campaign list stays compact and detailed report groups failures and trunks
   assert.ok(report.byTrunk.some((row) => row.trunk === "trunk-2" && row.status === "failed" && row.count === 2));
   assert.equal(report.numbers.length, 3);
 });
+
+test("queue inference never treats dialer timeout or audio filename as Retenção", () => {
+  const config = { queues: [{ id: "15", name: "RETENÇÃO" }, { id: "DIscador-equipamento", name: "Equipamentos" }] };
+  assert.equal(_test.inferQueue({ dcontext: "dialer-interactive", lastapp: "WaitExten", lastdata: "15" }, config), "");
+  assert.equal(_test.inferQueue({ dcontext: "dialer-interactive", lastapp: "BackGround", lastdata: "custom/audio-15" }, config), "");
+  assert.equal(_test.inferQueue({ dcontext: "dialer-interactive", lastapp: "Queue", lastdata: "DIscador-equipamento,tT" }, config), "DIscador-equipamento");
+  assert.equal(_test.inferQueue({ dcontext: "queue-15", lastapp: "Dial" }, config), "15");
+});

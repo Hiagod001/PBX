@@ -2124,8 +2124,11 @@ function normalizeReportTrunk(value, config) {
 }
 
 function inferQueue(call, config) {
-  const joined = `${call.dcontext || ""} ${call.lastapp || ""} ${call.lastdata || ""} ${call.userfield || ""}`;
-  const queue = (config.queues || []).find((item) => new RegExp(`\\b${item.id}\\b`, "i").test(joined) || new RegExp(`\\b${item.name}\\b`, "i").test(joined));
+  const context = String(call.dcontext || "").trim();
+  const queueArgument = /^queue$/i.test(String(call.lastapp || "")) ? String(call.lastdata || "").split(",")[0].trim() : "";
+  const queue = (config.queues || []).find((item) =>
+    context.toLowerCase() === `queue-${String(item.id).toLowerCase()}` || queueArgument.toLowerCase() === String(item.id).toLowerCase()
+  );
   return queue?.id || "";
 }
 
@@ -4714,6 +4717,7 @@ module.exports = {
     applyReportFilters,
     csvEscape,
     inferReportExtension,
+    inferQueue,
     inferReportType,
     parseReportFilters,
     pbxStatusForScope,

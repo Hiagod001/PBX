@@ -751,31 +751,12 @@ function overviewQueueMemberNumbers(queue = {}) {
 
 function callMatchesOverviewQueue(call, queueItem) {
   if (!queueItem) return true;
-  const tokens = queueItem.tokens || [];
-  const haystack = [
-    call.queue,
-    call.destination,
-    call.originalDestination,
-    call.dst,
-    call.context,
-    call.lastApp,
-    call.lastData,
-    call.lastdata,
-    call.channel,
-    call.destinationChannel
-  ].map((value) => String(value || "").toLowerCase());
-  return tokens.some((token) => {
-    const normalized = String(token || "").toLowerCase();
-    if (!normalized) return false;
-    return haystack.some((value) =>
-      value === normalized ||
-      value.includes(`queue-${normalized}`) ||
-      value.includes(`queue(${normalized}`) ||
-      value.includes(`${normalized},`) ||
-      value.includes(`/${normalized}`) ||
-      value.includes(` ${normalized} `)
-    );
-  });
+  const tokens = (queueItem.tokens || []).map((token) => String(token || "").toLowerCase());
+  if (call.queue) return tokens.includes(String(call.queue).toLowerCase());
+  const context = String(call.context || "").toLowerCase();
+  if (tokens.some((token) => context === `queue-${token}`)) return true;
+  const queueArgument = /^queue$/i.test(String(call.lastApp || "")) ? String(call.lastData || call.lastdata || "").split(",")[0].trim().toLowerCase() : "";
+  return Boolean(queueArgument && tokens.includes(queueArgument));
 }
 
 function callMatchesOverviewExtension(call, extensionNumber = "") {
