@@ -1118,6 +1118,11 @@ async function reconcileDialerCampaigns(config, campaigns) {
 
 async function tickDialerCampaigns() {
   if (!tickDialerCampaigns.running) return;
+  const snapshot = await readDialerCampaigns();
+  const hasWork = snapshot.some((campaign) => campaign.status === "running" || (campaign.numbers || []).some((lead) =>
+    lead.status === "queued" || (lead.status === "answered" && lead.attemptId && Date.now() - (Date.parse(lead.completedAt || lead.lastAttemptAt || "") || 0) < 10 * 60 * 1000)
+  ));
+  if (!hasWork) return;
   const config = await getConfig().catch(() => null);
   if (!config) return;
   await updateDialerCampaigns(async (campaigns) => {
