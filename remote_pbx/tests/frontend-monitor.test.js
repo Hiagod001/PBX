@@ -22,6 +22,12 @@ test("overview counts a queue only when its real queue field or Queue applicatio
   assert.equal(matches({ context: "dialer-interactive", lastApp: "Queue", lastData: "15,tT" }, retention), true);
 });
 
+test("trunk cards show live registration separately from active configuration", () => {
+  assert.match(appSource, /data-trunk-registration="\$\{escapeHtml\(trunk\.id\)\}"/);
+  assert.match(appSource, /registered: "Registrado", rejected: "Registro rejeitado", unregistered: "Não registrado"/);
+  assert.match(appSource, /api\("\/api\/trunks\/registrations"\)/);
+});
+
 test("live monitor keeps its dialog outside the one-second status render", () => {
   assert.match(indexSource, /id="monitorStatusContent"/);
   assert.match(indexSource, /id="monitorSpyPortal"/);

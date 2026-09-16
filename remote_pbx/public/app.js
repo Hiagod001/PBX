@@ -195,6 +195,7 @@ const state = {
   monitorCompact: storedMonitorCompactSettings(),
   inboundCalls: { cdr: [], rejected: [] },
   pbxStatus: null,
+  trunkRegistrationStates: {},
   pbxStatusRefreshing: false,
   ivrFullscreen: false,
   ivrBuilderOpen: new URLSearchParams(window.location.search).has("edit"),
@@ -1869,6 +1870,7 @@ function syncActiveTabUi() {
 
 async function loadTabData(tab = state.activeTab) {
   if (!state.config) return;
+  if (tab === "trunk") await loadTrunkRegistrations();
   if (tab === "reports") await loadPbxStatus();
   if (["overview", "reports"].includes(tab)) await loadReports();
   if (["status", "security"].includes(tab)) await loadPbxStatus();
@@ -4207,7 +4209,10 @@ function renderTrunk() {
             <h3>${escapeHtml(trunkLabel(trunk))}</h3>
             <p class="microcopy">${escapeHtml(trunk.id)} · ${escapeHtml((trunk.transport || "udp").toUpperCase())} · ${trunk.active === false ? "Inativo" : "Ativo"}</p>
           </div>
+        </div>
+        <div class="trunk-card-statuses">
           <span class="badge ${trunk.active === false ? "warn" : "ok"}">${trunk.active === false ? "Inativo" : "Ativo"}</span>
+          <span class="trunk-registration-status" data-trunk-registration="${escapeHtml(trunk.id)}"></span>
         </div>
         <div class="list-card-meta">
           <span><strong>Numero principal</strong>${escapeHtml(trunk.mainNumber || "Nao informado")}</span>
@@ -4265,6 +4270,30 @@ function renderTrunk() {
         <div class="trunk-grid">${summaryCards || `<div class="governance-empty"><i data-lucide="radio-tower"></i><strong>Nenhum tronco cadastrado</strong><span>Cadastre o primeiro tronco para conectar a operadora.</span></div>`}</div>
       </section>`;
   pages.trunk.innerHTML = `<div class="section-grid">${editor || editor === "" ? editor : ""}</div>`;
+  updateTrunkRegistrationBadges();
+}
+
+function updateTrunkRegistrationBadges() {
+  const labels = { registered: "Registrado", rejected: "Registro rejeitado", unregistered: "Não registrado", disabled: "Sem registro", unknown: "Não verificado" };
+  for (const badge of pages.trunk?.querySelectorAll("[data-trunk-registration]") || []) {
+    const trunk = ensureConfigTrunks().find((item) => item.id === badge.dataset.trunkRegistration);
+    const registration = trunk?.active === false ? "disabled" : state.trunkRegistrationStates[badge.dataset.trunkRegistration] || "unknown";
+    badge.textContent = labels[registration] || labels.unknown;
+    badge.dataset.state = registration;
+    badge.title = registration === "rejected" ? "A operadora recusou o registro SIP deste tronco." : registration === "unknown" ? "Ainda não foi possível consultar o registro SIP." : "Estado atual do registro SIP no Asterisk.";
+  }
+}
+
+async function loadTrunkRegistrations() {
+  try {
+    const response = await api("/api/trunks/registrations");
+    state.trunkRegistrationStates = response.states || {};
+  } catch (error) {
+    state.trunkRegistrationStates = {};
+    throw error;
+  } finally {
+    updateTrunkRegistrationBadges();
+  }
 }
 
 function renderExtensions() {
@@ -8999,6 +9028,12 @@ setInterval(() => {
     loadDialerCampaigns({ background: true }).catch(() => {});
   }
 }, 5000);
+
+setInterval(() => {
+  if (state.user && state.config && state.activeTab === "trunk") {
+    loadTrunkRegistrations().catch(() => {});
+  }
+}, 15000);
 
 setInterval(() => {
   if (state.user && state.config && state.activeTab === "overview") {

@@ -84,6 +84,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .extension-card, .trunk-config-card, .queue-config-card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: none; }
 .compact-card-header { background: transparent; margin-bottom: 12px; }
 .compact-card-header .badge { background: var(--surface-elevated); color: var(--muted-strong); }
+.trunk-card-statuses { display: flex; flex-wrap: wrap; justify-content: flex-start; align-items: center; gap: 6px; }
+.trunk-registration-status { display: inline-flex; align-items: center; min-height: 25px; padding: 3px 9px; border-radius: 5px; background: var(--surface-elevated); color: var(--muted-strong); font-size: 11px; font-weight: 700; white-space: nowrap; }
+.trunk-registration-status[data-state="registered"] { background: var(--success-soft); color: var(--success-ink); }
+.trunk-registration-status[data-state="rejected"] { background: var(--danger-soft); color: var(--danger-ink); }
+.trunk-registration-status[data-state="unregistered"] { background: var(--warning-soft); color: var(--warning-ink); }
 .compact-field-grid { gap: 12px; grid-template-columns: repeat(4,minmax(0,1fr)); }
 .compact-field-grid .wide { grid-column: span 2; }
 .compact-field-grid .full { grid-column: 1 / -1; }

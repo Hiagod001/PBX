@@ -1915,6 +1915,15 @@ function recentReportCalls(calls, limit = 200) {
   return [...calls].sort((left, right) => reportCallTime(right) - reportCallTime(left)).slice(0, limit);
 }
 
+function trunkRegistrationStates(config, registrations) {
+  const configured = Array.isArray(config.trunks) && config.trunks.length ? config.trunks : [{ ...(config.trunk || {}), id: "trunk-operadora" }];
+  return Object.fromEntries(configured.map((trunk, index) => {
+    const id = String(trunk.id || (index === 0 ? "trunk-operadora" : `trunk-${index + 1}`));
+    const status = registrations.find((item) => item.id === `${id}-registration`)?.status?.toLowerCase();
+    return [id, trunk.active === false ? "disabled" : status === "registered" ? "registered" : status === "rejected" ? "rejected" : "unregistered"];
+  }));
+}
+
 async function readReports(sourceConfig = null) {
   const config = sourceConfig || await getConfig();
   const calls = await readPbxReportCalls(config, { skipRecordingScan: true });
@@ -4503,6 +4512,12 @@ app.post("/api/ivr-audios", requireAuth, requireAdmin, upload.single("audio"), a
   });
 });
 
+app.get("/api/trunks/registrations", requireAuth, requireAdmin, async (_req, res) => {
+  const config = await getConfig();
+  const registrations = parseRegistrationsOutput(await runAsteriskRead("registrations"));
+  res.json({ states: trunkRegistrationStates(config, registrations), checkedAt: new Date().toISOString() });
+});
+
 app.get("/api/dialer/campaigns", requireAuth, requireAdmin, async (_req, res) => {
   const config = await getConfig();
   const campaigns = await readDialerCampaigns();
@@ -4721,6 +4736,7 @@ module.exports = {
     inferReportType,
     parseReportFilters,
     pbxStatusForScope,
+    trunkRegistrationStates,
     recordingDownloadName,
     sanitizeAuditValue,
     userCanInterveneLiveCalls,

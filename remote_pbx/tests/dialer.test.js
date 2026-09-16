@@ -244,3 +244,20 @@ test("queue inference never treats dialer timeout or audio filename as Retençã
   assert.equal(_test.inferQueue({ dcontext: "dialer-interactive", lastapp: "Queue", lastdata: "DIscador-equipamento,tT" }, config), "DIscador-equipamento");
   assert.equal(_test.inferQueue({ dcontext: "queue-15", lastapp: "Dial" }, config), "15");
 });
+
+test("trunk cards distinguish configuration from live SIP registration", () => {
+  const config = { trunks: [
+    { id: "trunk-operadora", active: true },
+    { id: "trunk-2", active: true },
+    { id: "trunk-disabled", active: false }
+  ] };
+  const registrations = [
+    { id: "trunk-operadora-registration", status: "Registered" },
+    { id: "trunk-2-registration", status: "Rejected" },
+    { id: "trunk-disabled-registration", status: "Registered" }
+  ];
+  assert.deepEqual(_test.trunkRegistrationStates(config, registrations), {
+    "trunk-operadora": "registered", "trunk-2": "rejected", "trunk-disabled": "disabled"
+  });
+  assert.equal(_test.trunkRegistrationStates(config, [])["trunk-operadora"], "unregistered");
+});
