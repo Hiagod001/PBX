@@ -901,7 +901,26 @@ function dialerStats(campaign) {
 }
 
 function publicDialerCampaign(campaign) {
-  return { ...campaign, stats: dialerStats(campaign), numberText: (campaign.numbers || []).map((item) => item.number).join("\n") };
+  const { numbers, ...details } = campaign;
+  return { ...details, stats: dialerStats(campaign), numberText: (numbers || []).map((item) => item.number).join("\n") };
+}
+
+function dialerCampaignReport(campaign) {
+  const reasons = new Map();
+  const byTrunk = new Map();
+  for (const lead of campaign.numbers || []) {
+    if (lead.lastResult) reasons.set(lead.lastResult, (reasons.get(lead.lastResult) || 0) + 1);
+    if (lead.trunkId) {
+      const key = `${lead.trunkId}:${lead.status}`;
+      byTrunk.set(key, (byTrunk.get(key) || 0) + 1);
+    }
+  }
+  return {
+    campaign: publicDialerCampaign(campaign),
+    reasons: [...reasons].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count),
+    byTrunk: [...byTrunk].map(([key, count]) => ({ trunk: key.slice(0, key.lastIndexOf(":")), status: key.slice(key.lastIndexOf(":") + 1), count })),
+    numbers: (campaign.numbers || []).map(({ number, status, attempts, lastResult, trunkId, lastAttemptAt }) => ({ number, status, attempts, lastResult, trunkId, lastAttemptAt }))
+  };
 }
 
 function dialerAuditSnapshot(campaign) {
@@ -921,21 +940,31 @@ function dialerAuditSnapshot(campaign) {
 }
 
 async function readDialerCampaigns() {
-  const payload = (await fs.readJson(dialerCampaignsPath).catch(() => ({ campaigns: [] }))) || {};
+  const payload = (await fs.readJson(dialerCampaignsPath).catch((error) => {
+    if (error.code === "ENOENT") return { campaigns: [] };
+    throw error;
+  })) || {};
   return Array.isArray(payload.campaigns) ? payload.campaigns : [];
 }
 
 async function writeDialerCampaigns(campaigns) {
   await fs.ensureDir(path.dirname(dialerCampaignsPath));
-  await fs.writeJson(dialerCampaignsPath, { campaigns }, { spaces: 2 });
+  const temporary = `${dialerCampaignsPath}.${process.pid}.tmp`;
+  try {
+    await fs.writeJson(temporary, { campaigns }, { spaces: 2 });
+    await fs.rename(temporary, dialerCampaignsPath);
+  } finally {
+    await fs.remove(temporary).catch(() => {});
+  }
   return campaigns;
 }
 
 async function updateDialerCampaigns(mutator) {
   dialerStoreLock = dialerStoreLock.catch(() => {}).then(async () => {
     const campaigns = await readDialerCampaigns();
+    const previous = JSON.stringify(campaigns);
     const next = await mutator(campaigns);
-    await writeDialerCampaigns(next);
+    if (JSON.stringify(next) !== previous) await writeDialerCampaigns(next);
     return next;
   });
   return dialerStoreLock;
@@ -985,6 +1014,27 @@ function parseDialerArchiveStatus(content) {
   return (String(content || "").match(/^Status:\s*([^\r\n]+)/im) || [])[1]?.trim().toLowerCase() || "";
 }
 
+let dialerTrunkHealthCache = { expiresAt: 0, values: null };
+async function dialerTrunkHealth(config) {
+  if (dialerTrunkHealthCache.values && dialerTrunkHealthCache.expiresAt > Date.now()) return dialerTrunkHealthCache.values;
+  const registrations = parseRegistrationsOutput(await runAsteriskRead("registrations"));
+  const values = Object.fromEntries(configTrunks(config).map((trunk) => {
+    const registration = registrations.find((item) => item.id === `${trunk.id}-registration`);
+    return [trunk.id, registration?.status?.toLowerCase() === "registered" ? "registered" : "unavailable"];
+  }));
+  dialerTrunkHealthCache = { expiresAt: Date.now() + 15000, values };
+  return values;
+}
+
+let dialerReportsCache = { expiresAt: 0, promise: null };
+async function recentDialerReports(config) {
+  if (dialerReportsCache.promise && dialerReportsCache.expiresAt > Date.now()) return dialerReportsCache.promise;
+  const promise = readReports(config);
+  dialerReportsCache = { expiresAt: Date.now() + 5000, promise };
+  try { return await promise; }
+  catch (error) { dialerReportsCache = { expiresAt: 0, promise: null }; throw error; }
+}
+
 function dialerResultFromReport(report, archiveStatus = "") {
   const userField = String(report?.userField || report?.userfield || "").toLowerCase();
   if (userField.includes(":accepted:")) return { status: "accepted", label: "Cliente aceitou e foi encaminhado", retryable: false };
@@ -1026,7 +1076,7 @@ function finishDialerLead(campaign, lead, result, now = Date.now()) {
 async function reconcileDialerCampaigns(config, campaigns) {
   const queued = campaigns.flatMap((campaign) => (campaign.numbers || []).filter((lead) => lead.status === "queued").map((lead) => ({ campaign, lead })));
   const recentAnswered = campaigns.flatMap((campaign) => (campaign.numbers || [])
-    .filter((lead) => lead.status === "answered" && lead.attemptId && Date.now() - (Date.parse(lead.completedAt || lead.lastAttemptAt || "") || 0) < 7 * 24 * 60 * 60 * 1000)
+    .filter((lead) => lead.status === "answered" && lead.attemptId && Date.now() - (Date.parse(lead.completedAt || lead.lastAttemptAt || "") || 0) < 10 * 60 * 1000)
     .map((lead) => ({ campaign, lead })));
   if (!queued.length && !recentAnswered.length) return;
   let reports = null;
@@ -1047,14 +1097,14 @@ async function reconcileDialerCampaigns(config, campaigns) {
     }
     const archiveStat = await fs.stat(archivedPath).catch(() => null);
     const archiveStatus = parseDialerArchiveStatus(await fs.readFile(archivedPath, "utf8").catch(() => ""));
-    if (!reports) reports = await readReports(config).catch(() => []);
+    if (!reports) reports = await recentDialerReports(config).catch(() => []);
     const report = dialerReportForAttempt(reports, lead.attemptId);
     if (!report && archiveStatus === "completed" && archiveStat && Date.now() - archiveStat.mtimeMs < 5000) continue;
     if (report && dialerResultFromReport(report, archiveStatus).status !== "accepted" && archiveStat && Date.now() - archiveStat.mtimeMs < 15000) continue;
     finishDialerLead(campaign, lead, dialerResultFromReport(report, archiveStatus));
   }
   if (recentAnswered.length) {
-    if (!reports) reports = await readReports(config).catch(() => []);
+    if (!reports) reports = await recentDialerReports(config).catch(() => []);
     for (const { lead } of recentAnswered) {
       const report = dialerReportForAttempt(reports, lead.attemptId);
       const result = dialerResultFromReport(report, "completed");
@@ -1082,13 +1132,17 @@ async function tickDialerCampaigns() {
         .filter((lead) => lead.status === "pending" && Number(lead.attempts || 0) < Number(campaign.retryAttempts || 1) && (!lead.nextAttemptAt || Date.parse(lead.nextAttemptAt) <= now))
         .slice(0, availableSlots);
       if (!batch.length) {
-        if (!(campaign.numbers || []).some((lead) => ["pending", "queued"].includes(lead.status))) campaign.status = "done";
-        campaign.updatedAt = new Date().toISOString();
+        if (!(campaign.numbers || []).some((lead) => ["pending", "queued"].includes(lead.status))) {
+          campaign.status = "done";
+          campaign.updatedAt = new Date().toISOString();
+        }
         continue;
       }
       const availableTrunks = configTrunks(config).map((trunk) => trunk.id);
       const campaignTrunks = (campaign.trunkIds || []).filter((id) => availableTrunks.includes(id));
-      const trunks = campaignTrunks.length ? campaignTrunks : [config.outbound?.defaultTrunk || availableTrunks[0] || "trunk-operadora"];
+      const health = await dialerTrunkHealth(config);
+      const trunks = campaignTrunks.filter((id) => health[id] === "registered");
+      if (!trunks.length) continue;
       for (const lead of batch) {
         try {
           const trunkIndex = Number(campaign.nextTrunkIndex || 0) % trunks.length;
@@ -4448,8 +4502,26 @@ app.get("/api/dialer/campaigns", requireAuth, requireAdmin, async (_req, res) =>
     campaigns: campaigns.map(publicDialerCampaign),
     destinations: dialerDestinationOptions(config),
     trunks: configTrunks(config),
+    trunkHealth: await dialerTrunkHealth(config).catch(() => ({})),
     audios: await listIvrAudios()
   });
+});
+
+app.get("/api/dialer/campaigns/:id/report", requireAuth, requireAdmin, async (req, res) => {
+  const campaign = (await readDialerCampaigns()).find((item) => item.id === req.params.id);
+  if (!campaign) return res.status(404).json({ error: "Campanha nao encontrada." });
+  res.json(dialerCampaignReport(campaign));
+});
+
+app.get("/api/dialer/campaigns/:id/report.csv", requireAuth, requireAdmin, async (req, res) => {
+  const campaign = (await readDialerCampaigns()).find((item) => item.id === req.params.id);
+  if (!campaign) return res.status(404).json({ error: "Campanha nao encontrada." });
+  const columns = ["Numero", "Status", "Tentativas", "Motivo", "Tronco", "Ultima tentativa"];
+  const rows = (campaign.numbers || []).map((lead) => [lead.number, lead.status, lead.attempts, lead.lastResult, lead.trunkId, lead.lastAttemptAt]);
+  const csv = [columns, ...rows].map((row) => row.map(csvEscape).join(";")).join("\r\n");
+  res.set("Content-Type", "text/csv; charset=utf-8");
+  res.set("Content-Disposition", `attachment; filename="campanha-${campaign.id}.csv"`);
+  res.send(`\uFEFF${csv}`);
 });
 
 app.post("/api/dialer/campaigns", requireAuth, requireAdmin, async (req, res) => {
@@ -4489,6 +4561,7 @@ app.post("/api/dialer/campaigns", requireAuth, requireAdmin, async (req, res) =>
 app.post("/api/dialer/campaigns/:id/start", requireAuth, requireAdmin, async (req, res) => {
   const config = await getConfig();
   const audios = await listIvrAudios();
+  const health = await dialerTrunkHealth(config);
   let campaign = null;
   await updateDialerCampaigns(async (campaigns) =>
     campaigns.map((item) => {
@@ -4496,6 +4569,7 @@ app.post("/api/dialer/campaigns/:id/start", requireAuth, requireAdmin, async (re
       if (!item.audio || !audios.some((audio) => audio.playback === item.audio)) throw new Error("Audio da campanha nao encontrado.");
       if (!dialerDestinationExists(config, item.destinationType, item.destination)) throw new Error("Destino da campanha nao encontrado.");
       if (!(item.trunkIds || []).some((id) => configTrunks(config).some((trunk) => trunk.id === id))) throw new Error("Nenhum tronco ativo selecionado para esta campanha.");
+      if (!(item.trunkIds || []).some((id) => health[id] === "registered")) throw new Error("Nenhum tronco selecionado esta registrado. Verifique os troncos antes de iniciar.");
       campaign = { ...item, status: "running", nextDialAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
       return campaign;
     })
@@ -4645,9 +4719,11 @@ module.exports = {
     userRole,
     dialerAttemptId,
     dialerAuditSnapshot,
+    dialerCampaignReport,
     dialerCallFileContent,
     dialerResultFromReport,
     dialerStats,
+    publicDialerCampaign,
     finishDialerLead,
     normalizeDialerNumbers,
     parseDialerArchiveStatus,

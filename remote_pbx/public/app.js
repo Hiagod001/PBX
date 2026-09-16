@@ -211,6 +211,7 @@ const state = {
   dialerCampaigns: [],
   dialerDestinations: { queues: [], extensions: [] },
   dialerTrunks: [],
+  dialerTrunkHealth: {},
   dialerEditingId: "",
   dialerEditorOpen: false,
   dialerEditingNew: false,
@@ -4957,7 +4958,7 @@ function dialerDestinationSelect(type, value) {
 function dialerTrunkOptions(selected = []) {
   const selectedSet = new Set(selected?.length ? selected : [state.config.outbound?.defaultTrunk || ensureConfigTrunks()[0]?.id || "trunk-operadora"]);
   const trunks = state.dialerTrunks.length ? state.dialerTrunks : ensureConfigTrunks().filter((trunk) => trunk.active !== false);
-  return trunks.map((trunk) => `<label class="dialer-trunk-choice"><input type="checkbox" name="trunkIds" value="${escapeHtml(trunk.id)}" ${selectedSet.has(trunk.id) ? "checked" : ""}><span>${escapeHtml(trunkLabel(trunk))}</span><small class="dialer-trunk-selected">Selecionado</small></label>`).join("");
+  return trunks.map((trunk) => `<label class="dialer-trunk-choice"><input type="checkbox" name="trunkIds" value="${escapeHtml(trunk.id)}" ${selectedSet.has(trunk.id) ? "checked" : ""}><span>${escapeHtml(trunkLabel(trunk))}</span><small class="dialer-trunk-selected">${state.dialerTrunkHealth[trunk.id] === "unavailable" ? "Indisponível" : "Selecionado"}</small></label>`).join("");
 }
 
 function dialerTrunkSummary(campaign) {
@@ -5001,6 +5002,7 @@ function renderDialerCampaignRows() {
       const stats = campaign.stats || {};
       const running = campaign.status === "running";
       const progress = dialerProgress(stats);
+      const unavailable = (campaign.trunkIds || []).filter((id) => state.dialerTrunkHealth[id] === "unavailable");
       return `
         <article class="panel entity-list-card">
           <div class="panel-header">
@@ -5019,7 +5021,9 @@ function renderDialerCampaignRows() {
             <small>${Number(stats.pending || 0)} pendentes | ${Number(stats.inProgress || 0)} em andamento</small>
           </div>
           ${dialerResultSummary(stats)}
+          ${unavailable.length ? `<small class="dialer-trunk-warning">Tronco indisponível: ${escapeHtml(unavailable.join(", "))}. O discador usa apenas os troncos registrados.</small>` : ""}
             <div class="compact-card-actions">
+              <button class="icon-btn" type="button" data-dialer-report="${escapeHtml(campaign.id)}" title="Relatório da campanha"><i data-lucide="chart-column"></i></button>
               <button class="icon-btn" type="button" data-edit-dialer="${escapeHtml(campaign.id)}" title="Editar campanha"><i data-lucide="pencil"></i></button>
               <button class="icon-btn ${running ? "danger" : ""}" type="button" data-dialer-action="${running ? "pause" : "start"}" data-dialer-id="${escapeHtml(campaign.id)}" title="${running ? "Pausar" : "Iniciar"}"><i data-lucide="${running ? "pause" : "play"}"></i></button>
               <button class="icon-btn" type="button" data-dialer-action="reset" data-dialer-id="${escapeHtml(campaign.id)}" title="Reiniciar lista"><i data-lucide="rotate-ccw"></i></button>
@@ -5035,7 +5039,13 @@ function renderDialerCampaignLiveData() {
   const count = $("[data-dialer-campaign-count]", pages.dialer);
   const rows = $("[data-dialer-campaign-rows]", pages.dialer);
   if (count) count.textContent = `${state.dialerCampaigns.length} campanhas`;
-  if (rows) rows.innerHTML = renderDialerCampaignRows();
+  if (rows) {
+    const html = renderDialerCampaignRows();
+    if (rows._lastDialerHtml !== html) {
+      rows.innerHTML = html;
+      rows._lastDialerHtml = html;
+    }
+  }
 }
 
 function renderDialer() {
@@ -5046,6 +5056,7 @@ function renderDialer() {
   const firstExtension = state.config.extensions?.[0]?.number || "";
   const destinationType = editing?.destinationType || "queue";
   const destination = editing?.destination || (destinationType === "extension" ? firstExtension : firstQueue);
+  const campaignRowsHtml = renderDialerCampaignRows();
   const editor = showEditor ? `
     <section class="panel entity-editor-shell">
       <div class="panel-header entity-editor-header">
@@ -5078,9 +5089,11 @@ function renderDialer() {
       <section class="panel">
         <div class="panel-header"><div><p class="eyebrow">Operacao</p><h3>Campanhas</h3><p class="microcopy">Consulte as campanhas e abra somente aquela que deseja editar.</p></div><div class="compact-card-actions"><button class="secondary-btn compact" type="button" data-refresh-dialer><i data-lucide="refresh-cw"></i>Atualizar</button><button class="primary-btn compact" type="button" data-new-dialer><i data-lucide="plus"></i>Nova campanha</button></div></div>
         <span class="badge" data-dialer-campaign-count>${state.dialerCampaigns.length} campanhas</span>
-        <div class="entity-list-grid" data-dialer-campaign-rows>${renderDialerCampaignRows()}</div>
+        <div class="entity-list-grid" data-dialer-campaign-rows>${campaignRowsHtml}</div>
       </section>
     </div>`;
+  const campaignRows = $("[data-dialer-campaign-rows]", pages.dialer);
+  if (campaignRows) campaignRows._lastDialerHtml = campaignRowsHtml;
 }
 
 function recordingPartyNumber(call = {}) {
@@ -6626,6 +6639,7 @@ async function loadDialerCampaigns({ preserveDraft = false, background = false }
   state.dialerCampaigns = response.campaigns || [];
   state.dialerDestinations = response.destinations || { queues: [], extensions: [] };
   state.dialerTrunks = response.trunks || ensureConfigTrunks().filter((trunk) => trunk.active !== false && trunk.sipServer);
+  state.dialerTrunkHealth = response.trunkHealth || {};
   if (response.audios) state.ivrAudios = response.audios;
   if (state.activeTab === "dialer") {
     if (background) renderDialerCampaignLiveData();
@@ -6689,6 +6703,32 @@ function ensureModalRoot() {
     document.body.appendChild(root);
   }
   return root;
+}
+
+async function openDialerCampaignReport(id) {
+  const report = await api(`/api/dialer/campaigns/${encodeURIComponent(id)}/report`);
+  const { campaign, reasons, byTrunk, numbers } = report;
+  const stats = campaign.stats || {};
+  const statusLabel = { pending: "Pendente", queued: "Em andamento", accepted: "Aceita", answered: "Atendida sem aceite", no_answer: "Não atendeu", busy: "Ocupado", failed: "Falha", canceled: "Cancelada" };
+  const trunkLabelForId = (id) => state.dialerTrunks.find((item) => item.id === id)?.name || id || "Não informado";
+  const root = ensureModalRoot();
+  root.innerHTML = `
+    <div class="modal-backdrop" data-close-modal></div>
+    <section class="modal-card dialer-report-modal" role="dialog" aria-modal="true" aria-label="Relatório da campanha">
+      <header><div><p class="eyebrow">Relatório da campanha</p><h3>${escapeHtml(campaign.name)}</h3></div><button class="icon-btn" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header>
+      <div class="dialer-report-content">
+        <div class="dialer-report-summary">
+          <span><strong>${Number(stats.total || 0)}</strong> Números</span><span class="success"><strong>${Number(stats.accepted || 0)}</strong> Aceitas</span><span><strong>${Number(stats.answered || 0)}</strong> Atendidas sem aceite</span><span class="danger"><strong>${Number(stats.failed || 0)}</strong> Falhas</span><span><strong>${Number(stats.pending || 0)}</strong> Pendentes</span>
+        </div>
+        <div class="dialer-report-sections">
+          <section><h4>Motivos registrados</h4><div class="dialer-report-table-wrap"><table><thead><tr><th>Motivo</th><th>Quantidade</th></tr></thead><tbody>${reasons.length ? reasons.map((item) => `<tr><td>${escapeHtml(item.label)}</td><td>${Number(item.count)}</td></tr>`).join("") : '<tr><td colspan="2">Sem motivos registrados.</td></tr>'}</tbody></table></div></section>
+          <section><h4>Resultado por tronco</h4><div class="dialer-report-table-wrap"><table><thead><tr><th>Tronco</th><th>Resultado</th><th>Quantidade</th></tr></thead><tbody>${byTrunk.length ? byTrunk.map((item) => `<tr><td>${escapeHtml(trunkLabelForId(item.trunk))}</td><td>${escapeHtml(statusLabel[item.status] || item.status)}</td><td>${Number(item.count)}</td></tr>`).join("") : '<tr><td colspan="3">Sem ligações registradas.</td></tr>'}</tbody></table></div></section>
+        </div>
+        <section><h4>Números <small>Primeiros ${Math.min(numbers.length, 100)} de ${numbers.length}. O CSV contém todos.</small></h4><div class="dialer-report-table-wrap dialer-report-numbers"><table><thead><tr><th>Número</th><th>Resultado</th><th>Tentativas</th><th>Tronco</th><th>Motivo</th></tr></thead><tbody>${numbers.slice(0, 100).map((item) => `<tr><td>${escapeHtml(item.number)}</td><td>${escapeHtml(statusLabel[item.status] || item.status)}</td><td>${Number(item.attempts || 0)}</td><td>${escapeHtml(trunkLabelForId(item.trunkId))}</td><td>${escapeHtml(item.lastResult || "-")}</td></tr>`).join("")}</tbody></table></div></section>
+      </div>
+      <footer><a class="secondary-btn" href="/api/dialer/campaigns/${encodeURIComponent(id)}/report.csv"><i data-lucide="download"></i>Baixar CSV completo</a></footer>
+    </section>`;
+  iconRefresh();
 }
 
 function closeModal() {
@@ -7035,6 +7075,7 @@ document.addEventListener("click", async (event) => {
   const cancelTrunkEditButton = event.target.closest("[data-cancel-trunk-edit]");
   const deleteIvrAudioButton = event.target.closest("[data-delete-ivr-audio]");
   const editDialerButton = event.target.closest("[data-edit-dialer]");
+  const dialerReportButton = event.target.closest("[data-dialer-report]");
   const newDialerButton = event.target.closest("[data-new-dialer]");
   const dialerActionButton = event.target.closest("[data-dialer-action]");
   const deleteDialerButton = event.target.closest("[data-delete-dialer]");
@@ -7244,6 +7285,11 @@ document.addEventListener("click", async (event) => {
       state.dialerEditingNew = true;
       renderDialer();
       iconRefresh();
+      return;
+    }
+
+    if (dialerReportButton) {
+      await openDialerCampaignReport(dialerReportButton.dataset.dialerReport);
       return;
     }
 

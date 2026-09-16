@@ -218,3 +218,21 @@ test("reports real campaign progress instead of queued calls as complete", () =>
     { total: 7, pending: 1, inProgress: 1, accepted: 1, completed: 5 }
   );
 });
+
+test("campaign list stays compact and detailed report groups failures and trunks", () => {
+  const campaign = {
+    id: "camp-1", name: "Teste", status: "paused",
+    numbers: [
+      { number: "34990000001", status: "failed", attempts: 2, lastResult: "Sem rota", trunkId: "trunk-2" },
+      { number: "34990000002", status: "accepted", attempts: 1, lastResult: "Atendida", trunkId: "trunk-main" },
+      { number: "34990000003", status: "failed", attempts: 2, lastResult: "Sem rota", trunkId: "trunk-2" }
+    ]
+  };
+  const listItem = _test.publicDialerCampaign(campaign);
+  assert.equal(listItem.numbers, undefined);
+  assert.equal(listItem.stats.total, 3);
+  const report = _test.dialerCampaignReport(campaign);
+  assert.deepEqual(report.reasons[0], { label: "Sem rota", count: 2 });
+  assert.ok(report.byTrunk.some((row) => row.trunk === "trunk-2" && row.status === "failed" && row.count === 2));
+  assert.equal(report.numbers.length, 3);
+});

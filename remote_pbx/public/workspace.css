@@ -150,6 +150,24 @@ html[data-theme="dark"] .tab-page .eyebrow { color: #d9afb0; }
 .strategy-filter-bar .command-filter-field { min-width: 210px; flex: 1 1 210px; }
 .strategy-filter-bar .command-filter-field:first-child { min-width: 180px; flex-basis: 180px; }
 .dialer-result-list > .warning { display: inline-flex; padding: 0; margin: 0; border: 0; background: transparent; box-shadow: none; }
+.dialer-trunk-warning { color: #efae76; line-height: 1.4; }
+.dialer-report-modal { width: min(1100px, calc(100vw - 32px)); max-height: min(88vh, 900px); display: flex; flex-direction: column; overflow: hidden; }
+.dialer-report-modal .dialer-report-content { overflow: auto; min-height: 0; display: grid; gap: 22px; padding: 18px 0; }
+.dialer-report-modal footer { display: flex; justify-content: flex-end; padding-top: 14px; border-top: 1px solid var(--line); }
+.dialer-report-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.dialer-report-summary span { display: grid; gap: 3px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; }
+.dialer-report-summary strong { font-size: 20px; }
+.dialer-report-summary .success strong { color: #62c99a; }
+.dialer-report-summary .danger strong { color: #e4787d; }
+.dialer-report-sections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.dialer-report-modal h4 { margin: 0 0 10px; font-size: 14px; }
+.dialer-report-modal h4 small { margin-left: 8px; color: var(--muted); font-weight: 400; }
+.dialer-report-table-wrap { overflow: auto; max-height: 250px; border: 1px solid var(--line); border-radius: 6px; }
+.dialer-report-numbers { max-height: 310px; }
+.dialer-report-modal table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.dialer-report-modal th, .dialer-report-modal td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.dialer-report-modal th { position: sticky; top: 0; background: var(--surface); white-space: nowrap; }
+@media (max-width: 760px) { .dialer-report-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .dialer-report-sections { grid-template-columns: minmax(0, 1fr); } }
 @media(min-width:1400px) { .audit-filter-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
 .audio-picker { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .audio-picker select { flex: 1; min-width: 0; }
