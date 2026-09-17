@@ -888,8 +888,9 @@ function dialerStats(campaign) {
     inProgress: count("queued"),
     accepted: count("accepted"),
     answered: count("answered"),
-    noAnswer: count("no_answer", "canceled"),
+    noAnswer: count("no_answer"),
     busy: count("busy"),
+    canceled: count("canceled"),
     failed: count("failed"),
     completed,
     dialed: completed + count("queued"),
@@ -905,11 +906,42 @@ function publicDialerCampaign(campaign) {
   return { ...details, stats: dialerStats(campaign), numberText: (numbers || []).map((item) => item.number).join("\n") };
 }
 
+function dialerLeadStatusLabel(status) {
+  return {
+    pending: "Aguardando ligação",
+    queued: "Ligando agora",
+    accepted: "Atendeu e pediu atendimento",
+    answered: "Atendeu, mas não confirmou para falar",
+    no_answer: "Não atendeu",
+    busy: "Número ocupado",
+    failed: "Ligação não completada",
+    canceled: "Ligação cancelada"
+  }[status] || "Resultado não identificado";
+}
+
+function dialerLeadReasonLabel(lead) {
+  const reason = String(lead.lastResult || "").toLowerCase();
+  if (lead.status === "accepted") return "A pessoa atendeu, apertou a tecla e foi encaminhada para o atendimento.";
+  if (lead.status === "answered") return "A pessoa atendeu, mas o sistema não registrou a tecla para falar com um atendente.";
+  if (lead.status === "no_answer") return "A ligação não foi atendida dentro do tempo de espera.";
+  if (lead.status === "busy") return "O número estava ocupado no momento da tentativa.";
+  if (lead.status === "canceled") return "A tentativa foi interrompida antes de terminar.";
+  if (lead.status === "queued") return "A ligação está em andamento.";
+  if (lead.status === "pending") return Number(lead.attempts || 0) > 0 ? "Aguardando uma nova tentativa de ligação." : "Este número ainda não foi chamado.";
+  if (reason.includes("rejeitada")) return "A operadora recusou esta ligação.";
+  if (reason.includes("sem rota")) return "Não há rota de saída para ligar para este número.";
+  if (reason.includes("expirada sem confirmacao")) return "Não recebemos confirmação do resultado desta tentativa.";
+  return "Não foi possível completar esta ligação.";
+}
+
 function dialerCampaignReport(campaign) {
   const reasons = new Map();
   const byTrunk = new Map();
   for (const lead of campaign.numbers || []) {
-    if (lead.lastResult) reasons.set(lead.lastResult, (reasons.get(lead.lastResult) || 0) + 1);
+    if (lead.lastResult) {
+      const label = dialerLeadReasonLabel(lead);
+      reasons.set(label, (reasons.get(label) || 0) + 1);
+    }
     if (lead.trunkId) {
       const key = `${lead.trunkId}:${lead.status}`;
       byTrunk.set(key, (byTrunk.get(key) || 0) + 1);
@@ -918,8 +950,19 @@ function dialerCampaignReport(campaign) {
   return {
     campaign: publicDialerCampaign(campaign),
     reasons: [...reasons].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count),
-    byTrunk: [...byTrunk].map(([key, count]) => ({ trunk: key.slice(0, key.lastIndexOf(":")), status: key.slice(key.lastIndexOf(":") + 1), count })),
-    numbers: (campaign.numbers || []).map(({ number, status, attempts, lastResult, trunkId, lastAttemptAt }) => ({ number, status, attempts, lastResult, trunkId, lastAttemptAt }))
+    byTrunk: [...byTrunk].map(([key, count]) => {
+      const status = key.slice(key.lastIndexOf(":") + 1);
+      return { trunk: key.slice(0, key.lastIndexOf(":")), status, statusLabel: dialerLeadStatusLabel(status), count };
+    }),
+    numbers: (campaign.numbers || []).map((lead) => ({
+      number: lead.number,
+      status: lead.status,
+      statusLabel: dialerLeadStatusLabel(lead.status),
+      attempts: lead.attempts,
+      resultLabel: dialerLeadReasonLabel(lead),
+      trunkId: lead.trunkId,
+      lastAttemptAt: lead.lastAttemptAt
+    }))
   };
 }
 
@@ -4563,7 +4606,7 @@ app.get("/api/dialer/campaigns/:id/report.csv", requireAuth, requireAdmin, async
   const campaign = (await readDialerCampaigns()).find((item) => item.id === req.params.id);
   if (!campaign) return res.status(404).json({ error: "Campanha nao encontrada." });
   const columns = ["Numero", "Status", "Tentativas", "Motivo", "Tronco", "Ultima tentativa"];
-  const rows = (campaign.numbers || []).map((lead) => [lead.number, lead.status, lead.attempts, lead.lastResult, lead.trunkId, lead.lastAttemptAt]);
+  const rows = (campaign.numbers || []).map((lead) => [lead.number, dialerLeadStatusLabel(lead.status), lead.attempts, dialerLeadReasonLabel(lead), lead.trunkId, lead.lastAttemptAt]);
   const csv = [columns, ...rows].map((row) => row.map(csvEscape).join(";")).join("\r\n");
   res.set("Content-Type", "text/csv; charset=utf-8");
   res.set("Content-Disposition", `attachment; filename="campanha-${campaign.id}.csv"`);
@@ -4770,6 +4813,8 @@ module.exports = {
     applyLateDialerResults,
     isRecentUnconfirmedDialerLead,
     dialerCampaignReport,
+    dialerLeadStatusLabel,
+    dialerLeadReasonLabel,
     dialerCallFileContent,
     dialerResultFromReport,
     dialerStats,

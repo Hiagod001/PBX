@@ -232,9 +232,27 @@ test("campaign list stays compact and detailed report groups failures and trunks
   assert.equal(listItem.numbers, undefined);
   assert.equal(listItem.stats.total, 3);
   const report = _test.dialerCampaignReport(campaign);
-  assert.deepEqual(report.reasons[0], { label: "Sem rota", count: 2 });
+  assert.deepEqual(report.reasons[0], { label: "Não há rota de saída para ligar para este número.", count: 2 });
   assert.ok(report.byTrunk.some((row) => row.trunk === "trunk-2" && row.status === "failed" && row.count === 2));
+  assert.ok(report.byTrunk.some((row) => row.trunk === "trunk-2" && row.statusLabel === "Ligação não completada"));
+  assert.equal(report.numbers[1].statusLabel, "Atendeu e pediu atendimento");
   assert.equal(report.numbers.length, 3);
+});
+
+test("campaign counts and descriptions separate no answer from busy and canceled", () => {
+  const campaign = { numbers: [
+    { status: "no_answer", lastResult: "Nao atendeu" },
+    { status: "busy", lastResult: "Ocupado" },
+    { status: "canceled", lastResult: "Cancelada" },
+    { status: "answered", lastResult: "Atendida sem aceite" },
+    { status: "pending", attempts: 1, lastResult: "Nova tentativa agendada" }
+  ] };
+  const stats = _test.dialerStats(campaign);
+  assert.deepEqual({ noAnswer: stats.noAnswer, busy: stats.busy, canceled: stats.canceled }, { noAnswer: 1, busy: 1, canceled: 1 });
+  assert.equal(_test.dialerLeadStatusLabel("no_answer"), "Não atendeu");
+  assert.equal(_test.dialerLeadStatusLabel("answered"), "Atendeu, mas não confirmou para falar");
+  assert.match(_test.dialerLeadReasonLabel(campaign.numbers[3]), /tecla para falar com um atendente/);
+  assert.match(_test.dialerLeadReasonLabel(campaign.numbers[4]), /nova tentativa/);
 });
 
 test("queue inference never treats dialer timeout or audio filename as Retenção", () => {

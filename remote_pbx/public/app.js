@@ -4991,10 +4991,12 @@ function dialerProgress(stats = {}) {
 function dialerResultSummary(stats = {}) {
   return `
     <div class="dialer-result-list">
-      <span class="success"><strong>${Number(stats.accepted || 0)}</strong> aceitas</span>
-      <span><strong>${Number(stats.answered || 0)}</strong> sem aceite</span>
-      <span class="warning"><strong>${Number(stats.noAnswer || 0) + Number(stats.busy || 0)}</strong> sem contato</span>
-      <span class="danger"><strong>${Number(stats.failed || 0)}</strong> falhas</span>
+      <span class="success"><strong>${Number(stats.accepted || 0)}</strong> atenderam e pediram atendimento</span>
+      <span><strong>${Number(stats.answered || 0)}</strong> atenderam, mas não confirmaram para falar</span>
+      <span class="warning"><strong>${Number(stats.noAnswer || 0)}</strong> não atenderam</span>
+      <span class="warning"><strong>${Number(stats.busy || 0)}</strong> números ocupados</span>
+      <span class="danger"><strong>${Number(stats.failed || 0)}</strong> ligações não completadas</span>
+      <span><strong>${Number(stats.canceled || 0)}</strong> ligações canceladas</span>
     </div>
   `;
 }
@@ -5028,7 +5030,7 @@ function renderDialerCampaignRows() {
             <span><strong>Tecla</strong>${escapeHtml(campaign.digit || "1")}</span>
           </div>
           <div>
-            <small>${Number(stats.pending || 0)} pendentes | ${Number(stats.inProgress || 0)} em andamento</small>
+            <small>${Number(stats.pending || 0)} aguardando ligação | ${Number(stats.inProgress || 0)} ligando agora</small>
           </div>
           ${dialerResultSummary(stats)}
           ${unavailable.length ? `<small class="dialer-trunk-warning">Tronco indisponível: ${escapeHtml(unavailable.join(", "))}. O discador usa apenas os troncos registrados.</small>` : ""}
@@ -6719,7 +6721,6 @@ async function openDialerCampaignReport(id) {
   const report = await api(`/api/dialer/campaigns/${encodeURIComponent(id)}/report`);
   const { campaign, reasons, byTrunk, numbers } = report;
   const stats = campaign.stats || {};
-  const statusLabel = { pending: "Pendente", queued: "Em andamento", accepted: "Aceita", answered: "Atendida sem aceite", no_answer: "Não atendeu", busy: "Ocupado", failed: "Falha", canceled: "Cancelada" };
   const trunkLabelForId = (id) => state.dialerTrunks.find((item) => item.id === id)?.name || id || "Não informado";
   const root = ensureModalRoot();
   root.innerHTML = `
@@ -6727,14 +6728,20 @@ async function openDialerCampaignReport(id) {
     <section class="modal-card dialer-report-modal" role="dialog" aria-modal="true" aria-label="Relatório da campanha">
       <header><div><p class="eyebrow">Relatório da campanha</p><h3>${escapeHtml(campaign.name)}</h3></div><button class="icon-btn" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header>
       <div class="dialer-report-content">
+        <p class="dialer-report-progress">${Number(stats.total || 0)} números · ${Number(stats.pending || 0)} aguardando ligação · ${Number(stats.inProgress || 0)} ligando agora</p>
         <div class="dialer-report-summary">
-          <span><strong>${Number(stats.total || 0)}</strong> Números</span><span class="success"><strong>${Number(stats.accepted || 0)}</strong> Aceitas</span><span><strong>${Number(stats.answered || 0)}</strong> Atendidas sem aceite</span><span class="danger"><strong>${Number(stats.failed || 0)}</strong> Falhas</span><span><strong>${Number(stats.pending || 0)}</strong> Pendentes</span>
+          <span class="success"><strong>${Number(stats.accepted || 0)}</strong><b>Atendeu e pediu atendimento</b><small>Apertou a tecla e foi encaminhado.</small></span>
+          <span><strong>${Number(stats.answered || 0)}</strong><b>Atendeu, mas não confirmou para falar</b><small>A tecla para falar com atendente não foi registrada.</small></span>
+          <span><strong>${Number(stats.noAnswer || 0)}</strong><b>Não atendeu</b><small>Não houve atendimento dentro do tempo de espera.</small></span>
+          <span><strong>${Number(stats.busy || 0)}</strong><b>Número ocupado</b><small>O número estava ocupado na tentativa.</small></span>
+          <span class="danger"><strong>${Number(stats.failed || 0)}</strong><b>Ligação não completada</b><small>O sistema ou a operadora não concluiu a ligação.</small></span>
+          <span><strong>${Number(stats.canceled || 0)}</strong><b>Ligação cancelada</b><small>A tentativa foi interrompida.</small></span>
         </div>
         <div class="dialer-report-sections">
-          <section><h4>Motivos registrados</h4><div class="dialer-report-table-wrap"><table><thead><tr><th>Motivo</th><th>Quantidade</th></tr></thead><tbody>${reasons.length ? reasons.map((item) => `<tr><td>${escapeHtml(item.label)}</td><td>${Number(item.count)}</td></tr>`).join("") : '<tr><td colspan="2">Sem motivos registrados.</td></tr>'}</tbody></table></div></section>
-          <section><h4>Resultado por tronco</h4><div class="dialer-report-table-wrap"><table><thead><tr><th>Tronco</th><th>Resultado</th><th>Quantidade</th></tr></thead><tbody>${byTrunk.length ? byTrunk.map((item) => `<tr><td>${escapeHtml(trunkLabelForId(item.trunk))}</td><td>${escapeHtml(statusLabel[item.status] || item.status)}</td><td>${Number(item.count)}</td></tr>`).join("") : '<tr><td colspan="3">Sem ligações registradas.</td></tr>'}</tbody></table></div></section>
+          <section><h4>O que aconteceu</h4><div class="dialer-report-table-wrap"><table><thead><tr><th>Resultado</th><th>Quantidade</th></tr></thead><tbody>${reasons.length ? reasons.map((item) => `<tr><td>${escapeHtml(item.label)}</td><td>${Number(item.count)}</td></tr>`).join("") : '<tr><td colspan="2">Nenhum resultado registrado.</td></tr>'}</tbody></table></div></section>
+          <section><h4>Resultado por tronco</h4><div class="dialer-report-table-wrap"><table><thead><tr><th>Tronco</th><th>Resultado</th><th>Quantidade</th></tr></thead><tbody>${byTrunk.length ? byTrunk.map((item) => `<tr><td>${escapeHtml(trunkLabelForId(item.trunk))}</td><td>${escapeHtml(item.statusLabel)}</td><td>${Number(item.count)}</td></tr>`).join("") : '<tr><td colspan="3">Sem ligações registradas.</td></tr>'}</tbody></table></div></section>
         </div>
-        <section><h4>Números <small>Primeiros ${Math.min(numbers.length, 100)} de ${numbers.length}. O CSV contém todos.</small></h4><div class="dialer-report-table-wrap dialer-report-numbers"><table><thead><tr><th>Número</th><th>Resultado</th><th>Tentativas</th><th>Tronco</th><th>Motivo</th></tr></thead><tbody>${numbers.slice(0, 100).map((item) => `<tr><td>${escapeHtml(item.number)}</td><td>${escapeHtml(statusLabel[item.status] || item.status)}</td><td>${Number(item.attempts || 0)}</td><td>${escapeHtml(trunkLabelForId(item.trunkId))}</td><td>${escapeHtml(item.lastResult || "-")}</td></tr>`).join("")}</tbody></table></div></section>
+        <section><h4>Números <small>Primeiros ${Math.min(numbers.length, 100)} de ${numbers.length}. O CSV contém todos.</small></h4><div class="dialer-report-table-wrap dialer-report-numbers"><table><thead><tr><th>Número</th><th>Resultado</th><th>Tentativas</th><th>Tronco</th><th>O que aconteceu</th></tr></thead><tbody>${numbers.slice(0, 100).map((item) => `<tr><td>${escapeHtml(item.number)}</td><td>${escapeHtml(item.statusLabel)}</td><td>${Number(item.attempts || 0)}</td><td>${escapeHtml(trunkLabelForId(item.trunkId))}</td><td>${escapeHtml(item.resultLabel)}</td></tr>`).join("")}</tbody></table></div></section>
       </div>
       <footer><a class="secondary-btn" href="/api/dialer/campaigns/${encodeURIComponent(id)}/report.csv"><i data-lucide="download"></i>Baixar CSV completo</a></footer>
     </section>`;
