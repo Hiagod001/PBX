@@ -252,6 +252,7 @@ function renderDialerContext(lines) {
   lines.push(" same => n,Hangup()");
   lines.push("exten => accepted,1,NoOp(Discador aceito ${DIALER_CAMPAIGN_ID} ${DIALER_TARGET})");
   lines.push(" same => n,Set(CDR(userfield)=dialer:${DIALER_ATTEMPT_ID}:accepted:${DIALER_TARGET})");
+  lines.push(" same => n,Gosub(record-call,s,1(${DIALER_TARGET},${DIALER_DESTINATION}))");
   lines.push(" same => n,UserEvent(DialerAccept,Campaign:${DIALER_CAMPAIGN_ID},Number:${DIALER_TARGET},Digit:${DIALER_DIGIT})");
   lines.push(" same => n,GotoIf($[\"${DIALER_DEST_TYPE}\"=\"queue\"]?queue)");
   lines.push(" same => n,GotoIf($[\"${DIALER_DEST_TYPE}\"=\"extension\"]?extension)");

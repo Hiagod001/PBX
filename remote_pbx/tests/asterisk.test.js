@@ -84,6 +84,17 @@ test("queues enforce max wait and the dialer reuses the queue context", () => {
   assert.match(dialplan, /Gosub\(queue-\$\{DIALER_DESTINATION\},s,1\)/);
 });
 
+test("accepted dialer calls start one recording before entering a queue or extension", () => {
+  const dialplan = renderExtensions(queueConfig());
+  const dialer = dialplan.split("[dialer-interactive]")[1].split("\n[")[0];
+  const accepted = dialer.split("exten => accepted,1,")[1];
+  assert.doesNotMatch(dialer.split("exten => accepted,1,")[0], /Gosub\(record-call/);
+  assert.match(accepted, /Gosub\(record-call,s,1\(\$\{DIALER_TARGET\},\$\{DIALER_DESTINATION\}\)\)/);
+  assert.ok(accepted.indexOf("Gosub(record-call") < accepted.indexOf("Gosub(queue-"));
+  assert.ok(accepted.indexOf("Gosub(record-call") < accepted.indexOf("Dial(${PJSIP_DIAL_CONTACTS"));
+  assert.equal((accepted.match(/Gosub\(record-call/g) || []).length, 1);
+});
+
 test("ring groups honor the configured timeout", () => {
   const dialplan = renderExtensions(queueConfig());
   const ringGroupStart = dialplan.indexOf("[ringgroup-recepcao]");
