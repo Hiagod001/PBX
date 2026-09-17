@@ -1073,12 +1073,29 @@ function finishDialerLead(campaign, lead, result, now = Date.now()) {
   lead.nextAttemptAt = "";
 }
 
+function isRecentUnconfirmedDialerLead(lead, now = Date.now()) {
+  return lead.status === "failed" && lead.lastResult === "Tentativa expirada sem confirmacao de toque" && Boolean(lead.attemptId) &&
+    now - (Date.parse(lead.completedAt || lead.lastAttemptAt || "") || 0) < 10 * 60 * 1000;
+}
+
+function applyLateDialerResults(leads, reports) {
+  for (const lead of leads) {
+    const report = dialerReportForAttempt(reports, lead.attemptId);
+    if (!report) continue;
+    const result = dialerResultFromReport(report, "expired");
+    lead.status = result.status;
+    lead.lastResult = result.label;
+  }
+}
+
+let nextLateDialerCheckAt = 0;
 async function reconcileDialerCampaigns(config, campaigns) {
   const queued = campaigns.flatMap((campaign) => (campaign.numbers || []).filter((lead) => lead.status === "queued").map((lead) => ({ campaign, lead })));
   const recentAnswered = campaigns.flatMap((campaign) => (campaign.numbers || [])
     .filter((lead) => lead.status === "answered" && lead.attemptId && Date.now() - (Date.parse(lead.completedAt || lead.lastAttemptAt || "") || 0) < 10 * 60 * 1000)
     .map((lead) => ({ campaign, lead })));
-  if (!queued.length && !recentAnswered.length) return;
+  const recentUnconfirmed = campaigns.flatMap((campaign) => (campaign.numbers || []).filter((lead) => isRecentUnconfirmedDialerLead(lead)));
+  if (!queued.length && !recentAnswered.length && !recentUnconfirmed.length) return;
   let reports = null;
   for (const { campaign, lead } of queued) {
     const callFile = path.basename(String(lead.callFile || ""));
@@ -1114,13 +1131,19 @@ async function reconcileDialerCampaigns(config, campaigns) {
       }
     }
   }
+  if (recentUnconfirmed.length && (reports || Date.now() >= nextLateDialerCheckAt)) {
+    nextLateDialerCheckAt = Date.now() + 15000;
+    if (!reports) reports = await recentDialerReports(config).catch(() => []);
+    applyLateDialerResults(recentUnconfirmed, reports);
+  }
 }
 
 async function tickDialerCampaigns() {
   if (!tickDialerCampaigns.running) return;
   const snapshot = await readDialerCampaigns();
   const hasWork = snapshot.some((campaign) => campaign.status === "running" || (campaign.numbers || []).some((lead) =>
-    lead.status === "queued" || (lead.status === "answered" && lead.attemptId && Date.now() - (Date.parse(lead.completedAt || lead.lastAttemptAt || "") || 0) < 10 * 60 * 1000)
+    lead.status === "queued" || isRecentUnconfirmedDialerLead(lead) ||
+    (lead.status === "answered" && lead.attemptId && Date.now() - (Date.parse(lead.completedAt || lead.lastAttemptAt || "") || 0) < 10 * 60 * 1000)
   ));
   if (!hasWork) return;
   const config = await getConfig().catch(() => null);
@@ -4744,6 +4767,8 @@ module.exports = {
     userRole,
     dialerAttemptId,
     dialerAuditSnapshot,
+    applyLateDialerResults,
+    isRecentUnconfirmedDialerLead,
     dialerCampaignReport,
     dialerCallFileContent,
     dialerResultFromReport,

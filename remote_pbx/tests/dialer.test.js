@@ -261,3 +261,17 @@ test("trunk cards distinguish configuration from live SIP registration", () => {
   });
   assert.equal(_test.trunkRegistrationStates(config, [])["trunk-operadora"], "unregistered");
 });
+
+test("late carrier CDR corrects an expired attempt without scheduling another call", () => {
+  const now = Date.now();
+  const lead = { status: "failed", attempts: 1, attemptId: "dlr-late", completedAt: new Date(now - 30000).toISOString(), lastResult: "Tentativa expirada sem confirmacao de toque" };
+  assert.equal(_test.isRecentUnconfirmedDialerLead(lead, now), true);
+  _test.applyLateDialerResults([lead], [{ accountCode: "dlr-other", disposition: "ANSWERED" }]);
+  assert.equal(lead.status, "failed");
+  _test.applyLateDialerResults([lead], [{ accountCode: "dlr-late", disposition: "NO ANSWER" }]);
+  assert.equal(lead.status, "no_answer");
+  assert.equal(lead.lastResult, "Nao atendeu");
+  assert.equal(lead.attempts, 1);
+  assert.equal(lead.nextAttemptAt, undefined);
+  assert.equal(_test.isRecentUnconfirmedDialerLead({ ...lead, status: "failed", lastResult: "Tentativa expirada sem confirmacao de toque", completedAt: new Date(now - 11 * 60000).toISOString() }, now), false);
+});
