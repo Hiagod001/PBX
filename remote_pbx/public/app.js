@@ -1871,8 +1871,8 @@ function syncActiveTabUi() {
 async function loadTabData(tab = state.activeTab) {
   if (!state.config) return;
   if (tab === "trunk") await loadTrunkRegistrations();
-  if (tab === "reports") await loadPbxStatus();
-  if (["overview", "reports"].includes(tab)) await loadReports();
+  if (tab === "overview") await Promise.all([loadPbxStatus(), loadOverviewData(state.overview.date)]);
+  if (tab === "reports") await Promise.all([loadPbxStatus(), loadReports()]);
   if (["status", "security"].includes(tab)) await loadPbxStatus();
   if (tab === "users") await loadUsers();
   if (tab === "audit") await loadAudit();
@@ -6646,8 +6646,12 @@ async function loadIvrAudios() {
   }
 }
 
+let dialerCampaignsRequest = null;
 async function loadDialerCampaigns({ preserveDraft = false, background = false } = {}) {
-  const response = await api("/api/dialer/campaigns");
+  if (!dialerCampaignsRequest) {
+    dialerCampaignsRequest = api("/api/dialer/campaigns").finally(() => { dialerCampaignsRequest = null; });
+  }
+  const response = await dialerCampaignsRequest;
   state.dialerCampaigns = response.campaigns || [];
   state.dialerDestinations = response.destinations || { queues: [], extensions: [] };
   state.dialerTrunks = response.trunks || ensureConfigTrunks().filter((trunk) => trunk.active !== false && trunk.sipServer);
@@ -6999,7 +7003,7 @@ document.addEventListener("submit", async (event) => {
       renderShell();
       if (!state.user.mustChangePassword) {
         await loadConfig();
-        await loadPbxStatus();
+        await loadTabData(state.activeTab);
       }
       return;
     }
@@ -7030,7 +7034,7 @@ document.addEventListener("submit", async (event) => {
       form.reset();
       renderShell();
       await loadConfig();
-      await loadPbxStatus();
+      await loadTabData(state.activeTab);
       setMessage("Senha administrativa atualizada.", "ok");
       return;
     }
@@ -8994,12 +8998,6 @@ async function boot() {
   if (state.user) {
     if (state.user.mustChangePassword) return;
     await loadConfig();
-    await loadPbxStatus();
-    await loadOverviewData(state.overview.date);
-    await loadReports();
-    await loadIvrAudios();
-    await loadDialerCampaigns();
-    await loadOutboundDiagnostics("", state.config?.extensions?.[0]?.number || "201");
     await loadTabData(state.activeTab);
   } else if (state.extensionSession) {
     await loadExtensionPortal();
@@ -9019,31 +9017,31 @@ updateOperationalClock();
 setInterval(updateOperationalClock, 1000);
 
 setInterval(() => {
-  if (state.user && state.config && state.activeTab === "status") {
+  if (!document.hidden && state.user && state.config && state.activeTab === "status") {
     loadPbxStatus({ background: true }).catch(() => {});
   }
 }, MONITOR_REFRESH_MS);
 
 setInterval(() => {
-  if (state.user && state.config && ["overview", "logs", "security", "reports"].includes(state.activeTab)) {
+  if (!document.hidden && state.user && state.config && ["overview", "logs", "security", "reports"].includes(state.activeTab)) {
     loadPbxStatus({ background: true }).catch(() => {});
   }
 }, BACKGROUND_STATUS_REFRESH_MS);
 
 setInterval(() => {
-  if (state.user && state.config && state.activeTab === "dialer") {
+  if (!document.hidden && state.user && state.config && state.activeTab === "dialer") {
     loadDialerCampaigns({ background: true }).catch(() => {});
   }
 }, 5000);
 
 setInterval(() => {
-  if (state.user && state.config && state.activeTab === "trunk") {
+  if (!document.hidden && state.user && state.config && state.activeTab === "trunk") {
     loadTrunkRegistrations().catch(() => {});
   }
 }, 15000);
 
 setInterval(() => {
-  if (state.user && state.config && state.activeTab === "overview") {
+  if (!document.hidden && state.user && state.config && state.activeTab === "overview") {
     loadOverviewData(state.overview.date, { background: true }).catch(() => {});
   }
 }, 30000);

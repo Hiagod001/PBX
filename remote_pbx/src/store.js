@@ -318,7 +318,18 @@ const defaultConfig = {
   }
 };
 
-async function ensureStore() {
+let storeInitialization = null;
+function ensureStore() {
+  if (!storeInitialization) {
+    storeInitialization = initializeStore().catch((error) => {
+      storeInitialization = null;
+      throw error;
+    });
+  }
+  return storeInitialization;
+}
+
+async function initializeStore() {
   await fs.ensureDir(dataDir);
   await fs.ensureDir(generatedDir);
   await fs.ensureDir(ivrAudioDir);

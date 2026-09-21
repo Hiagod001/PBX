@@ -195,13 +195,17 @@ function protocolYear(date = new Date()) {
   }).format(date);
 }
 
+let localDateFormatter;
+let localDateFormatterZone;
 function localDateKey(date = new Date()) {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: process.env.TZ || "America/Sao_Paulo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).format(date);
+  const timeZone = process.env.TZ || "America/Sao_Paulo";
+  if (!localDateFormatter || localDateFormatterZone !== timeZone) {
+    localDateFormatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone, year: "numeric", month: "2-digit", day: "2-digit"
+    });
+    localDateFormatterZone = timeZone;
+  }
+  return localDateFormatter.format(date);
 }
 
 async function allocateCallProtocol() {
@@ -1242,7 +1246,12 @@ async function tickDialerCampaigns() {
 
 function startDialerEngine() {
   tickDialerCampaigns.running = true;
-  setInterval(() => tickDialerCampaigns().catch((error) => console.error("Falha no discador:", error.message)), 1000);
+  const schedule = () => setTimeout(async () => {
+    try { await tickDialerCampaigns(); }
+    catch (error) { console.error("Falha no discador:", error.message); }
+    finally { if (tickDialerCampaigns.running) schedule(); }
+  }, 1000).unref();
+  schedule();
 }
 
 async function readLogTail(logPath, lines = 400) {
@@ -1978,7 +1987,8 @@ async function readPbxStatus(config, { fresh = false } = {}) {
 }
 
 function recentReportCalls(calls, limit = 200) {
-  return [...calls].sort((left, right) => reportCallTime(right) - reportCallTime(left)).slice(0, limit);
+  return calls.map((call) => ({ call, time: reportCallTime(call) }))
+    .sort((left, right) => right.time - left.time).slice(0, limit).map(({ call }) => call);
 }
 
 function trunkRegistrationStates(config, registrations) {
@@ -1992,8 +2002,8 @@ function trunkRegistrationStates(config, registrations) {
 
 async function readReports(sourceConfig = null) {
   const config = sourceConfig || await getConfig();
-  const calls = await readPbxReportCalls(config, { skipRecordingScan: true });
-  return recentReportCalls(calls).map((call) => ({
+  const calls = await readPbxReportCalls(config, { skipRecordingScan: true, limit: 200 });
+  return calls.map((call) => ({
     callerId: call.callerId,
     source: call.source,
     destination: call.destination,
@@ -2477,10 +2487,8 @@ function protocolDirectionKey(value) {
   return text;
 }
 
-function protocolMatchScore(call, event) {
+function protocolMatchScore(call, event, callTime = reportCallTime(call), eventTime = parseFlexibleDate(event.createdAt)?.getTime() || 0) {
   if (call.protocol) return -1;
-  const callTime = reportCallTime(call);
-  const eventTime = parseFlexibleDate(event.createdAt)?.getTime() || 0;
   if (!callTime || !eventTime) return -1;
   const distance = Math.abs(callTime - eventTime);
   if (distance > 12 * 60 * 1000) return -1;
@@ -2502,17 +2510,22 @@ function protocolMatchScore(call, event) {
 
 async function attachCallProtocols(calls) {
   const events = (await readCallProtocolEvents()).filter((event) => event.protocol);
+  return attachCallProtocolEvents(calls, events);
+}
+
+function attachCallProtocolEvents(calls, events) {
   if (!events.length) return calls;
+  const timedEvents = events.map((event, index) => ({ event, index, time: parseFlexibleDate(event.createdAt)?.getTime() || 0 }));
   const used = new Set();
-  [...calls]
-    .sort((left, right) => reportCallTime(left) - reportCallTime(right))
-    .forEach((call) => {
+  calls.map((call) => ({ call, time: reportCallTime(call) }))
+    .sort((left, right) => left.time - right.time)
+    .forEach(({ call, time }) => {
       if (call.protocol) return;
       let best = null;
       let bestScore = -1;
-      events.forEach((event, index) => {
-        if (used.has(index)) return;
-        const score = protocolMatchScore(call, event);
+      timedEvents.forEach(({ event, index, time: eventTime }) => {
+        if (used.has(index) || !time || !eventTime || Math.abs(time - eventTime) > 12 * 60 * 1000) return;
+        const score = protocolMatchScore(call, event, time, eventTime);
         if (score > bestScore) {
           best = { event, index };
           bestScore = score;
@@ -2740,7 +2753,7 @@ async function readPbxReportCalls(config, options = {}) {
     }
   }
   const baseCalls = reportCallsCache.pending ? await reportCallsCache.pending : reportCallsCache.value || [];
-  const calls = structuredClone(baseCalls);
+  const calls = structuredClone(options.limit ? recentReportCalls(baseCalls, options.limit) : baseCalls);
   if (!options.skipRecordingScan) {
     const recordingIndex = await buildRecordingIndex(config);
     calls.forEach((call) => attachRecordingState(call, recordingIndex));
@@ -4786,6 +4799,8 @@ module.exports = {
   app,
   startServer,
   _test: {
+    attachCallProtocolEvents,
+    protocolMatchScore,
     collapseReportCallLegs,
     spyEndpointForMonitor,
     configForUser,
