@@ -484,6 +484,13 @@ async function requireAuth(req, res, next) {
   if (current.mustChangePassword && !passwordChangeRoutes.has(req.path)) {
     return res.status(403).json({ error: "Troque a senha inicial antes de acessar o sistema", mustChangePassword: true });
   }
+  const readMenus = req.path.startsWith("/api/pbx/recordings/") ? ["audios", "reports"]
+    : req.path.startsWith("/api/pbx/reports/") || req.path === "/api/reports" ? ["reports", "overview", "audios"]
+    : ["/api/pbx-status", "/api/inbound-calls"].includes(req.path) ? ["status", "overview", "reports", "security", "logs"]
+    : req.path.startsWith("/api/monitor/") || req.path.startsWith("/api/pbx/monitor/") ? ["status"] : null;
+  if (readMenus && !readMenus.some((menu) => hasMenuAccess(req, menu))) {
+    return res.status(403).json({ error: "Voce nao tem acesso a este modulo" });
+  }
   return next();
 }
 
@@ -493,10 +500,26 @@ function userRole(req) {
 
 function requireAdmin(req, res, next) {
   if (userRole(req) === "admin") return next();
+  const requestPath = String(req.path || "");
+  const menu = requestPath.startsWith("/api/dialer/") ? "dialer"
+    : requestPath.startsWith("/api/ivr-audios") ? "audios" : null;
+  if (menu && hasMenuAccess(req, menu)) return next();
+  if (req.method === "PATCH" && req.path === "/api/config/apply" && canEditConfigSections(req, req.body?.sections)) return next();
   return res.status(403).json({ error: "Acao restrita a administradores" });
 }
 
+function hasMenuAccess(req, menu) {
+  return userRole(req) === "admin" || req.session?.user?.permissions?.menus?.[menu] === true;
+}
+
+function canEditConfigSections(req, sections) {
+  if (!sections || typeof sections !== "object" || Array.isArray(sections)) return false;
+  const keys = Object.keys(sections);
+  return keys.length > 0 && keys.every((key) => ["queues", "ringGroups"].includes(key)) && hasMenuAccess(req, "queues");
+}
+
 function requireSupervisor(req, res, next) {
+  if (hasMenuAccess(req, "status")) return next();
   if (["admin", "supervisor"].includes(userRole(req))) return next();
   return res.status(403).json({ error: "Acao restrita a supervisores" });
 }
@@ -2829,30 +2852,15 @@ function attachRecordingState(call, recordingIndex) {
 function userReportScope(req, config) {
   const user = req.session?.user || {};
   const role = user.role || (user.username === "admin" ? "admin" : "user");
-  if (role === "admin") return { role, all: true, canListen: true, canDownload: true };
-  if (role === "supervisor") {
-    return {
-      role,
-      all: false,
-      departments: user.departments || [],
-      extensions: user.allowedExtensions || [],
-      canListen: user.permissions?.listenRecordings !== false,
-      canDownload: Boolean(user.permissions?.downloadRecordings)
-    };
-  }
-  const ownExtension = user.extension || (config.extensions || []).find((extension) => extension.name === user.username)?.number || user.username;
   return {
-    role,
-    all: false,
-    extensions: [ownExtension].filter(Boolean),
-    departments: [],
-    canListen: Boolean(user.permissions?.listenRecordings),
-    canDownload: Boolean(user.permissions?.downloadRecordings)
+    role, all: true,
+    canListen: hasMenuAccess(req, "audios") || hasMenuAccess(req, "reports"),
+    canDownload: hasMenuAccess(req, "audios") || hasMenuAccess(req, "reports")
   };
 }
 
 function userCanInterveneLiveCalls(req) {
-  return userRole(req) === "admin" || Boolean(req.session?.user?.permissions?.interveneCalls);
+  return hasMenuAccess(req, "status");
 }
 
 function userCanMonitorExtension(req, config, extensionNumber) {
@@ -3963,9 +3971,9 @@ app.put("/api/users", requireAuth, requireAdmin, async (req, res) => {
       ...existing,
       username,
       role: String(item.role || "user"),
-      extension: String(item.extension || ""),
-      departments: Array.isArray(item.departments) ? item.departments.map(String).filter(Boolean) : [],
-      allowedExtensions: Array.isArray(item.allowedExtensions) ? item.allowedExtensions.map(String).filter(Boolean) : [],
+      extension: "",
+      departments: [],
+      allowedExtensions: [],
       permissions: item.permissions && typeof item.permissions === "object" ? item.permissions : {},
       mustChangePassword: Boolean(item.mustChangePassword),
       createdAt: existing.createdAt || new Date().toISOString(),
@@ -4098,7 +4106,7 @@ async function saveAndApplyConfig(req, previous, incoming) {
     await configUpdateAudit(req, previous, saved, incoming);
     pbxStatusCache = { revision: "", expiresAt: 0, value: null, pending: null };
     return {
-      config: withConfigRevision(saved),
+      config: withConfigRevision(configForUser(saved, req), saved),
       ...applied,
       durationMs: Date.now() - startedAt
     };
@@ -4799,6 +4807,8 @@ module.exports = {
   app,
   startServer,
   _test: {
+    hasMenuAccess,
+    canEditConfigSections,
     attachCallProtocolEvents,
     protocolMatchScore,
     collapseReportCallLegs,

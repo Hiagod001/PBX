@@ -321,7 +321,7 @@ const userMenuGroups = [
   }
 ];
 
-const adminOnlyTabs = new Set(["trunk", "extensions", "routing", "ivr", "dialer", "audios", "queues", "logs", "security", "audit", "users"]);
+const adminOnlyTabs = new Set(["trunk", "extensions", "routing", "ivr", "logs", "security", "audit", "users"]);
 
 const tabRoutes = {
   overview: "/resume",
@@ -497,7 +497,7 @@ function persistViewPreferences() {
 }
 
 function installLocalSaveActions() {
-  if (!state.config || !(state.user?.role === "admin" || state.user?.username === "admin")) return;
+  if (!state.config) return;
   const surfaces = {
     extensions: { label: "Salvar ramais", selector: "[data-extension-card][data-entity-editor]" },
     trunk: { label: "Salvar troncos", selector: "[data-trunk-card][data-entity-editor]" },
@@ -506,7 +506,7 @@ function installLocalSaveActions() {
     security: { label: "Salvar configuracao", selector: ".panel" }
   };
   Object.entries(surfaces).forEach(([tab, { label, selector }]) => {
-    if (!pages[tab]) return;
+    if (!pages[tab] || !canAccessTab(tab)) return;
     $all(selector, pages[tab]).forEach((card) => {
       if (!card.querySelector("input, select, textarea") || card.querySelector(":scope > .local-save-bar")) return;
       const bar = document.createElement("div");
@@ -2539,7 +2539,7 @@ function monitorSpyMode(value = "listen") {
 }
 
 function allowedMonitorSpyModes() {
-  const localModes = state.user?.role === "admin" || state.user?.permissions?.interveneCalls
+  const localModes = canAccessTab("status")
     ? ["listen", "whisper", "barge"]
     : ["listen"];
   const serverModes = Array.isArray(state.monitorSpy?.allowedModes) && state.monitorSpy.allowedModes.length
@@ -3245,7 +3245,7 @@ async function unpauseExtensionQueue() {
 function updateTopbarActions() {
   const editableTabs = ["trunk", "extensions", "routing", "ivr", "queues", "security"];
   const isAdmin = state.user?.role === "admin" || state.user?.username === "admin";
-  $("#saveBtn")?.classList.toggle("hidden", !isAdmin || !editableTabs.includes(state.activeTab));
+  $("#saveBtn")?.classList.toggle("hidden", !(isAdmin || state.activeTab === "queues" && canAccessTab("queues")) || !editableTabs.includes(state.activeTab));
 }
 
 async function loadConfig() {
@@ -6062,7 +6062,7 @@ function renderUsers() {
     return `
       <article class="panel user-card entity-list-card" data-user-summary-index="${index}">
         <div class="user-card-title"><span class="user-avatar"><i data-lucide="user-round"></i></span><div><h3>${escapeHtml(user.username || "novo")}</h3><span>${userIsAdmin ? "Administrador com acesso total" : `${escapeHtml(user.role || "user")} · ${userEnabledMenuCount} modulos`}</span></div></div>
-        <div class="list-card-meta"><span><strong>Ramal</strong>${escapeHtml(user.extension || "Nao vinculado")}</span><span><strong>Departamentos</strong>${escapeHtml((user.departments || []).join(", ") || "Todos")}</span><span><strong>Acesso</strong>${userIsAdmin ? "Total" : `${userEnabledMenuCount} modulo(s)`}</span></div>
+        <div class="list-card-meta"><span><strong>Ramais</strong>Todos</span><span><strong>Acesso</strong>${userIsAdmin ? "Total" : `${userEnabledMenuCount} modulo(s)`}</span></div>
         <div class="compact-card-actions"><button class="primary-btn compact" data-edit-user="${index}" type="button"><i data-lucide="pencil"></i>Editar</button><button class="icon-btn danger" data-remove-user="${index}" ${user.username === "admin" ? "disabled" : ""} title="Remover usuario"><i data-lucide="trash-2"></i></button></div>
       </article>`;
   }).join("");
@@ -6077,9 +6077,9 @@ function renderUsers() {
   const editor = editing ? `
     <article class="panel user-card entity-editor-shell" data-user-index="${editingIndex}" data-entity-editor>
       <div class="panel-header entity-editor-header"><div class="user-card-title"><span class="user-avatar"><i data-lucide="user-round"></i></span><div><p class="eyebrow">Editar usuario</p><h3>${escapeHtml(editing.username || "novo")}</h3><span>${isAdmin ? "Administrador com acesso total" : "Acesso personalizado"}</span></div></div><div class="compact-card-actions"><button class="secondary-btn" data-cancel-user-edit type="button"><i data-lucide="arrow-left"></i>Voltar para lista</button><button id="saveUsersBtn" class="primary-btn compact" type="button"><i data-lucide="save"></i>Salvar usuario</button><button class="icon-btn danger" data-remove-user="${editingIndex}" ${editing.username === "admin" ? "disabled" : ""} title="Remover usuario"><i data-lucide="trash-2"></i></button></div></div>
-      <div class="field-grid compact-grid"><label>Usuario<input data-user-field="username" value="${escapeHtml(editing.username || "")}" ${editing.username === "admin" ? "readonly" : ""} /></label><label>Nova senha<input data-user-field="password" type="password" placeholder="Manter senha atual" /></label><label>Perfil<select data-user-field="role">${["admin", "supervisor", "user"].map((role) => option(role, editing.role || "user", role)).join("")}</select></label><label>Ramal<input data-user-field="extension" value="${escapeHtml(editing.extension || "")}" /></label><label class="wide">Ramais permitidos<input data-user-field="allowedExtensions" value="${escapeHtml((editing.allowedExtensions || []).join(", "))}" placeholder="201, 202" /></label><label class="wide">Departamentos<input data-user-field="departments" value="${escapeHtml((editing.departments || []).join(", "))}" placeholder="Recepcao, Financeiro" /></label></div>
+      <div class="field-grid compact-grid"><label>Usuario<input data-user-field="username" value="${escapeHtml(editing.username || "")}" ${editing.username === "admin" ? "readonly" : ""} /></label><label>Nova senha<input data-user-field="password" type="password" placeholder="Manter senha atual" /></label><label>Perfil<select data-user-field="role">${["admin", "supervisor", "user"].map((role) => option(role, editing.role || "user", role)).join("")}</select></label></div>
       <section class="user-access-block"><div class="user-access-heading"><div><strong>Acesso aos modulos</strong><span>Defina quais areas ficam disponiveis para este usuario.</span></div><div class="user-access-actions"><span class="user-permission-summary" data-user-menu-count>${enabledMenuCount} de ${Object.keys(menuPermissions).length} modulos</span>${isAdmin ? `<span class="badge ok">Acesso total</span>` : `<button class="secondary-btn compact" type="button" data-user-toggle-menus="${editingIndex}"><i data-lucide="check-check"></i><span data-user-toggle-label>${enabledMenuCount === Object.keys(menuPermissions).length ? "Limpar" : "Selecionar todos"}</span></button>`}</div></div><div class="user-permission-groups">${menuGroups}</div></section>
-      <section class="user-access-block user-account-permissions"><div class="user-access-heading"><div><strong>Gravacoes e monitoramento</strong><span>Permissoes complementares da conta.</span></div></div><div class="user-setting-list"><label class="user-setting-option"><input type="checkbox" data-user-permission="listenRecordings" ${editing.permissions?.listenRecordings ? "checked" : ""}/><span><strong>Escutar gravacoes</strong><small>Reproduzir audios das chamadas.</small></span></label><label class="user-setting-option"><input type="checkbox" data-user-permission="downloadRecordings" ${editing.permissions?.downloadRecordings ? "checked" : ""}/><span><strong>Baixar gravacoes</strong><small>Salvar uma copia do audio.</small></span></label><label class="user-setting-option"><input type="checkbox" data-user-permission="interveneCalls" ${editing.permissions?.interveneCalls ? "checked" : ""}/><span><strong>Intervir em chamadas</strong><small>Usar sussurro e intervencao ao vivo.</small></span></label><label class="user-setting-option"><input type="checkbox" data-user-field="mustChangePassword" ${editing.mustChangePassword ? "checked" : ""}/><span><strong>Trocar senha no proximo login</strong><small>Solicitar uma nova senha ao entrar.</small></span></label></div></section>
+      <section class="user-access-block"><label class="user-setting-option"><input type="checkbox" data-user-field="mustChangePassword" ${editing.mustChangePassword ? "checked" : ""}/><span>Trocar senha no proximo login</span></label></section>
     </article>` : `
     <section class="panel"><div class="panel-header"><div><p class="eyebrow">Administracao</p><h3>Usuarios</h3><p class="microcopy">Consulte os usuarios cadastrados e abra somente a conta que deseja editar.</p></div><div class="report-header-actions"><button id="addUserBtn" class="primary-btn" type="button"><i data-lucide="plus"></i>Novo usuario</button><button id="saveUsersBtn" class="secondary-btn" type="button"><i data-lucide="save"></i>Salvar usuarios</button></div></div><div class="entity-list-grid">${rows || `<div class="governance-empty"><i data-lucide="users"></i><strong>Nenhum usuario cadastrado</strong><span>Cadastre um usuario para liberar acessos.</span></div>`}</div></section>`;
   pages.users.innerHTML = `<div class="section-grid">${editor || `<section class="panel"><div class="panel-header"><div><p class="eyebrow">Administracao</p><h3>Usuarios</h3><p class="microcopy">Consulte os usuarios cadastrados e abra somente a conta que deseja editar.</p></div><div class="report-header-actions"><button id="addUserBtn" class="primary-btn" type="button"><i data-lucide="plus"></i>Novo usuario</button><button id="saveUsersBtn" class="secondary-btn" type="button"><i data-lucide="save"></i>Salvar usuarios</button></div></div><div class="entity-list-grid">${rows || `<div class="governance-empty"><i data-lucide="users"></i><strong>Nenhum usuario cadastrado</strong><span>Cadastre um usuario para liberar acessos.</span></div>`}</div></section>`}</div>`;
@@ -6348,6 +6348,7 @@ async function saveConfig(scope = "") {
   const sections = Object.fromEntries(
     CONFIG_SECTION_KEYS
       .filter((key) => !scopeKeys[scope] || scopeKeys[scope].includes(key))
+      .filter((key) => state.user?.role === "admin" || canAccessTab("queues") && ["queues", "ringGroups"].includes(key))
       .filter((key) => JSON.stringify(state.config?.[key]) !== JSON.stringify(baseline?.[key]))
       .map((key) => [key, state.config[key]])
   );

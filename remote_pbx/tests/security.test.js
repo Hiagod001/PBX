@@ -20,6 +20,43 @@ function responseStub() {
   };
 }
 
+test("dialer operator can use assigned modules but cannot elevate access", () => {
+  const user = { role: "user", permissions: { menus: { dialer: true, queues: true, audios: true } } };
+  for (const [method, path, body, expected] of [
+    ["GET", "/api/dialer/campaigns", {}, true],
+    ["POST", "/api/dialer/campaigns", {}, true],
+    ["POST", "/api/ivr-audios", {}, true],
+    ["GET", "/api/users", {}, false],
+    ["PUT", "/api/users", {}, false],
+    ["PUT", "/api/config/apply", {}, false],
+    ["PATCH", "/api/config/apply", { sections: { queues: [] } }, true],
+    ["PATCH", "/api/config/apply", { sections: { queues: [], security: {} } }, false],
+    ["PATCH", "/api/config/apply", { sections: { extensions: [] } }, false]
+  ]) {
+    let allowed = false;
+    _test.requireAdmin({ method, path, body, session: { user } }, responseStub(), () => { allowed = true; });
+    assert.equal(allowed, expected, `${method} ${path} ${JSON.stringify(body)}`);
+  }
+  assert.equal(_test.hasMenuAccess({ session: { user } }, "users"), false);
+  assert.equal(_test.hasMenuAccess({ session: { user } }, "status"), false);
+  assert.equal(_test.canEditConfigSections({ session: { user: { role: "user" } } }, { queues: [] }), false);
+});
+
+test("management UI exposes only the assigned operator menus", () => {
+  const fs = require("node:fs");
+  const vm = require("node:vm");
+  const source = fs.readFileSync(require("node:path").join(__dirname, "../public/app.js"), "utf8");
+  const start = source.indexOf("function canAccessTab(");
+  const end = source.indexOf("function firstAllowedTab", start);
+  const declaration = source.match(/const adminOnlyTabs = new Set\([^;]+;/)[0];
+  const context = { state: { user: { username: "operator", role: "user", permissions: { menus: { dialer: true, queues: true, audios: true } } } }, menuPermissions: Object.fromEntries(["dialer", "queues", "audios", "users", "security", "status", "reports"].map(x => [x, x])) };
+  vm.runInNewContext(declaration + source.slice(start, end), context);
+  for (const menu of ["dialer", "queues", "audios"]) assert.equal(context.canAccessTab(menu), true);
+  for (const menu of ["users", "security", "status", "reports"]) assert.equal(context.canAccessTab(menu), false);
+  assert.equal(source.includes('data-user-field="extension"'), false);
+  assert.equal(source.includes('data-user-field="allowedExtensions"'), false);
+});
+
 test("administrative middleware blocks regular users", () => {
   const response = responseStub();
   let nextCalled = false;
@@ -66,7 +103,7 @@ test("audit payloads redact nested credentials", () => {
   assert.equal(result.safe, "visible");
 });
 
-test("live monitoring respects supervisor extension scope", () => {
+test("management users can access all extensions without extension assignments", () => {
   const config = {
     extensions: [
       { number: "505", department: "Suporte" },
@@ -77,15 +114,15 @@ test("live monitoring respects supervisor extension scope", () => {
     session: { user: { role: "supervisor", allowedExtensions: ["505"], departments: [] } }
   };
   assert.equal(_test.userCanMonitorExtension(supervisor, config, "505"), true);
-  assert.equal(_test.userCanMonitorExtension(supervisor, config, "701"), false);
+  assert.equal(_test.userCanMonitorExtension(supervisor, config, "701"), true);
   assert.equal(_test.userCanMonitorExtension({ session: { user: { role: "admin" } } }, config, "701"), true);
 });
 
-test("call intervention requires explicit supervisor permission", () => {
+test("call intervention follows the monitor menu permission", () => {
   assert.equal(_test.userCanInterveneLiveCalls({ session: { user: { role: "admin" } } }), true);
   assert.equal(_test.userCanInterveneLiveCalls({ session: { user: { role: "supervisor", permissions: {} } } }), false);
   assert.equal(
-    _test.userCanInterveneLiveCalls({ session: { user: { role: "supervisor", permissions: { interveneCalls: true } } } }),
+    _test.userCanInterveneLiveCalls({ session: { user: { role: "user", permissions: { menus: { status: true } } } } }),
     true
   );
 });
