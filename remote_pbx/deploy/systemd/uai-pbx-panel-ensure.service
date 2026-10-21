@@ -1,0 +1,14 @@
+[Unit]
+Description=Restore missing UAI PBX panel process
+Requires=pm2-agenda.service
+After=pm2-agenda.service network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=agenda
+Environment=PM2_HOME=/home/agenda/.pm2
+Environment=PATH=/home/agenda/.nvm/versions/node/v24.13.0/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/opt/pbx-sip-admin
+ExecStart=/home/agenda/.nvm/versions/node/v24.13.0/bin/node /opt/pbx-sip-admin/scripts/ensure-panel.cjs
+TimeoutStartSec=45

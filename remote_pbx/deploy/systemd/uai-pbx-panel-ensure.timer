@@ -1,0 +1,11 @@
+[Unit]
+Description=Check UAI PBX panel startup independently of PM2 saved list
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+AccuracySec=5
+Unit=uai-pbx-panel-ensure.service
+
+[Install]
+WantedBy=timers.target
