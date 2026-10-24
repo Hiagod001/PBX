@@ -4631,14 +4631,15 @@ app.get("/api/trunks/registrations", requireAuth, requireAdmin, async (_req, res
 });
 
 app.get("/api/dialer/campaigns", requireAuth, requireAdmin, async (_req, res) => {
-  const config = await getConfig();
-  const campaigns = await readDialerCampaigns();
+  const [config, campaigns, audios] = await Promise.all([getConfig(), readDialerCampaigns(), listIvrAudios()]);
+  // Registration health must not hold up the campaign list.
+  void dialerTrunkHealth(config).catch(() => {});
   res.json({
     campaigns: campaigns.map(publicDialerCampaign),
     destinations: dialerDestinationOptions(config),
     trunks: configTrunks(config),
-    trunkHealth: await dialerTrunkHealth(config).catch(() => ({})),
-    audios: await listIvrAudios()
+    trunkHealth: dialerTrunkHealthCache.values || {},
+    audios
   });
 });
 

@@ -3272,6 +3272,7 @@ async function loadConfig() {
   state.config = await api("/api/config");
   state.configBaseline = JSON.parse(JSON.stringify(state.config));
   renderAll();
+  if (canAccessTab("dialer")) void loadDialerCampaigns({ background: true }).catch(() => {});
 }
 
 function renderAll() {
@@ -5027,6 +5028,8 @@ function currentDialerFormCampaign() {
 
 function renderDialerCampaignRows() {
   if (!state.dialerCampaigns.length) {
+    if (state.dialerCampaignsError) return `<div class="governance-empty" role="alert"><strong>Nao foi possivel carregar as campanhas.</strong><span>Use Atualizar para tentar novamente.</span></div>`;
+    if (!state.dialerCampaignsLoaded) return `<div class="governance-empty" role="status" aria-live="polite"><i data-lucide="loader-circle"></i><strong>Carregando campanhas...</strong></div>`;
     return `<div class="governance-empty"><i data-lucide="phone-call"></i><strong>Nenhuma campanha criada.</strong></div>`;
   }
   return state.dialerCampaigns
@@ -5070,7 +5073,7 @@ function renderDialerCampaignRows() {
 function renderDialerCampaignLiveData() {
   const count = $("[data-dialer-campaign-count]", pages.dialer);
   const rows = $("[data-dialer-campaign-rows]", pages.dialer);
-  if (count) count.textContent = `${state.dialerCampaigns.length} campanhas`;
+  if (count) count.textContent = state.dialerCampaignsLoaded ? `${state.dialerCampaigns.length} campanhas` : "Carregando...";
   if (rows) {
     const html = renderDialerCampaignRows();
     if (rows._lastDialerHtml !== html) {
@@ -5120,7 +5123,7 @@ function renderDialer() {
       ${editor}
       <section class="panel">
         <div class="panel-header"><div><p class="eyebrow">Operacao</p><h3>Campanhas</h3><p class="microcopy">Consulte as campanhas e abra somente aquela que deseja editar.</p></div><div class="compact-card-actions"><button class="secondary-btn compact" type="button" data-refresh-dialer><i data-lucide="refresh-cw"></i>Atualizar</button><button class="primary-btn compact" type="button" data-new-dialer><i data-lucide="plus"></i>Nova campanha</button></div></div>
-        <span class="badge" data-dialer-campaign-count>${state.dialerCampaigns.length} campanhas</span>
+        <span class="badge" data-dialer-campaign-count>${state.dialerCampaignsLoaded ? `${state.dialerCampaigns.length} campanhas` : "Carregando..."}</span>
         <div class="entity-list-grid" data-dialer-campaign-rows>${campaignRowsHtml}</div>
       </section>
     </div>`;
@@ -6672,8 +6675,18 @@ async function loadDialerCampaigns({ preserveDraft = false, background = false }
   if (!dialerCampaignsRequest) {
     dialerCampaignsRequest = api("/api/dialer/campaigns").finally(() => { dialerCampaignsRequest = null; });
   }
-  const response = await dialerCampaignsRequest;
-  state.dialerCampaigns = response.campaigns || [];
+  let response;
+  state.dialerCampaignsError = false;
+  try {
+    response = await dialerCampaignsRequest;
+    if (!Array.isArray(response.campaigns)) throw new Error("Resposta de campanhas invalida. Tente atualizar novamente.");
+  } catch (error) {
+    state.dialerCampaignsError = true;
+    if (state.activeTab === "dialer") renderDialerCampaignLiveData();
+    throw error;
+  }
+  state.dialerCampaigns = response.campaigns;
+  state.dialerCampaignsLoaded = true;
   state.dialerDestinations = response.destinations || { queues: [], extensions: [] };
   state.dialerTrunks = response.trunks || ensureConfigTrunks().filter((trunk) => trunk.active !== false && trunk.sipServer);
   state.dialerTrunkHealth = response.trunkHealth || {};
