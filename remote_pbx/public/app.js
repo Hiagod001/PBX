@@ -1868,7 +1868,23 @@ function syncActiveTabUi() {
   updateTopbarActions();
 }
 
-async function loadTabData(tab = state.activeTab) {
+const tabDataRequests = new Map();
+function loadTabData(tab = state.activeTab) {
+  const key = `${state.user?.username || ""}:${tab}`;
+  if (tabDataRequests.has(key)) return tabDataRequests.get(key);
+  const pending = fetchTabData(tab).finally(() => {
+    if (tabDataRequests.get(key) === pending) tabDataRequests.delete(key);
+  });
+  tabDataRequests.set(key, pending);
+  return pending;
+}
+
+function animateTabData(tab) {
+  if (state.activeTab !== tab || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  pages[tab]?.animate?.([{ opacity: 0.85, transform: "translateY(4px)" }, { opacity: 1, transform: "translateY(0)" }], { duration: 160, easing: "ease-out" });
+}
+
+async function fetchTabData(tab = state.activeTab) {
   if (!state.config) return;
   if (tab === "trunk") await loadTrunkRegistrations();
   if (tab === "overview") await Promise.all([loadPbxStatus(), loadOverviewData(state.overview.date)]);
@@ -1878,8 +1894,7 @@ async function loadTabData(tab = state.activeTab) {
   if (tab === "audit") await loadAudit();
   if (tab === "dialer") await loadDialerCampaigns();
   if (tab === "logs") {
-    await loadPbxStatus();
-    await loadOutboundDiagnostics($("#dialTestNumber")?.value || "", state.config?.extensions?.[0]?.number || "201");
+    await Promise.all([loadPbxStatus(), loadOutboundDiagnostics($("#dialTestNumber")?.value || "", state.config?.extensions?.[0]?.number || "201")]);
     renderLogs();
     iconRefresh();
   }
@@ -1897,7 +1912,7 @@ async function setActiveTab(tab, { push = false, replace = false, collect = fals
     setMessage("Seu usuario nao tem permissao para este menu.", "error");
     return false;
   }
-  if (collect && state.config) collectConfig();
+  if (collect && state.config && ["trunk", "extensions", "routing", "ivr", "queues", "security"].includes(state.activeTab)) collectConfig();
   const wasActiveTab = state.activeTab;
   state.activeTab = nextTab;
   if (nextTab === "ivr" && wasActiveTab !== "ivr" && !state.ivrFullscreen) {
@@ -1909,7 +1924,12 @@ async function setActiveTab(tab, { push = false, replace = false, collect = fals
   const route = routeForTab(nextTab);
   if (replace) window.history.replaceState({ tab: nextTab }, "", route);
   else if (push && normalizedRoutePath() !== normalizedRoutePath(route)) window.history.pushState({ tab: nextTab }, "", route);
-  if (load) await loadTabData(nextTab);
+  if (push) window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  if (wasActiveTab !== nextTab) animateTabData(nextTab);
+  if (load) {
+    await loadTabData(nextTab);
+    animateTabData(nextTab);
+  }
   return true;
 }
 
@@ -2197,7 +2217,7 @@ function addExtensionCallHistory(status) {
 
 function operatorHistoryRows() {
   const recentRows = (state.extensionStatus?.recentCalls || []).map((call) => {
-    const number = call.type === "outbound" ? call.destination : call.source;
+    const number = call.customerNumber || (call.type === "outbound" ? call.destination : call.source);
     return {
       id: call.id || call.uniqueId || `${call.startedAt}-${number}`,
       at: Date.parse(call.startedAt || "") || 0,
@@ -7297,7 +7317,6 @@ document.addEventListener("click", async (event) => {
 
     if (tabButton) {
       await setActiveTab(tabButton.dataset.tab, { push: true, collect: true, load: true });
-      window.scrollTo({ top: 0, left: 0, behavior: "instant" });
       return;
     }
 

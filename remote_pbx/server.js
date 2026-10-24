@@ -2605,11 +2605,12 @@ function extensionCallMatcher(extensionNumber) {
 }
 
 function compactExtensionCall(call) {
+  const campaignTarget = String(call.userField || call.userfield || "").match(/^dialer:[^:]+:(?:answered|accepted):([+\d]+)(?:$|[;\s])/i)?.[1];
   const dialedThroughTrunk = (String(call.lastData || "").match(/PJSIP\/([^@,\s]+)@([^,\s]+)/i) || []);
   const browserOrigin = /PJSIP\/web-/i.test(`${call.channel || ""} ${call.destinationChannel || ""}`);
-  const customerNumber = call.type === "inbound"
+  const customerNumber = campaignTarget || (call.type === "inbound"
     ? call.callerId || call.source || call.src || ""
-    : dialedThroughTrunk[1] || call.destination || call.originalDestination || call.dst || "";
+    : dialedThroughTrunk[1] || call.destination || call.originalDestination || call.dst || "");
   return {
     id: call.id,
     protocol: call.protocol || "",
@@ -4831,6 +4832,7 @@ module.exports = {
   app,
   startServer,
   _test: {
+    compactExtensionCall,
     hasMenuAccess,
     canEditConfigSections,
     attachCallProtocolEvents,
