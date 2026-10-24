@@ -17,7 +17,8 @@ test('pause changes serialize and invalidate the status cache',()=>{
 test('hangup reads fresh status and accepts already completed calls',()=>{
  const source=fs.readFileSync(path.join(__dirname,'../server.js'),'utf8');
  const action=source.slice(source.indexOf('app.post("/api/extensions/action"'),source.indexOf('app.post("/api/change-password"'));
- assert.match(action,/readPbxStatus\(config, \{ fresh: true \}\)/);
+ assert.match(action,/parseChannelOutput\(await runAsteriskRead\("channels"\)\)/);
+ assert.doesNotMatch(action,/readPbxStatus\(/);
  assert.match(action,/alreadyEnded: true/);
  assert.match(action,/requestedChannel && !ownedChannel/);
 });

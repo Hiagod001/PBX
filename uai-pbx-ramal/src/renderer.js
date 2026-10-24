@@ -724,7 +724,8 @@ async function startSoftphone() {
         keepAliveDebounce: 10
       },
       sessionDescriptionHandlerFactoryOptions: {
-        constraints: { audio: audioConstraints(), video: false }
+        constraints: { audio: audioConstraints(), video: false },
+        iceGatheringTimeout: 750
       }
     });
 

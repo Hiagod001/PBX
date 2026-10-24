@@ -5,6 +5,52 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { _test } = require("../server");
 
+test("optimized monitor aggregation preserves extension matching and daily counts", async () => {
+  const source = fs.readFileSync(path.join(__dirname, "../server.js"), "utf8");
+  const start = source.indexOf("async function computeExtensionIdleIndex");
+  const end = source.indexOf("function normalizeReportStatus", start);
+  const today = new Date().toISOString().slice(0, 10);
+  const calls = [
+    { startedAt: `${today}T10:00:00Z`, extension: "777", type: "outbound" },
+    { startedAt: `${today}T11:00:00Z`, channel: "PJSIP/web-777-abcdef", type: "inbound" },
+    { startedAt: `${today}T12:00:00Z`, channel: "PJSIP/1777-abcdef", type: "inbound" },
+    { startedAt: "invalid", extension: "777", type: "outbound" }
+  ];
+  const context = { Date, localDateKey: d => d.toISOString().slice(0, 10),
+    normalizeDigits: x => String(x || "").replace(/\D/g, ""),
+    parseFlexibleDate: x => Number.isFinite(Date.parse(x)) ? new Date(x) : null,
+    readPbxReportCalls: async () => calls };
+  vm.runInNewContext(source.slice(start, end), context);
+  const result = await context.computeExtensionIdleIndex({ extensions: [{ number: "777" }, { number: "1777" }] });
+  assert.equal(result.get("777").callsMadeToday, 1);
+  assert.equal(result.get("777").callsReceivedToday, 1);
+  assert.equal(result.get("777").lastCallActivityAt, `${today}T11:00:00.000Z`);
+  assert.equal(result.get("1777").callsReceivedToday, 1);
+});
+
+test("historical monitor counters share pending work and expire independently of live channels", async () => {
+  const source = fs.readFileSync(path.join(__dirname, "../server.js"), "utf8");
+  const start = source.indexOf("let extensionIdleCache =");
+  const end = source.indexOf("async function computeExtensionIdleIndex", start);
+  let reads = 0, now = 0, day = "today";
+  const context = { Date: { now: () => now }, configRevision: c => c.version, localDateKey: () => day,
+    computeExtensionIdleIndex: async () => { reads++; return new Map(); } };
+  vm.runInNewContext(source.slice(start, end), context);
+  const config = { version: "a" };
+  await Promise.all([context.buildExtensionIdleIndex(config), context.buildExtensionIdleIndex(config)]);
+  assert.equal(reads, 1);
+  await context.buildExtensionIdleIndex(config);
+  assert.equal(reads, 1);
+  now = 15001;
+  await context.buildExtensionIdleIndex(config);
+  assert.equal(reads, 2);
+  await context.buildExtensionIdleIndex({ version: "b" });
+  assert.equal(reads, 3);
+  day = "tomorrow";
+  await context.buildExtensionIdleIndex({ version: "b" });
+  assert.equal(reads, 4);
+});
+
 test("local date formatter is reused and respects timezone changes and midnight", () => {
   const source = fs.readFileSync(path.join(__dirname, "../server.js"), "utf8");
   const start = source.indexOf("let localDateFormatter;");

@@ -2099,22 +2099,44 @@ function secondsToHuman(totalSeconds) {
   return `${seconds}s`;
 }
 
+let extensionIdleCache = { key: "", expiresAt: 0, value: null, pending: null };
 async function buildExtensionIdleIndex(config) {
+  const key = `${configRevision(config)}:${localDateKey()}`;
+  if (extensionIdleCache.key === key) {
+    if (extensionIdleCache.pending) return extensionIdleCache.pending;
+    if (extensionIdleCache.expiresAt > Date.now()) return extensionIdleCache.value;
+  }
+  const entry = { key, expiresAt: 0, value: null, pending: null };
+  extensionIdleCache = entry;
+  entry.pending = computeExtensionIdleIndex(config);
+  try {
+    entry.value = await entry.pending;
+    entry.expiresAt = Date.now() + 15000;
+    return entry.value;
+  } finally {
+    entry.pending = null;
+  }
+}
+
+async function computeExtensionIdleIndex(config) {
   const now = Date.now();
   const today = localDateKey(new Date(now));
   const extensions = (config.extensions || []).map((extension) => String(extension.number || "")).filter(Boolean);
   if (!extensions.length) return new Map();
 
-  const calls = await readPbxReportCalls(config, { skipRecordingScan: true });
+  const calls = await readPbxReportCalls(config, { skipRecordingScan: true, readOnly: true });
   const statsByExtension = new Map(extensions.map((number) => [number, { callsMadeToday: 0, callsReceivedToday: 0, lastCallActivityAt: "" }]));
+  const matchers = extensions.map((number) => ({ number, digits: normalizeDigits(number), pattern: new RegExp(`(?:PJSIP|SIP|Local)/(?:web-)?${normalizeDigits(number)}(?:[-/@]|\\b)|\\b${normalizeDigits(number)}\\b`, "i") }));
 
   calls.forEach((call) => {
     const receivedAt = parseFlexibleDate(call.endedAt || call.answeredAt || call.startedAt || call.calldate);
     if (!receivedAt) return;
     const callDate = localDateKey(receivedAt);
 
-    extensions.forEach((number) => {
-      if (!protocolExtensionMatches(number, call)) return;
+    const values = [call.extension, call.source, call.destination, call.originalDestination, call.src, call.dst].map(normalizeDigits);
+    const channels = `${call.channel || ""} ${call.destinationChannel || call.dstchannel || ""} ${call.lastData || call.lastdata || ""}`;
+    matchers.forEach(({ number, digits, pattern }) => {
+      if (!digits || !values.includes(digits) && !pattern.test(channels)) return;
       const stats = statsByExtension.get(number) || { callsMadeToday: 0, callsReceivedToday: 0, lastCallActivityAt: "" };
       if (callDate === today) {
         if (call.type === "outbound") stats.callsMadeToday += 1;
@@ -2776,6 +2798,8 @@ async function readPbxReportCalls(config, options = {}) {
     }
   }
   const baseCalls = reportCallsCache.pending ? await reportCallsCache.pending : reportCallsCache.value || [];
+  // Internal aggregation only: callers must not mutate this shared snapshot.
+  if (options.readOnly && options.skipRecordingScan) return baseCalls;
   const calls = structuredClone(options.limit ? recentReportCalls(baseCalls, options.limit) : baseCalls);
   if (!options.skipRecordingScan) {
     const recordingIndex = await buildRecordingIndex(config);
@@ -3917,7 +3941,7 @@ app.post("/api/extensions/action", requireExtensionAuth, async (req, res) => {
     }
     if (action === "hangup") {
       const config = await getConfig();
-      const status = await readPbxStatus(config, { fresh: true });
+      const status = { activeChannels: parseChannelOutput(await runAsteriskRead("channels")) };
       const requestedChannel = String(channel || "").trim();
       const ownedChannel = ownedChannelForRequest(status, config, req.session.extension.number, requestedChannel);
       if (requestedChannel && !ownedChannel) return res.status(403).json({ error: "Canal fora da chamada ativa deste ramal" });
