@@ -1869,11 +1869,17 @@ function syncActiveTabUi() {
 }
 
 const tabDataRequests = new Map();
+const tabDataLoadedAt = new Map();
 function loadTabData(tab = state.activeTab) {
   const key = `${state.user?.username || ""}:${tab}`;
   if (tabDataRequests.has(key)) return tabDataRequests.get(key);
-  const pending = fetchTabData(tab).finally(() => {
+  if (["reports", "audios", "audit", "logs"].includes(tab) && Date.now() - (tabDataLoadedAt.get(key) || 0) < 5000) return Promise.resolve();
+  pages[tab]?.setAttribute("aria-busy", "true");
+  const pending = fetchTabData(tab).then(() => {
+    tabDataLoadedAt.set(key, Date.now());
+  }).finally(() => {
     if (tabDataRequests.get(key) === pending) tabDataRequests.delete(key);
+    pages[tab]?.setAttribute("aria-busy", "false");
   });
   tabDataRequests.set(key, pending);
   return pending;
@@ -6505,6 +6511,9 @@ async function loadRecordingLibrary(extra = {}) {
 
 async function loadReports(extra = {}) {
   state.pbxReports.loading = true;
+  renderReports();
+  iconRefresh();
+  try {
   const meta = state.pbxReports.meta || {};
   const params = reportFilterParams({
     page: extra.page || meta.page || 1,
@@ -6539,8 +6548,11 @@ async function loadReports(extra = {}) {
     lastApp: call.lastApp
   }));
   state.inboundCalls = inbound || { cdr: [], rejected: [] };
+  } finally {
+  state.pbxReports.loading = false;
   renderReports();
   iconRefresh();
+  }
 }
 
 function collectUsersFromDom() {

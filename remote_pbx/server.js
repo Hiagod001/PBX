@@ -2784,6 +2784,8 @@ async function readPbxReportCallsFresh(config) {
   return calls;
 }
 
+const reportRecordingSnapshots = new WeakMap();
+
 async function readPbxReportCalls(config, options = {}) {
   const revision = configRevision(config);
   const now = Date.now();
@@ -2801,12 +2803,26 @@ async function readPbxReportCalls(config, options = {}) {
   const baseCalls = reportCallsCache.pending ? await reportCallsCache.pending : reportCallsCache.value || [];
   // Internal aggregation only: callers must not mutate this shared snapshot.
   if (options.readOnly && options.skipRecordingScan) return baseCalls;
-  const calls = structuredClone(options.limit ? recentReportCalls(baseCalls, options.limit) : baseCalls);
+  if (options.limit) {
+    const calls = structuredClone(recentReportCalls(baseCalls, options.limit));
+    if (!options.skipRecordingScan) {
+      const index = await buildRecordingIndex(config);
+      calls.forEach((call) => attachRecordingState(call, index));
+    }
+    return calls;
+  }
+  let snapshot = baseCalls;
   if (!options.skipRecordingScan) {
     const recordingIndex = await buildRecordingIndex(config);
-    calls.forEach((call) => attachRecordingState(call, recordingIndex));
+    let enriched = reportRecordingSnapshots.get(baseCalls);
+    if (!enriched || enriched.index !== recordingIndex) {
+      const calls = baseCalls.map((call) => attachRecordingState({ ...call }, recordingIndex));
+      enriched = { index: recordingIndex, calls };
+      reportRecordingSnapshots.set(baseCalls, enriched);
+    }
+    snapshot = enriched.calls;
   }
-  return calls;
+  return options.readOnly ? snapshot : structuredClone(snapshot);
 }
 
 async function buildRecordingIndexFresh(config) {
@@ -2857,7 +2873,7 @@ function attachRecordingState(call, recordingIndex) {
   const stamp = started
     ? `${started.getFullYear()}${String(started.getMonth() + 1).padStart(2, "0")}${String(started.getDate()).padStart(2, "0")}-${String(started.getHours()).padStart(2, "0")}${String(started.getMinutes()).padStart(2, "0")}`
     : "";
-  const candidates = recordingIndex.filter((file) => {
+  const found = recordingIndex.find((file) => {
     const name = file.name;
     if (recordingFile && name === recordingFile) return true;
     if (call.uniqueId && name.includes(call.uniqueId)) return true;
@@ -2865,7 +2881,6 @@ function attachRecordingState(call, recordingIndex) {
     if (stamp && name.includes(stamp) && call.extension && name.includes(String(call.extension))) return true;
     return false;
   });
-  const found = candidates[0];
   call.recordingExists = Boolean(found);
   call.hasRecording = Boolean(found || recordingFile);
   call.recordingPlayable = Boolean(found && browserRecordingExtensions.has(found.extension));
@@ -3473,10 +3488,10 @@ async function reportDataForRequest(req, { includeRecordings = true } = {}) {
   const config = await getConfig();
   const scope = userReportScope(req, config);
   const filters = parseReportFilters(req.query || {});
-  const calls = await readPbxReportCalls(config, { skipRecordingScan: !includeRecordings });
+  const calls = await readPbxReportCalls(config, { skipRecordingScan: !includeRecordings, readOnly: true });
   const scoped = applyReportScope(calls, scope);
   const filtered = applyReportFilters(scoped, filters);
-  return { config, scope, filters, calls: filtered };
+  return { config, scope, filters, calls: structuredClone(filtered) };
 }
 
 async function readInboundCallLogs(config, scope) {

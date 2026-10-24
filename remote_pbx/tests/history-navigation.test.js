@@ -15,19 +15,25 @@ test('campaign history prefers original customer over trunk caller ID after queu
   assert.equal(_test.compactExtensionCall({ type: 'outbound', destination: '34912345678' }).customerNumber, '34912345678');
 });
 
-test('rapid navigation shares in-flight loads, but reloads after completion', async () => {
+test('rapid navigation shares loads and briefly reuses completed report data', async () => {
   const source = fs.readFileSync(path.join(__dirname, '../public/app.js'), 'utf8');
   const code = source.slice(source.indexOf('const tabDataRequests ='), source.indexOf('function animateTabData'));
   let resolve, requests = 0;
-  const context = { state: { user: { username: 'admin' } }, fetchTabData: () => { requests++; return new Promise(r => { resolve = r; }); } };
+  let now = 10000;
+  const busy = [];
+  const context = { Date: { now: () => now }, pages: { reports: { setAttribute: (name, value) => busy.push(value) } }, state: { user: { username: 'admin' } }, fetchTabData: () => { requests++; return new Promise(r => { resolve = r; }); } };
   vm.runInNewContext(code, context);
   const a = context.loadTabData('reports');
   assert.equal(context.loadTabData('reports'), a);
   assert.equal(requests, 1);
   resolve(); await a;
+  await context.loadTabData('reports');
+  assert.equal(requests, 1);
+  now += 5001;
   const b = context.loadTabData('reports');
   assert.equal(requests, 2);
   resolve(); await b;
+  assert.deepEqual(busy, ['true', 'false', 'true', 'false']);
 });
 
 test('navigation animation respects reduced motion and never animates a stale menu', () => {
