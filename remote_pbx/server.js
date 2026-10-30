@@ -50,6 +50,7 @@ const callProtocolsPath = path.join(__dirname, "data", "call-protocols.json");
 const extensionPausePath = path.join(__dirname, "data", "extension-pauses.json");
 const extensionPauseHistoryPath = path.join(__dirname, "data", "extension-pause-history.json");
 const dialerCampaignsPath = path.join(__dirname, "data", "dialer-campaigns.json");
+const campaignStore = require("./src/dialer-store").dialerStore(dialerCampaignsPath);
 const dialerOutgoingDir = path.join(__dirname, "data", "dialer-outgoing");
 const dialerSpoolDir = process.env.ASTERISK_DIALER_SPOOL_DIR || "/var/spool/asterisk/outgoing";
 const dialerArchiveDir = process.env.ASTERISK_DIALER_ARCHIVE_DIR || "/var/spool/asterisk/outgoing_done";
@@ -1010,6 +1011,8 @@ function dialerAuditSnapshot(campaign) {
 }
 
 async function readDialerCampaigns() {
+  const stored = await campaignStore.read();
+  if (stored) return stored;
   const payload = (await fs.readJson(dialerCampaignsPath).catch((error) => {
     if (error.code === "ENOENT") return { campaigns: [] };
     throw error;
@@ -1018,6 +1021,7 @@ async function readDialerCampaigns() {
 }
 
 async function writeDialerCampaigns(campaigns) {
+  if (await campaignStore.write(campaigns)) return campaigns;
   await fs.ensureDir(path.dirname(dialerCampaignsPath));
   const temporary = `${dialerCampaignsPath}.${process.pid}.tmp`;
   try {
@@ -1722,7 +1726,7 @@ async function readPbxStatusFresh(config) {
     runAsteriskRead("channels").catch(() => ""),
     readRegistrationLogs(),
     readExtensionPauses(),
-    buildExtensionIdleIndex(config).catch(() => new Map())
+    monitorHistoricalStats(config)
   ]);
   const endpoints = parseEndpointOutput(endpointOutput);
   const registrations = parseRegistrationsOutput(registrationOutput);
@@ -2100,13 +2104,20 @@ function secondsToHuman(totalSeconds) {
 }
 
 let extensionIdleCache = { key: "", expiresAt: 0, value: null, pending: null };
+function monitorHistoricalStats(config) {
+  const key = `${configRevision(config)}:${localDateKey()}`;
+  const previous = extensionIdleCache.key === key ? extensionIdleCache.value : null;
+  void buildExtensionIdleIndex(config).catch((error) => console.warn("[monitor] Estatisticas pendentes:", error.message));
+  return previous || new Map();
+}
+
 async function buildExtensionIdleIndex(config) {
   const key = `${configRevision(config)}:${localDateKey()}`;
   if (extensionIdleCache.key === key) {
     if (extensionIdleCache.pending) return extensionIdleCache.pending;
     if (extensionIdleCache.expiresAt > Date.now()) return extensionIdleCache.value;
   }
-  const entry = { key, expiresAt: 0, value: null, pending: null };
+  const entry = { key, expiresAt: 0, value: extensionIdleCache.key === key ? extensionIdleCache.value : null, pending: null };
   extensionIdleCache = entry;
   entry.pending = computeExtensionIdleIndex(config);
   try {
@@ -2128,9 +2139,10 @@ async function computeExtensionIdleIndex(config) {
   const statsByExtension = new Map(extensions.map((number) => [number, { callsMadeToday: 0, callsReceivedToday: 0, lastCallActivityAt: "" }]));
   const matchers = extensions.map((number) => ({ number, digits: normalizeDigits(number), pattern: new RegExp(`(?:PJSIP|SIP|Local)/(?:web-)?${normalizeDigits(number)}(?:[-/@]|\\b)|\\b${normalizeDigits(number)}\\b`, "i") }));
 
-  calls.forEach((call) => {
+  let scanned = 0;
+  for (const call of calls) {
     const receivedAt = parseFlexibleDate(call.endedAt || call.answeredAt || call.startedAt || call.calldate);
-    if (!receivedAt) return;
+    if (!receivedAt) continue;
     const callDate = localDateKey(receivedAt);
 
     const values = [call.extension, call.source, call.destination, call.originalDestination, call.src, call.dst].map(normalizeDigits);
@@ -2146,7 +2158,8 @@ async function computeExtensionIdleIndex(config) {
       if (receivedAt.getTime() > currentLastMs) stats.lastCallActivityAt = receivedAt.toISOString();
       statsByExtension.set(number, stats);
     });
-  });
+    if (++scanned % 500 === 0) await new Promise(resolve => setImmediate(resolve));
+  }
 
   return new Map(
     extensions.map((number) => {
@@ -2756,14 +2769,17 @@ function collapseReportCallLegs(calls) {
   });
 }
 
-async function readPbxReportCallsFresh(config) {
-  const databaseRows = await getReportCdrRows();
+const mapReportCdrRows = require("./src/cdr-mapper").createCdrMapper(mapDbCdrRow);
+
+async function readPbxReportCallsFresh(config, filters = {}) {
+  const databaseRows = await getReportCdrRows(filters);
   if (databaseRows.length) {
-    const calls = collapseReportCallLegs(databaseRows.map((row, index) => mapDbCdrRow(row, index, config)));
+    const calls = collapseReportCallLegs(await mapReportCdrRows(databaseRows, config, configRevision(config)));
     await attachCallProtocols(calls);
     return calls;
   }
 
+  if (require("./src/db").isEnabled()) return [];
   const cdrPaths = await findCdrPaths();
   if (!cdrPaths.length) return [];
 
@@ -2785,10 +2801,25 @@ async function readPbxReportCallsFresh(config) {
 }
 
 const reportRecordingSnapshots = new WeakMap();
+const filteredReportSnapshots = new Map();
 
 async function readPbxReportCalls(config, options = {}) {
   const revision = configRevision(config);
   const now = Date.now();
+  let baseCalls;
+  if (options.query && Object.keys(options.query).length) {
+    const key = JSON.stringify([revision, options.query]);
+    let entry = filteredReportSnapshots.get(key);
+    if (!entry || (!entry.pending && entry.expiresAt <= now)) {
+      entry = { pending: readPbxReportCallsFresh(config, options.query), expiresAt: 0 };
+      filteredReportSnapshots.set(key, entry);
+      while (filteredReportSnapshots.size > 8) filteredReportSnapshots.delete(filteredReportSnapshots.keys().next().value);
+      entry.pending.then(value => { entry.value = value; entry.expiresAt = Date.now() + 5000; entry.pending = null; }).catch(() => {
+        if (filteredReportSnapshots.get(key) === entry) filteredReportSnapshots.delete(key);
+      });
+    }
+    baseCalls = entry.pending ? await entry.pending : entry.value;
+  } else {
   if (reportCallsCache.revision !== revision || reportCallsCache.expiresAt <= now) {
     if (!reportCallsCache.pending || reportCallsCache.revision !== revision) {
       const pending = readPbxReportCallsFresh(config);
@@ -2800,7 +2831,8 @@ async function readPbxReportCalls(config, options = {}) {
       });
     }
   }
-  const baseCalls = reportCallsCache.pending ? await reportCallsCache.pending : reportCallsCache.value || [];
+  baseCalls = reportCallsCache.pending ? await reportCallsCache.pending : reportCallsCache.value || [];
+  }
   // Internal aggregation only: callers must not mutate this shared snapshot.
   if (options.readOnly && options.skipRecordingScan) return baseCalls;
   if (options.limit) {
@@ -3488,7 +3520,12 @@ async function reportDataForRequest(req, { includeRecordings = true } = {}) {
   const config = await getConfig();
   const scope = userReportScope(req, config);
   const filters = parseReportFilters(req.query || {});
-  const calls = await readPbxReportCalls(config, { skipRecordingScan: !includeRecordings, readOnly: true });
+  const query = {};
+  const uniqueId = req.params?.uniqueid || req.params?.id;
+  if (uniqueId) query.uniqueId = uniqueId;
+  if (filters.dateStart && /^\d{4}-\d{2}-\d{2}$/.test(filters.dateStart)) query.dateStart = new Date(`${filters.dateStart}T00:00:00`).toISOString();
+  if (filters.dateEnd && /^\d{4}-\d{2}-\d{2}$/.test(filters.dateEnd)) query.dateEnd = new Date(`${filters.dateEnd}T23:59:59`).toISOString();
+  const calls = await readPbxReportCalls(config, { query, skipRecordingScan: !includeRecordings, readOnly: true });
   const scoped = applyReportScope(calls, scope);
   const filtered = applyReportFilters(scoped, filters);
   return { config, scope, filters, calls: structuredClone(filtered) };

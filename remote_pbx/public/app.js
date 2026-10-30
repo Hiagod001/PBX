@@ -6479,6 +6479,7 @@ function recordingFilterParams(extra = {}) {
 
 async function loadRecordingLibrary(extra = {}) {
   const library = state.recordingLibrary;
+  const requestId = library.requestId = (library.requestId || 0) + 1;
   const meta = library.meta || {};
   library.loading = true;
   if (state.activeTab === "audios") {
@@ -6497,19 +6498,25 @@ async function loadRecordingLibrary(extra = {}) {
       api(`/api/pbx/reports/calls?${params.toString()}`),
       api(`/api/pbx/reports/dashboard?${dashboardParams.toString()}`)
     ]);
+    if (library.requestId !== requestId) return;
     library.calls = callsResponse.data || [];
     library.meta = callsResponse.meta || library.meta;
     library.dashboard = dashboardResponse.dashboard || {};
+  } catch (error) {
+    if (library.requestId === requestId) throw error;
   } finally {
+    if (library.requestId === requestId) {
     library.loading = false;
     if (state.activeTab === "audios") {
       renderAudios();
       iconRefresh();
     }
+    }
   }
 }
 
 async function loadReports(extra = {}) {
+  const requestId = state.pbxReports.requestId = (state.pbxReports.requestId || 0) + 1;
   state.pbxReports.loading = true;
   renderReports();
   iconRefresh();
@@ -6529,6 +6536,7 @@ async function loadReports(extra = {}) {
     api(`/api/pbx/reports/pauses?${reportFilterParams().toString()}`),
     api("/api/inbound-calls").catch(() => ({ cdr: [], rejected: [] }))
   ]);
+  if (state.pbxReports.requestId !== requestId) return;
   state.pbxReports.calls = callsResponse.data || [];
   state.pbxReports.meta = callsResponse.meta || state.pbxReports.meta;
   state.pbxReports.dashboard = dashboardResponse.dashboard || {};
@@ -6548,10 +6556,14 @@ async function loadReports(extra = {}) {
     lastApp: call.lastApp
   }));
   state.inboundCalls = inbound || { cdr: [], rejected: [] };
+  } catch (error) {
+    if (state.pbxReports.requestId === requestId) throw error;
   } finally {
+  if (state.pbxReports.requestId === requestId) {
   state.pbxReports.loading = false;
   renderReports();
   iconRefresh();
+  }
   }
 }
 

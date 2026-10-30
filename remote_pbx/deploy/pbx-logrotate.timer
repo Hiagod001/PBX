@@ -1,0 +1,10 @@
+[Unit]
+Description=Check PBX log sizes hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

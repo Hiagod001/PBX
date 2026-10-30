@@ -254,3 +254,20 @@ CREATE TABLE IF NOT EXISTS pbx_recording_audit (
 CREATE INDEX IF NOT EXISTS idx_pbx_recording_audit_uniqueid ON pbx_recording_audit (uniqueid);
 CREATE INDEX IF NOT EXISTS idx_pbx_recording_audit_user_time ON pbx_recording_audit (username, accessed_at);
 CREATE INDEX IF NOT EXISTS idx_pbx_recording_audit_action_time ON pbx_recording_audit (action, accessed_at);
+
+CREATE TABLE IF NOT EXISTS pbx_dialer_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS pbx_dialer_campaigns (
+  id TEXT PRIMARY KEY,
+  position INTEGER NOT NULL,
+  payload JSONB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pbx_dialer_leads (
+  campaign_id TEXT NOT NULL REFERENCES pbx_dialer_campaigns(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  payload JSONB NOT NULL,
+  PRIMARY KEY (campaign_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_pbx_cdr_call_key ON pbx_cdr ((COALESCE(NULLIF(linkedid, ''), uniqueid)));

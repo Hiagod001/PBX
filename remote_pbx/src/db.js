@@ -618,8 +618,23 @@ async function readRecordingAuditEvents(limit = 500) {
   }));
 }
 
-async function getCdrRows() {
-  const result = await query("SELECT * FROM pbx_cdr ORDER BY calldate DESC LIMIT $1", [Number(process.env.PBX_CDR_DB_LIMIT || 50000)]);
+async function getCdrRows(filters = {}) {
+  const conditions = [];
+  const params = [];
+  const add = (sql, value) => { params.push(value); conditions.push(sql.replace("?", `$${params.length}`)); };
+  if (filters.uniqueId) add("uniqueid = ?", String(filters.uniqueId));
+  if (filters.dateStart) add("calldate >= ?::timestamptz", filters.dateStart);
+  if (filters.dateEnd) add("calldate <= ?::timestamptz", filters.dateEnd);
+  // Select complete linked calls before collapsing legs, including transfers across midnight.
+  const sql = conditions.length
+    ? `WITH selected AS (
+         SELECT COALESCE(NULLIF(linkedid, ''), uniqueid) AS call_key
+         FROM pbx_cdr WHERE ${conditions.join(" AND ")}
+       ) SELECT * FROM pbx_cdr
+       WHERE COALESCE(NULLIF(linkedid, ''), uniqueid) IN (SELECT call_key FROM selected)
+       ORDER BY calldate DESC`
+    : "SELECT * FROM pbx_cdr ORDER BY calldate DESC";
+  const result = await query(sql, params);
   return result?.rows || [];
 }
 
@@ -627,6 +642,7 @@ module.exports = {
   ensureDatabase,
   isEnabled,
   query,
+  transaction,
   saveConfig,
   getConfig,
   saveUsers,

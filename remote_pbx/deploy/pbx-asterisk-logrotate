@@ -1,0 +1,17 @@
+/var/log/asterisk/messages.log /var/log/asterisk/security.log /var/log/asterisk/dialer-dtmf-test.log /var/log/asterisk/dialer-test.log /var/log/asterisk/ivr-debug2 /var/log/asterisk/ivr-debug3 /var/log/asterisk/ivr-debug4 {
+    daily
+    maxsize 50M
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    dateext
+    dateformat -%Y%m%d-%H%M%S
+    su asterisk asterisk
+    create 0644 asterisk asterisk
+    sharedscripts
+    postrotate
+        /usr/sbin/asterisk -rx 'logger reload' >/dev/null 2>&1
+    endscript
+}

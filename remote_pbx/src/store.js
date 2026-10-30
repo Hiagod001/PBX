@@ -492,9 +492,9 @@ async function writeRecordingAuditEvent(event) {
   await fs.writeJson(auditLogPath, audit, { spaces: 2 });
 }
 
-async function getReportCdrRows() {
+async function getReportCdrRows(filters = {}) {
   await ensureStore();
-  return db.getCdrRows();
+  return db.getCdrRows(filters);
 }
 
 module.exports = {

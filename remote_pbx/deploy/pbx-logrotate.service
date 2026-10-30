@@ -1,0 +1,8 @@
+[Unit]
+Description=Rotate PBX Asterisk logs without restarting calls
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/logrotate /etc/logrotate.d/pbx-asterisk
+Nice=19
+IOSchedulingClass=idle
