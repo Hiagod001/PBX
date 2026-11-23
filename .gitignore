@@ -7,6 +7,14 @@
 !remote_pbx/**
 !uai-pbx-ramal/
 !uai-pbx-ramal/**
+!whatsapp-lab/
+!whatsapp-lab/**
+
+whatsapp-lab/.private/
+whatsapp-lab/target/
+whatsapp-lab/data/
+whatsapp-lab/.env
+whatsapp-lab/**/__pycache__/
 
 remote_pbx/node_modules/
 remote_pbx/generated/

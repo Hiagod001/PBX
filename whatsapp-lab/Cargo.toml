@@ -1,0 +1,23 @@
+[package]
+name = "uai-whatsapp-lab"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+async-channel = "2"
+axum = { version = "0.8", features = ["form"] }
+env_logger = "0.11"
+log = "0.4"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust", rev = "f8165f282008935732e0b26d6f5cca5038ecd222", default-features = false, features = ["sqlite-storage", "tokio-transport", "tokio-runtime", "ureq-client", "tokio-native", "signal", "voip"] }
+
+[profile.release]
+debug = 0
+strip = true

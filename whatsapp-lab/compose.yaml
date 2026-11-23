@@ -1,0 +1,29 @@
+services:
+  whatsapp-lab:
+    image: uai-whatsapp-lab:0.1.0
+    pull_policy: never
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:3098:8080"
+    env_file:
+      - /etc/dokploy/whatsapp-lab/lab.env
+    environment:
+      DATA_DIR: /data
+      ADMIN_SECRET_FILE: /run/secrets/lab-admin
+      RUST_LOG: "error,uai_whatsapp_lab=info"
+    volumes:
+      - /home/dokploy/whatsapp-lab/data:/data
+      - /home/dokploy/whatsapp-lab/admin-secret:/run/secrets/lab-admin:ro
+    cpus: 2
+    mem_limit: 2g
+    pids_limit: 256
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: ["/tmp:size=64m,noexec,nosuid"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
