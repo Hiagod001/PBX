@@ -763,7 +763,8 @@ function renderExtensions(config) {
   // This context is not included by any phone or trunk context. Only the trusted
   // originate helper supplies a one-use random token and validated parameters.
   lines.push("", "[pbx-supervision]");
-  lines.push("exten => _.,1,Set(PBX_SPY=${DB_DELETE(UAI_SUPERVISION/${EXTEN})})");
+  lines.push('exten => _[0-9a-f].,1,GotoIf($[${REGEX("^[0-9a-f]{32}$" ${EXTEN})}=0]?done)');
+  lines.push(" same => n,Set(PBX_SPY=${DB_DELETE(UAI_SUPERVISION/${EXTEN})})");
   lines.push(' same => n,GotoIf($["${PBX_SPY}"=""]?done)');
   lines.push(" same => n,Set(CDR(userfield)=pbx-supervision)");
   lines.push(" same => n,Set(PBX_SPY_TARGET=${CUT(PBX_SPY,|,1)})");
@@ -929,6 +930,7 @@ function renderModules() {
     "; Modulos minimos para PBX PJSIP: reduz ruido e evita drivers legados.",
     "load = app_chanspy.so",
     "load = app_dial.so",
+    "load = app_exec.so",
     "load = app_playback.so",
     "load = app_stack.so",
     "load = app_userevent.so",
@@ -1011,6 +1013,14 @@ function renderModules() {
 }
 
 async function generateAsteriskConfigs(config, targetDir = generatedDir) {
+  if (process.env.PBX_MIGRATION_TEST === "true") {
+    config = structuredClone(config);
+    config.trunk = {...config.trunk, active: false};
+    config.trunks = (config.trunks || []).map(t => ({...t, active: false}));
+    config.security.publicAddress = "";
+    config.recording.path = "/var/spool/asterisk/monitor";
+  }
+
   validateConfig(config);
   await fs.ensureDir(targetDir);
   const files = {

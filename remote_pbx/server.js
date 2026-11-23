@@ -2654,7 +2654,8 @@ function compactExtensionCall(call) {
 
 async function readRecentExtensionCalls(config, extensionNumber, limit = 50) {
   const since = Date.now() - 24 * 60 * 60 * 1000;
-  const calls = await readPbxReportCalls(config, { skipRecordingScan: true });
+  const calls = await readPbxReportCalls(config, { skipRecordingScan: true, readOnly: true,
+    query: { dateStart: new Date(Math.floor(since / 60000) * 60000).toISOString() } });
   return calls
     .filter(extensionCallMatcher(extensionNumber))
     .filter((call) => reportCallTime(call) >= since)
@@ -2825,7 +2826,7 @@ async function readPbxReportCalls(config, options = {}) {
       const pending = readPbxReportCallsFresh(config);
       reportCallsCache = { revision, expiresAt: 0, value: null, pending };
       pending.then((value) => {
-        if (reportCallsCache.pending === pending) reportCallsCache = { revision, expiresAt: Date.now() + 2000, value, pending: null };
+        if (reportCallsCache.pending === pending) reportCallsCache = { revision, expiresAt: Date.now() + 15000, value, pending: null };
       }).catch(() => {
         if (reportCallsCache.pending === pending) reportCallsCache = { revision: "", expiresAt: 0, value: null, pending: null };
       });
@@ -2932,17 +2933,21 @@ function userReportScope(req, config) {
 }
 
 function userCanInterveneLiveCalls(req) {
-  return hasMenuAccess(req, "status");
+  if (userRole(req) === "admin") return true;
+  return (userRole(req) === "supervisor" || hasMenuAccess(req, "status"))
+    && req.session?.user?.permissions?.interveneCalls === true;
 }
 
 function userCanMonitorExtension(req, config, extensionNumber) {
-  const scope = userReportScope(req, config);
-  if (scope.all) return true;
+  if (userRole(req) === "admin") return true;
+  if (userRole(req) !== "supervisor" && !hasMenuAccess(req, "status")) return false;
+  const user = req.session?.user || {};
   const target = String(extensionNumber || "");
   const extension = (config.extensions || []).find((item) => String(item.number) === target);
   if (!extension) return false;
-  if ((scope.extensions || []).map(String).includes(target)) return true;
-  return (scope.departments || []).map(String).includes(String(extension.department || ""));
+  if ((user.allowedExtensions || []).map(String).includes(target)) return true;
+  const department = String(extension.department || "");
+  return Boolean(department) && (user.departments || []).map(String).includes(department);
 }
 
 function allowedExtensionNumbers(config, scope) {
@@ -3744,7 +3749,8 @@ app.use(helmet({
   }
 }));
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev", {
-  skip: (req) => req.path === "/api/pbx-status" || req.path === "/api/extensions/status"
+  skip: (req, res) => res.statusCode < 400 && (req.path === "/api/pbx-status" || req.path === "/api/extensions/status" ||
+    (req.path === "/api/me" && ["node", "Wget"].includes(req.get("user-agent")) && (requestIsLoopback(req) || ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.ip))))
 }));
 app.use(express.json({ limit: "1mb" }));
 // Public assets do not need a session lookup or a rolling session cookie.
@@ -4048,9 +4054,9 @@ app.put("/api/users", requireAuth, requireAdmin, async (req, res) => {
       ...existing,
       username,
       role: String(item.role || "user"),
-      extension: "",
-      departments: [],
-      allowedExtensions: [],
+      extension: String(item.extension ?? existing.extension ?? ""),
+      departments: Array.isArray(item.departments) ? [...new Set(item.departments.map(String).map(value => value.trim()).filter(Boolean))] : (existing.departments || []),
+      allowedExtensions: Array.isArray(item.allowedExtensions) ? [...new Set(item.allowedExtensions.map(String).map(value => value.trim()).filter(Boolean))] : (existing.allowedExtensions || []),
       permissions: item.permissions && typeof item.permissions === "object" ? item.permissions : {},
       mustChangePassword: Boolean(item.mustChangePassword),
       createdAt: existing.createdAt || new Date().toISOString(),
@@ -4867,8 +4873,8 @@ async function startServer() {
   const config = await getConfig();
   await generateAsteriskConfigs(config);
   await syncStoredQueuePauses();
-  startDialerEngine();
-  startMaintenanceJobs();
+  if (process.env.PBX_MIGRATION_TEST !== "true") startDialerEngine();
+  if (process.env.PBX_MIGRATION_TEST !== "true") startMaintenanceJobs();
   return app.listen(port, host, () => {
     console.log(`PBX SIP Admin rodando em http://${host}:${port}`);
   });
@@ -4911,6 +4917,7 @@ module.exports = {
     sanitizeAuditValue,
     userCanInterveneLiveCalls,
     userCanMonitorExtension,
+    ownedChannelForRequest,
     userRole,
     dialerAttemptId,
     dialerAuditSnapshot,

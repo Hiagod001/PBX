@@ -145,7 +145,7 @@ case "$ACTION" in
     /usr/sbin/asterisk -rx "channel originate PJSIP/web-${EXTENSION} extension ${TARGET}@from-${EXTENSION}"
     ;;
   dialer-call)
-    APP_DIR="$(find /home/agenda -maxdepth 3 -type d -name PBX | head -n 1)"
+    APP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
     BASE_DIR="$(realpath -m "${APP_DIR}/data/dialer-outgoing")"
     CALLFILE="$(realpath -m "${VALUE:-}")"
     if [[ -z "$APP_DIR" || ! -f "$CALLFILE" || "$CALLFILE" != "$BASE_DIR"/*.call ]]; then
@@ -153,8 +153,9 @@ case "$ACTION" in
       exit 2
     fi
     DEST="/var/spool/asterisk/outgoing/$(basename "$CALLFILE")"
-    TMP="$(mktemp /var/spool/asterisk/.dialer.XXXXXX)"
-    APP_USER="$(stat -c %U "$APP_DIR")"
+    install -d -o root -g root -m 0700 /var/spool/asterisk/outgoing/.staging
+    TMP="$(mktemp /var/spool/asterisk/outgoing/.staging/dialer.XXXXXX)"
+    APP_USER="$(stat -c %U "$BASE_DIR")"
     install -o asterisk -g asterisk -m 0640 "$CALLFILE" "$TMP"
     if command -v setfacl >/dev/null 2>&1 && id "$APP_USER" >/dev/null 2>&1; then
       setfacl -m "u:${APP_USER}:r--" "$TMP"
