@@ -8,7 +8,7 @@ use axum::{
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -25,6 +25,67 @@ const MAX_CALL: Duration = Duration::from_secs(90);
 const MAX_SESSION: Duration = Duration::from_secs(8 * 3600);
 type App = Arc<Lab>;
 type ApiResult = Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)>;
+
+#[derive(Debug)]
+enum DestinationError {
+    LookupUnavailable,
+    NotRecognized,
+    IdentityUnavailable,
+}
+impl std::fmt::Display for DestinationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "destination lookup: {self:?}")
+    }
+}
+impl std::error::Error for DestinationError {}
+
+fn take_pcm_frame(pending: &mut VecDeque<i16>) -> Option<Vec<i16>> {
+    (pending.len() >= 960).then(|| pending.drain(..960).collect())
+}
+
+fn call_error_message(error: &anyhow::Error) -> String {
+    match error.downcast_ref::<DestinationError>() {
+        Some(DestinationError::LookupUnavailable) => "Não foi possível consultar o contato no WhatsApp. Tente novamente em instantes.",
+        Some(DestinationError::NotRecognized) => "O WhatsApp não reconheceu esse número. Confira o destino informado.",
+        Some(DestinationError::IdentityUnavailable) => "O contato foi encontrado, mas não foi possível preparar a ligação. Tente novamente em instantes.",
+        None => "Não foi possível completar a ligação. Tente novamente em instantes.",
+    }.into()
+}
+
+async fn resolve_destination(client: &Client, phone: &Jid) -> anyhow::Result<Jid> {
+    // A device-list query does not always return the LID for a new contact.
+    // Explicit contact discovery requests both registration and the authoritative LID.
+    let results = match tokio::time::timeout(
+        Duration::from_secs(15),
+        client.contacts().is_on_whatsapp(std::slice::from_ref(phone)),
+    ).await {
+        Ok(Ok(results)) => results,
+        Ok(Err(error)) => {
+            log::error!("Contact discovery failed: {error}");
+            return Err(DestinationError::LookupUnavailable.into());
+        }
+        Err(_) => return Err(DestinationError::LookupUnavailable.into()),
+    };
+    // Never dial a result for a different phone number, including unsolicited aliases.
+    let result = results.iter().find(|result| {
+        (result.jid.server == Server::Pn && result.jid.user == phone.user)
+            || result.pn_jid.as_ref().is_some_and(|jid| jid.server == Server::Pn && jid.user == phone.user)
+    }).ok_or(DestinationError::IdentityUnavailable)?;
+    log::info!("Contact discovery: registered={}, lid_available={}, contact_error={}, lid_error={}",
+        result.is_registered, result.lid.is_some() || result.jid.server == Server::Lid,
+        result.contact_error.is_some(), result.lid_error.is_some());
+    if result.contact_error.is_some() || result.lid_error.is_some() {
+        return Err(DestinationError::LookupUnavailable.into());
+    }
+    if !result.is_registered {
+        return Err(DestinationError::NotRecognized.into());
+    }
+    if result.jid.server == Server::Lid {
+        return Ok(result.jid.clone());
+    }
+    result.lid.as_ref().filter(|jid| jid.server == Server::Lid).cloned()
+        .ok_or_else(|| DestinationError::IdentityUnavailable.into())
+}
 
 #[derive(Default, Serialize, Clone)]
 struct View {
@@ -269,7 +330,7 @@ async fn run_call(app: App) {
         Err(err) => {
             // Detailed errors stay only in restricted server logs. Never include pairing or session payloads.
             log::error!("Call setup failed: {err}");
-            "Não foi possível completar a ligação. Verifique se o destino está no WhatsApp e tente novamente.".into()
+            call_error_message(&err)
         }
     };
     app.active.lock().await.take();
@@ -303,26 +364,34 @@ async fn do_call(app: &App) -> anyhow::Result<String> {
         .await
         .clone()
         .ok_or_else(|| anyhow::anyhow!("Disconnected"))?;
-    let peer: Jid = format!("{}@s.whatsapp.net", app.destination).parse()?;
+    let phone: Jid = format!("{}@s.whatsapp.net", app.destination).parse()?;
+    app.view.write().await.message = "Localizando o contato no WhatsApp…".into();
+    let peer = resolve_destination(&client, &phone).await?;
+    app.view.write().await.message = "Chamando pelo WhatsApp…".into();
     let mut fallback_decoder = whatsapp_rust::voip::audio::WaOpusDecoder::new()?;
     let (mic_tx, mic_rx) = async_channel::bounded(4);
     let (speaker_tx, speaker_rx) = async_channel::bounded::<Vec<i16>>(8);
     let (echo_tx, echo_rx) = async_channel::bounded::<Vec<i16>>(4);
     let media_app = app.clone();
     let receive_task = tokio::spawn(async move {
+        let mut pending = VecDeque::with_capacity(2880);
         while let Ok(frame) = speaker_rx.recv().await {
             media_app.received.fetch_add(1, Ordering::Relaxed);
             if frame.iter().any(|s| s.unsigned_abs() > 250) {
                 media_app.audible.fetch_add(1, Ordering::Relaxed);
             }
-            let _ = echo_tx.try_send(frame);
+            // The decoder can emit 20 ms frames; the source requires complete 60 ms frames.
+            // Reassemble samples instead of padding each short frame and dropping later speech.
+            pending.extend(frame);
+            while let Some(frame) = take_pcm_frame(&mut pending) {
+                let _ = echo_tx.try_send(frame);
+            }
         }
     });
     let media_app = app.clone();
     let send_task = tokio::spawn(async move {
         let mut clock = tokio::time::interval(Duration::from_millis(60));
         clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut frame_index = 0usize;
         loop {
             clock.tick().await;
             if media_app.cancel.load(Ordering::SeqCst) {
@@ -331,21 +400,13 @@ async fn do_call(app: &App) -> anyhow::Result<String> {
             let mut pcm = echo_rx.try_recv().unwrap_or_else(|_| vec![0; 960]);
             pcm.resize(960, 0);
             pcm.truncate(960);
-            // A quiet 440 Hz cue for one second every six seconds; the receiver also hears their voice returned.
-            for (i, sample) in pcm.iter_mut().enumerate() {
-                let n = frame_index * 960 + i;
-                let tone = if n % 96000 < 16000 {
-                    (1800.0 * (std::f64::consts::TAU * 440.0 * n as f64 / 16000.0).sin()) as i16
-                } else {
-                    0
-                };
-                *sample = (*sample / 2).saturating_add(tone);
+            for sample in &mut pcm {
+                *sample /= 2;
             }
             if mic_tx.send(pcm).await.is_err() {
                 break;
             }
             media_app.sent.fetch_add(1, Ordering::Relaxed);
-            frame_index += 1;
         }
     });
     // start() can wait for network negotiation; cancellation must not abandon a live call.
@@ -525,6 +586,24 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn echo_preserves_speech_across_mixed_decoder_frame_sizes() {
+        let input: Vec<i16> = (0..2400).map(|n| n as i16).collect();
+        let mut pending = VecDeque::new();
+        let mut output = Vec::new();
+        let mut offset = 0;
+        for size in [320, 320, 320, 640, 480, 320] {
+            pending.extend(&input[offset..offset + size]);
+            offset += size;
+            while let Some(frame) = take_pcm_frame(&mut pending) {
+                assert_eq!(frame.len(), 960);
+                output.extend(frame);
+            }
+        }
+        assert_eq!(output, input[..1920]);
+        assert_eq!(pending.into_iter().collect::<Vec<_>>(), input[1920..]);
+    }
 
     fn fixture() -> App {
         Arc::new(Lab {

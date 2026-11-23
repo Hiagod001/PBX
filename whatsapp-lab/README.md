@@ -7,7 +7,8 @@ Serviço gratuito e independente do PBX, usando o projeto comunitário [whatsapp
 - Vincula uma conta pelo QR Code, com sessão SQLite persistente.
 - Mostra o número realmente vinculado e exige correspondência com a conta autorizada.
 - Faz uma ligação manual para um único destino configurado, com exclusão mútua e duração máxima.
-- Envia um sinal suave e retorna a voz recebida para verificar os dois sentidos do áudio.
+- Consulta explicitamente o contato antes de ligar, solicitando a identificação usada pelo WhatsApp para preparar a chamada; não depende de uma conversa prévia ou do histórico sincronizado.
+- Retorna a voz recebida para verificar os dois sentidos do áudio, sem tom periódico que possa ser confundido com outra chamada.
 - Exibe contadores de quadros e guarda apenas os metadados do último teste.
 - Protege o painel por chave de acesso, cookie HttpOnly, expiração e limite de tentativas.
 
@@ -47,9 +48,9 @@ O cookie não usa `Secure` porque o endpoint local utiliza HTTP dentro do túnel
 
 1. Confira o número vinculado e o destino exibidos no painel.
 2. Clique em **Ligar pelo WhatsApp** e atenda no aparelho de destino.
-3. Confira o sinal sonoro e fale uma frase: você deverá ouvir sua própria voz de volta.
+3. Fale uma frase: você deverá ouvir sua própria voz de volta, sem tom periódico de chamada.
 4. Confira os contadores de entrada e os quadros com som. A confirmação auditiva no aparelho é indispensável; contadores sozinhos não comprovam qualidade.
-5. Use **Encerrar teste**. A chamada também possui limite automático de 90 segundos depois da negociação, além do limite de 35 segundos para preparação.
+5. Use **Encerrar teste**. A consulta do contato tem limite de 15 segundos. A chamada também possui limite automático de 90 segundos depois da negociação, além do limite de 35 segundos para preparação.
 
 O processo restaura a sessão após reiniciar. Se o QR Code expirar antes da vinculação, reinicie apenas o serviço **WhatsApp Lab** pelo Dokploy para gerar outro. Para invalidar a sessão, desvincule o dispositivo pelo próprio WhatsApp.
 
