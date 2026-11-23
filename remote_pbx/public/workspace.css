@@ -295,6 +295,8 @@ html:not([data-theme="dark"]) .command-queue-card .compact-agent-row.paused .pau
 .dialer-form .dialer-trunk-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .dialer-form textarea { min-height: 122px; resize: vertical; }
 .dialer-form-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; padding-top: 2px; border-top: 0; }
+.dialer-form [hidden] { display: none !important; }
+.dialer-whatsapp-info { grid-column: 1 / -1; padding: 14px 16px; border: 1px solid var(--line); border-left: 3px solid #28b878; border-radius: 8px; background: rgba(40,184,120,.07); color: var(--text); font-size: 13px; line-height: 1.6; }
 
 @media(max-width:1100px) {
   .tab-page .entity-editor-shell .dialer-form > label,

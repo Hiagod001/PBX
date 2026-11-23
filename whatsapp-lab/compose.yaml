@@ -6,15 +6,23 @@ services:
     init: true
     ports:
       - "127.0.0.1:3098:8080"
+      - "127.0.0.1:3099:9099"
     env_file:
       - /etc/dokploy/whatsapp-lab/lab.env
     environment:
       DATA_DIR: /data
       ADMIN_SECRET_FILE: /run/secrets/lab-admin
+      GATEWAY_SECRET_FILE: /run/secrets/pbx-gateway
+      PBX_CALLBACK_URL: http://web:3090/internal/whatsapp/events
       RUST_LOG: "error,uai_whatsapp_lab=info"
     volumes:
       - /home/dokploy/whatsapp-lab/data:/data
       - /home/dokploy/whatsapp-lab/admin-secret:/run/secrets/lab-admin:ro
+      - /home/dokploy/whatsapp-lab/gateway-secret:/run/secrets/pbx-gateway:ro
+    networks:
+      default: {}
+      pbx:
+        aliases: [whatsapp-gateway]
     cpus: 2
     mem_limit: 2g
     pids_limit: 256
@@ -27,3 +35,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+networks:
+  pbx:
+    external: true
+    name: pbx-validation-internal

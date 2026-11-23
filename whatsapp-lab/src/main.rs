@@ -20,6 +20,9 @@ use whatsapp_rust::{
     prelude::*,
     voip::{CallEvent, CallHandle},
 };
+use whatsapp_rust::wacore::types::call::CallAction;
+mod gateway;
+mod media;
 
 const MAX_CALL: Duration = Duration::from_secs(90);
 const MAX_SESSION: Duration = Duration::from_secs(8 * 3600);
@@ -111,6 +114,7 @@ struct CallResult {
     reason: String,
 }
 struct Lab {
+    gateway: gateway::Gateway,
     view: RwLock<View>,
     client: RwLock<Option<Arc<Client>>>,
     qr: RwLock<Option<(String, Instant)>>,
@@ -489,6 +493,7 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok());
     let app = Arc::new(Lab {
+        gateway: gateway::Gateway::new(&data_dir).await?,
         view: RwLock::new(View {
             connection: "starting".into(),
             call: "idle".into(),
@@ -521,8 +526,9 @@ async fn main() -> anyhow::Result<()> {
             *app.qr.write().await=Some((code,Instant::now()+timeout));
             let mut v=app.view.write().await;v.connection="pairing".into();v.message="No WhatsApp do laboratório, abra Dispositivos conectados e escaneie o QR Code.".into();
         }})
-        .on_event_for(&[EventKind::Connected,EventKind::Disconnected,EventKind::PairSuccess,EventKind::LoggedOut,EventKind::PairingQrCodesExhausted,EventKind::ClientOutdated],move |event,client|{let app=event_app.clone();async move{
+        .on_event_for(&[EventKind::IncomingCall,EventKind::Connected,EventKind::Disconnected,EventKind::PairSuccess,EventKind::LoggedOut,EventKind::PairingQrCodesExhausted,EventKind::ClientOutdated],move |event,client|{let app=event_app.clone();async move{
             match &*event {
+                Event::IncomingCall(call)=>{if let CallAction::Accept{call_id,..}=&call.action {app.gateway.accept(call_id).await;}},
                 Event::Connected(_)=>{
                     *app.client.write().await=Some(client.clone());*app.qr.write().await=None;
                     let mut v=app.view.write().await;v.account=client.pn().map(|j|j.user.to_string()).unwrap_or_default();v.connection="connected".into();v.message="WhatsApp conectado. Confira o número vinculado antes do teste.".into();
@@ -548,6 +554,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/qr", get(qr))
         .route("/api/call", post(call))
         .route("/api/hangup", post(hangup))
+        .route("/internal/status", get(gateway::status))
+        .route("/internal/calls", post(gateway::start))
+        .route("/internal/calls/{id}", get(gateway::get_call))
+        .route("/internal/calls/{id}/hangup", post(gateway::hangup))
         .layer(axum::middleware::map_response(
             |mut response: Response| async move {
                 let h = response.headers_mut();
@@ -563,6 +573,8 @@ async fn main() -> anyhow::Result<()> {
         ))
         .with_state(app.clone());
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
+    let media_app=app.clone();
+    tokio::spawn(async move {if let Err(e)=gateway::listen(media_app).await {log::error!("AudioSocket listener failed: {e}");std::process::exit(1);}});
     log::info!(
         "Isolated WhatsApp lab ready on port 8080; outbound calls require an explicit authenticated action"
     );
@@ -605,8 +617,9 @@ mod tests {
         assert_eq!(pending.into_iter().collect::<Vec<_>>(), input[1920..]);
     }
 
-    fn fixture() -> App {
+    pub(crate) fn fixture() -> App {
         Arc::new(Lab {
+            gateway: gateway::Gateway::disabled(),
             view: RwLock::new(View { connection: "pairing".into(), call: "idle".into(), ..Default::default() }),
             client: RwLock::new(None), qr: RwLock::new(None), active: Mutex::new(None),
             busy: AtomicBool::new(false), cancel: AtomicBool::new(false),

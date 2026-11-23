@@ -4982,11 +4982,11 @@ function dialerDestinationSelect(type, value) {
   const queueOptions = queues.map((queue, index) => option(queue.id, value, queue.name || queueLabel(queue, index))).join("");
   const extensionOptions = extensions.map((ext) => option(ext.number, value, `${ext.number} ${ext.name || ""}`.trim())).join("");
   return `
-    <select name="destinationType" data-dialer-destination-type>
+    <select name="destinationType" aria-label="Tipo de destino" data-dialer-destination-type>
       ${option("queue", type, "Fila")}
       ${option("extension", type, "Ramal")}
     </select>
-    <select name="destination" data-dialer-destination>
+    <select name="destination" aria-label="Fila ou ramal de destino" data-dialer-destination>
       ${type === "extension" ? extensionOptions : queueOptions}
     </select>
   `;
@@ -4999,6 +4999,7 @@ function dialerTrunkOptions(selected = []) {
 }
 
 function dialerTrunkSummary(campaign) {
+  if (campaign.transport === "whatsapp") return "WhatsApp";
   const trunks = campaign.trunkIds || [];
   if (!trunks.length) return "Padrao";
   return trunks
@@ -5015,11 +5016,11 @@ function dialerProgress(stats = {}) {
   return Math.round((Number(stats.completed || 0) / total) * 100);
 }
 
-function dialerResultSummary(stats = {}) {
+function dialerResultSummary(stats = {}, transport = "sip") {
   return `
     <div class="dialer-result-list">
-      <span class="success"><strong>${Number(stats.accepted || 0)}</strong> atenderam e pediram atendimento</span>
-      <span><strong>${Number(stats.answered || 0)}</strong> atenderam, mas não confirmaram para falar</span>
+      <span class="success"><strong>${Number(stats.accepted || 0)}</strong> ${transport === "whatsapp" ? "conversaram com um atendente" : "atenderam e pediram atendimento"}</span>
+      <span><strong>${Number(stats.answered || 0)}</strong> ${transport === "whatsapp" ? "atenderam, mas não conversaram com um atendente" : "atenderam, mas não confirmaram para falar"}</span>
       <span class="warning"><strong>${Number(stats.noAnswer || 0)}</strong> não atenderam</span>
       <span class="warning"><strong>${Number(stats.busy || 0)}</strong> números ocupados</span>
       <span class="danger"><strong>${Number(stats.failed || 0)}</strong> ligações não completadas</span>
@@ -5043,7 +5044,7 @@ function renderDialerCampaignRows() {
       const stats = campaign.stats || {};
       const running = campaign.status === "running";
       const progress = dialerProgress(stats);
-      const unavailable = (campaign.trunkIds || []).filter((id) => state.dialerTrunkHealth[id] === "unavailable");
+      const unavailable = campaign.transport === "whatsapp" ? [] : (campaign.trunkIds || []).filter((id) => state.dialerTrunkHealth[id] === "unavailable");
       return `
         <article class="panel entity-list-card">
           <div class="panel-header">
@@ -5056,12 +5057,13 @@ function renderDialerCampaignRows() {
           </div>
           <div class="list-card-meta">
             <span><strong>Encaminhar para</strong>${escapeHtml(destinationLabel(campaign.destinationType, campaign.destination))}</span>
-            <span><strong>Tecla</strong>${escapeHtml(campaign.digit || "1")}</span>
+            <span><strong>${campaign.transport === "whatsapp" ? "WhatsApp" : "Tecla"}</strong>${campaign.transport === "whatsapp" ? "Encaminhamento automático ao atender" : escapeHtml(campaign.digit || "1")}</span>
           </div>
           <div>
             <small>${Number(stats.pending || 0)} aguardando ligação | ${Number(stats.inProgress || 0)} ligando agora</small>
           </div>
-          ${dialerResultSummary(stats)}
+          ${dialerResultSummary(stats, campaign.transport)}
+          ${campaign.transport === "whatsapp" && !state.dialerWhatsApp?.connected ? '<small class="dialer-trunk-warning">WhatsApp desconectado. As próximas ligações aguardam a reconexão.</small>' : ""}
           ${unavailable.length ? `<small class="dialer-trunk-warning">Tronco indisponível: ${escapeHtml(unavailable.join(", "))}. O discador usa apenas os troncos registrados.</small>` : ""}
             <div class="compact-card-actions">
               <button class="icon-btn" type="button" data-dialer-report="${escapeHtml(campaign.id)}" title="Relatório da campanha"><i data-lucide="chart-column"></i></button>
@@ -5077,6 +5079,7 @@ function renderDialerCampaignRows() {
 }
 
 function renderDialerCampaignLiveData() {
+  syncDialerTransport($("#dialerCampaignForm", pages.dialer));
   const count = $("[data-dialer-campaign-count]", pages.dialer);
   const rows = $("[data-dialer-campaign-rows]", pages.dialer);
   if (count) count.textContent = state.dialerCampaignsLoaded ? `${state.dialerCampaigns.length} campanhas` : "Carregando...";
@@ -5107,11 +5110,13 @@ function renderDialer() {
       <form id="dialerCampaignForm" class="field-grid dialer-form">
         <input type="hidden" name="id" value="${escapeHtml(editing?.id || "")}" />
         <div class="dialer-form-section-title"><span>Campanha e atendimento</span></div>
+        ${fieldBlock("Ligar por", "Escolha a linha telefônica ou a conta de WhatsApp vinculada. No WhatsApp, quem atender será encaminhado automaticamente ao destino, sem áudio e sem apertar uma tecla.", `<select name="transport" data-dialer-transport>${option("sip", editing?.transport || "sip", "Linha telefônica")}${option("whatsapp", editing?.transport || "sip", "WhatsApp")}</select>`, "dialer-field-name")}
+        <div class="dialer-whatsapp-info" data-dialer-whatsapp-info hidden role="status"></div>
         ${fieldBlock("Nome", "Nome interno para localizar a campanha.", `<input name="name" value="${escapeHtml(editing?.name || "")}" placeholder="Ex: Boletos em aberto" required />`, "dialer-field-name")}
         ${fieldBlock("Áudio", "Mensagem que sera tocada quando o cliente atender. Apos enviar um novo audio, use Salvar e aplicar para disponibiliza-lo no PBX.", `<div class="audio-picker"><select name="audio" required>${audioChoices(editing?.audio || "")}</select><button class="icon-btn" type="button" data-upload-dialer-audio title="Adicionar áudio" aria-label="Adicionar áudio"><i data-lucide="plus"></i></button></div><input id="dialerAudioFile" type="file" accept=".wav,.mp3,.gsm,.ulaw,.alaw,.sln16" hidden />`, "dialer-field-audio")}
         ${fieldBlock("Tecla", "Numero que o cliente deve apertar para falar com o atendimento.", `<input name="digit" inputmode="numeric" maxlength="1" value="${escapeHtml(editing?.digit || "1")}" required />`, "dialer-field-digit")}
         ${fieldBlock("Identificador", "Numero apresentado quando o tronco permitir caller ID.", `<input name="callerId" value="${escapeHtml(editing?.callerId || state.config.trunk?.mainNumber || "")}" />`, "dialer-field-caller")}
-        ${fieldBlock("Destino", "Fila ou ramal que recebe o cliente quando ele aperta a tecla.", `<div class="dual-select">${dialerDestinationSelect(destinationType, destination)}</div>`, "dialer-field-destination")}
+        ${fieldBlock("Destino", "Fila ou ramal que recebe o cliente. No WhatsApp, o encaminhamento acontece assim que ele atende; na linha telefônica, depois de apertar a tecla.", `<div class="dual-select">${dialerDestinationSelect(destinationType, destination)}</div>`, "dialer-field-destination")}
         <fieldset class="dialer-trunk-picker"><legend class="field-title">Troncos da campanha ${helpIcon("Marque os troncos que fazem parte desta campanha. Com mais de um selecionado, o discador alterna entre eles.")}</legend><div class="dialer-trunk-options">${dialerTrunkOptions(editing?.trunkIds || [])}</div></fieldset>
         <div class="dialer-form-section-title"><span>Ritmo das ligações</span></div>
         ${fieldBlock("Chamadas por rodada", "Quantidade enviada ao Asterisk em cada disparo.", `<input name="maxConcurrent" type="number" min="1" max="10" value="${Number(editing?.maxConcurrent || 1)}" />`, "dialer-field-metric")}
@@ -5135,6 +5140,32 @@ function renderDialer() {
     </div>`;
   const campaignRows = $("[data-dialer-campaign-rows]", pages.dialer);
   if (campaignRows) campaignRows._lastDialerHtml = campaignRowsHtml;
+  syncDialerTransport($("#dialerCampaignForm", pages.dialer));
+}
+
+function syncDialerTransport(form) {
+  if (!form) return;
+  const whatsapp = form.elements.transport?.value === "whatsapp";
+  for (const selector of [".dialer-field-audio", ".dialer-field-digit", ".dialer-field-caller", ".dialer-trunk-picker"]) {
+    const group = form.querySelector(selector);
+    if (!group) continue;
+    group.hidden = whatsapp;
+    group.querySelectorAll("input, select, button").forEach((field) => { field.disabled = whatsapp; });
+  }
+  const wait = form.elements.responseTimeout;
+  if (wait) { wait.closest(".dialer-field-metric").hidden = whatsapp; wait.disabled = whatsapp; }
+  const concurrent = form.elements.maxConcurrent;
+  if (concurrent) {
+    if (whatsapp && !concurrent.readOnly) { concurrent.dataset.sipValue = concurrent.value; concurrent.value = "1"; }
+    if (!whatsapp && concurrent.readOnly) concurrent.value = concurrent.dataset.sipValue || "1";
+    concurrent.readOnly = whatsapp;
+  }
+  const info = form.querySelector("[data-dialer-whatsapp-info]");
+  if (info) {
+    info.hidden = !whatsapp;
+    const connection = state.dialerWhatsApp || {};
+    info.textContent = `${!connection.checkedAt ? "Conferindo conexão do WhatsApp…" : connection.connected ? `WhatsApp conectado: +${connection.account}.` : "WhatsApp desconectado. Vincule o aparelho no laboratório antes de iniciar."} Uma ligação por vez nesta conta. Ao atender, o cliente é encaminhado diretamente à fila ou ao ramal escolhido.`;
+  }
 }
 
 function recordingPartyNumber(call = {}) {
@@ -6715,6 +6746,7 @@ async function loadDialerCampaigns({ preserveDraft = false, background = false }
   state.dialerDestinations = response.destinations || { queues: [], extensions: [] };
   state.dialerTrunks = response.trunks || ensureConfigTrunks().filter((trunk) => trunk.active !== false && trunk.sipServer);
   state.dialerTrunkHealth = response.trunkHealth || {};
+  state.dialerWhatsApp = response.whatsapp || {};
   if (response.audios) state.ivrAudios = response.audios;
   if (state.activeTab === "dialer") {
     if (background) renderDialerCampaignLiveData();
@@ -6722,6 +6754,7 @@ async function loadDialerCampaigns({ preserveDraft = false, background = false }
       const draft = preserveDraft ? captureSurfaceDraft(pages.dialer) : null;
       renderDialer();
       restoreSurfaceDraft(pages.dialer, draft);
+      syncDialerTransport($("#dialerCampaignForm", pages.dialer));
     }
     iconRefresh();
   }
@@ -6730,7 +6763,7 @@ async function loadDialerCampaigns({ preserveDraft = false, background = false }
 async function saveDialerCampaign(form) {
   const payload = Object.fromEntries(new FormData(form));
   payload.trunkIds = new FormData(form).getAll("trunkIds");
-  if (!payload.trunkIds.length) {
+  if (payload.transport !== "whatsapp" && !payload.trunkIds.length) {
     setMessage("Selecione pelo menos um tronco para a campanha.", "error");
     form.querySelector('[name="trunkIds"]')?.focus();
     return;
@@ -6793,8 +6826,8 @@ async function openDialerCampaignReport(id) {
       <div class="dialer-report-content">
         <p class="dialer-report-progress">${Number(stats.total || 0)} números · ${Number(stats.pending || 0)} aguardando ligação · ${Number(stats.inProgress || 0)} ligando agora</p>
         <div class="dialer-report-summary">
-          <span class="success"><strong>${Number(stats.accepted || 0)}</strong><b>Atendeu e pediu atendimento</b><small>Apertou a tecla e foi encaminhado.</small></span>
-          <span><strong>${Number(stats.answered || 0)}</strong><b>Atendeu, mas não confirmou para falar</b><small>A tecla para falar com atendente não foi registrada.</small></span>
+          <span class="success"><strong>${Number(stats.accepted || 0)}</strong><b>${campaign.transport === "whatsapp" ? "Conversou com um atendente" : "Atendeu e pediu atendimento"}</b><small>${campaign.transport === "whatsapp" ? "O cliente e o atendente foram conectados." : "Apertou a tecla e foi encaminhado."}</small></span>
+          <span><strong>${Number(stats.answered || 0)}</strong><b>${campaign.transport === "whatsapp" ? "Atendeu, mas não conversou com um atendente" : "Atendeu, mas não confirmou para falar"}</b><small>${campaign.transport === "whatsapp" ? "Confira o motivo no resultado da ligação." : "A tecla para falar com atendente não foi registrada."}</small></span>
           <span><strong>${Number(stats.noAnswer || 0)}</strong><b>Não atendeu</b><small>Não houve atendimento dentro do tempo de espera.</small></span>
           <span><strong>${Number(stats.busy || 0)}</strong><b>Número ocupado</b><small>O número estava ocupado na tentativa.</small></span>
           <span class="danger"><strong>${Number(stats.failed || 0)}</strong><b>Ligação não completada</b><small>O sistema ou a operadora não concluiu a ligação.</small></span>
@@ -8993,6 +9026,10 @@ document.addEventListener("change", async (event) => {
   }
 
   const dialerDestinationType = event.target.closest("[data-dialer-destination-type]");
+  if (event.target.matches("[data-dialer-transport]")) {
+    syncDialerTransport(event.target.form);
+    return;
+  }
   if (dialerDestinationType && state.config) {
     const wrapper = dialerDestinationType.parentElement;
     wrapper.innerHTML = dialerDestinationSelect(dialerDestinationType.value, "");

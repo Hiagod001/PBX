@@ -233,7 +233,7 @@ function renderInboundDestinationContext(lines, config, contextId, routeName, tr
   lines.push(" same => n,Hangup()");
 }
 
-function renderDialerContext(lines) {
+function renderDialerContext(lines, config) {
   lines.push("", "[dialer-interactive]");
   lines.push("exten => s,1,NoOp(Discador campanha ${DIALER_CAMPAIGN_ID} para ${DIALER_TARGET})");
   lines.push(" same => n,Answer()");
@@ -263,6 +263,35 @@ function renderDialerContext(lines) {
   lines.push(" same => n,Hangup()");
   lines.push("exten => i,1,Hangup()");
   lines.push("exten => t,1,Hangup()");
+  // This context is reached only by the trusted WhatsApp originate helper after
+  // recipient acceptance. No announcement, DTMF or fallback to another queue.
+  lines.push("", "[dialer-whatsapp]");
+  lines.push("exten => s,1,NoOp(WhatsApp ${WA_CAMPAIGN_ID} para ${WA_TARGET})");
+  lines.push(" same => n,Set(CDR(direction)=outbound)");
+  lines.push(" same => n,Set(CDR(campaign)=${WA_CAMPAIGN_ID})");
+  lines.push(" same => n,Set(CDR(trunk)=WhatsApp)");
+  lines.push(" same => n,Set(CDR(accountcode)=${WA_ATTEMPT_ID})");
+  lines.push(" same => n,Set(CDR(userfield)=dialer:${WA_ATTEMPT_ID}:answered:${WA_TARGET}:whatsapp)");
+  lines.push(" same => n,Gosub(record-call,s,1(${WA_TARGET},${WA_DESTINATION}))");
+  lines.push(' same => n,GotoIf($["${WA_DEST_TYPE}"="extension"]?extension)');
+  (config.queues || []).forEach((queue, index) => {
+    lines.push(` same => n,GotoIf($["\${WA_DEST_TYPE}"="queue" & "\${WA_DESTINATION}"="${clean(queue.id)}"]?waq${index})`);
+  });
+  lines.push(" same => n,Hangup(21)");
+  lines.push(" same => n(extension),Dial(${PJSIP_DIAL_CONTACTS(${WA_DESTINATION})}&${PJSIP_DIAL_CONTACTS(web-${WA_DESTINATION})},60,tTU(wa-agent-connected))");
+  lines.push(" same => n,Hangup()");
+  (config.queues || []).forEach((queue, index) => {
+    lines.push(` same => n(waq${index}),Set(CDR(queue)=${clean(queue.id)})`);
+    lines.push(` same => n,Queue(${clean(queue.id)},tT,,,${queueMaxWait(queue)},,,wa-agent-connected)`);
+    lines.push(" same => n,Hangup()");
+  });
+  lines.push("", "[wa-agent-connected]");
+  lines.push("exten => s,1,NoOp(Atendente conectado ao WhatsApp ${WA_ATTEMPT_ID})");
+  lines.push(" same => n,Set(CDR(accountcode)=${WA_ATTEMPT_ID})");
+  lines.push(" same => n,Set(CDR(trunk)=WhatsApp)");
+  lines.push(" same => n,Set(CDR(direction)=outbound)");
+  lines.push(" same => n,Set(CDR(userfield)=dialer:${WA_ATTEMPT_ID}:accepted:${WA_TARGET}:whatsapp)");
+  lines.push(" same => n,Return()");
 }
 
 function localOutboundPrefix(config) {
@@ -710,7 +739,7 @@ function renderExtensions(config) {
       renderTimeConditionContext(lines, condition);
     });
   });
-  renderDialerContext(lines);
+  renderDialerContext(lines, config);
 
   lines.push("", "[queue-state]");
   config.extensions.forEach((extension) => {
@@ -949,6 +978,8 @@ function renderModules() {
     "load = cdr_custom.so",
     "load = chan_bridge_media.so",
     "load = chan_pjsip.so",
+    "load = res_audiosocket.so",
+    "load = chan_audiosocket.so",
     "load = codec_alaw.so",
     "load = codec_ulaw.so",
     "load = codec_g722.so",

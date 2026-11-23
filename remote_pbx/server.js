@@ -16,6 +16,7 @@ const { promisify } = require("util");
 const crypto = require("crypto");
 const { staticCacheHeaders, privateApiHeaders } = require("./src/http-cache");
 const { buildReportPdf } = require("./src/report-pdf");
+const { WhatsAppDialer, whatsappCallFile, whatsappNumber } = require("./src/whatsapp-dialer");
 
 const {
   ensureStore,
@@ -858,6 +859,7 @@ function normalizeDialerTrunkIds(input, previous, config) {
 }
 
 function normalizeDialerCampaign(input = {}, previous = null, config = {}) {
+  const transport = (input.transport || previous?.transport) === "whatsapp" ? "whatsapp" : "sip";
   const now = new Date().toISOString();
   const destinationType = String(input.destinationType || previous?.destinationType || "queue");
   const destination = safeDialerText(input.destination || previous?.destination || "", 40);
@@ -869,6 +871,7 @@ function normalizeDialerCampaign(input = {}, previous = null, config = {}) {
   const responseTimeout = Math.min(Math.max(Number(input.responseTimeout || previous?.responseTimeout || 8), 3), 60);
 
   return {
+    transport,
     id: previous?.id || safeDialerText(input.id, 50) || dialerId(),
     name: safeDialerText(input.name || previous?.name || "Nova campanha", 80) || "Nova campanha",
     description: safeDialerText(input.description || previous?.description || "", 160),
@@ -877,10 +880,10 @@ function normalizeDialerCampaign(input = {}, previous = null, config = {}) {
     destinationType: ["queue", "extension"].includes(destinationType) ? destinationType : "queue",
     destination,
     callerId: safeDialerText(input.callerId || previous?.callerId || config.trunk?.mainNumber || "", 40),
-    trunkIds: normalizeDialerTrunkIds(input, previous, config),
+    trunkIds: transport === "whatsapp" ? [] : normalizeDialerTrunkIds(input, previous, config),
     trunkMode: "roundRobin",
     nextTrunkIndex: Number(previous?.nextTrunkIndex || 0),
-    maxConcurrent,
+    maxConcurrent: transport === "whatsapp" ? 1 : maxConcurrent,
     retryAttempts,
     intervalSeconds,
     responseTimeout,
@@ -900,7 +903,8 @@ function normalizeDialerCampaign(input = {}, previous = null, config = {}) {
         attemptId: old.attemptId || "",
         callFile: old.callFile || "",
         nextAttemptAt: old.nextAttemptAt || "",
-        completedAt: old.completedAt || ""
+        completedAt: old.completedAt || "",
+        ...(transport === "whatsapp" ? { waCallId: old.waCallId || "", waDispatchState: old.waDispatchState || "", waBridgeSubmitted: Boolean(old.waBridgeSubmitted) } : {})
       };
     })
   };
@@ -934,7 +938,9 @@ function publicDialerCampaign(campaign) {
   return { ...details, stats: dialerStats(campaign), numberText: (numbers || []).map((item) => item.number).join("\n") };
 }
 
-function dialerLeadStatusLabel(status) {
+function dialerLeadStatusLabel(status, transport = "sip") {
+  if (transport === "whatsapp" && status === "accepted") return "Conversou com um atendente";
+  if (transport === "whatsapp" && status === "answered") return "Atendeu, mas não conversou com um atendente";
   return {
     pending: "Aguardando ligação",
     queued: "Ligando agora",
@@ -947,7 +953,8 @@ function dialerLeadStatusLabel(status) {
   }[status] || "Resultado não identificado";
 }
 
-function dialerLeadReasonLabel(lead) {
+function dialerLeadReasonLabel(lead, transport = "sip") {
+  if (transport === "whatsapp") return lead.lastResult || ({ pending: "Este número ainda não foi chamado.", queued: "Ligação pelo WhatsApp em andamento." }[lead.status]) || "Confira o resultado desta ligação.";
   const reason = String(lead.lastResult || "").toLowerCase();
   if (lead.status === "accepted") return "A pessoa atendeu, apertou a tecla e foi encaminhada para o atendimento.";
   if (lead.status === "answered") return "A pessoa atendeu, mas o sistema não registrou a tecla para falar com um atendente.";
@@ -967,7 +974,7 @@ function dialerCampaignReport(campaign) {
   const byTrunk = new Map();
   for (const lead of campaign.numbers || []) {
     if (lead.lastResult) {
-      const label = dialerLeadReasonLabel(lead);
+      const label = dialerLeadReasonLabel(lead, campaign.transport);
       reasons.set(label, (reasons.get(label) || 0) + 1);
     }
     if (lead.trunkId) {
@@ -980,14 +987,14 @@ function dialerCampaignReport(campaign) {
     reasons: [...reasons].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count),
     byTrunk: [...byTrunk].map(([key, count]) => {
       const status = key.slice(key.lastIndexOf(":") + 1);
-      return { trunk: key.slice(0, key.lastIndexOf(":")), status, statusLabel: dialerLeadStatusLabel(status), count };
+      return { trunk: key.slice(0, key.lastIndexOf(":")), status, statusLabel: dialerLeadStatusLabel(status, campaign.transport), count };
     }),
     numbers: (campaign.numbers || []).map((lead) => ({
       number: lead.number,
       status: lead.status,
-      statusLabel: dialerLeadStatusLabel(lead.status),
+      statusLabel: dialerLeadStatusLabel(lead.status, campaign.transport),
       attempts: lead.attempts,
-      resultLabel: dialerLeadReasonLabel(lead),
+      resultLabel: dialerLeadReasonLabel(lead, campaign.transport),
       trunkId: lead.trunkId,
       lastAttemptAt: lead.lastAttemptAt
     }))
@@ -1002,6 +1009,7 @@ function dialerAuditSnapshot(campaign) {
     status: campaign.status,
     totalNumbers: (campaign.numbers || []).length,
     destinationType: campaign.destinationType,
+    transport: campaign.transport || "sip",
     destination: campaign.destination,
     trunkIds: campaign.trunkIds || [],
     maxConcurrent: campaign.maxConcurrent,
@@ -1084,6 +1092,31 @@ async function enqueueDialerCall(config, campaign, lead) {
   return file;
 }
 
+const whatsappDialer = new WhatsAppDialer({
+  configPath: path.join(__dirname, "data", "whatsapp-gateway.json"),
+  readCampaigns: readDialerCampaigns, updateCampaigns: updateDialerCampaigns,
+  enqueue: async (_config, campaign, lead, address) => {
+    await fs.ensureDir(dialerOutgoingDir);
+    const file = path.join(dialerOutgoingDir, `wa-${lead.waCallId}.call`);
+    await fs.writeFile(file, whatsappCallFile(campaign, lead, address), "utf8");
+    await runAsteriskControl("dialer-call", "700", { file });
+  },
+  finish: finishDialerLead, reports: recentDialerReports, reportForAttempt: dialerReportForAttempt,
+  acceptedAttempt: async (lead) => {
+    // The CSV is flushed immediately; the database importer can trail by a minute.
+    // Read a bounded tail and correlate the exact private attempt, never a phone.
+    const marker = `dialer:${lead.attemptId}:accepted:`;
+    for (const file of await findCdrPaths()) {
+      if ((await readLogTail(file, 500)).split(/\r?\n/).some((line) => line.includes(marker))) return true;
+    }
+    const result = await require("./src/db").query(
+      "SELECT userfield FROM pbx_cdr WHERE accountcode=$1 AND calldate >= $2::timestamptz",
+      [lead.attemptId, new Date(Date.parse(lead.lastAttemptAt) - 5 * 60 * 1000).toISOString()]
+    );
+    return Boolean(result?.rows.some((row) => String(row.userfield || "").includes(marker)));
+  }
+});
+
 function parseDialerArchiveStatus(content) {
   return (String(content || "").match(/^Status:\s*([^\r\n]+)/im) || [])[1]?.trim().toLowerCase() || "";
 }
@@ -1164,6 +1197,7 @@ function applyLateDialerResults(leads, reports) {
 
 let nextLateDialerCheckAt = 0;
 async function reconcileDialerCampaigns(config, campaigns) {
+  campaigns = campaigns.filter((campaign) => campaign.transport !== "whatsapp");
   const queued = campaigns.flatMap((campaign) => (campaign.numbers || []).filter((lead) => lead.status === "queued").map((lead) => ({ campaign, lead })));
   const recentAnswered = campaigns.flatMap((campaign) => (campaign.numbers || [])
     .filter((lead) => lead.status === "answered" && lead.attemptId && Date.now() - (Date.parse(lead.completedAt || lead.lastAttemptAt || "") || 0) < 10 * 60 * 1000)
@@ -1222,10 +1256,12 @@ async function tickDialerCampaigns() {
   if (!hasWork) return;
   const config = await getConfig().catch(() => null);
   if (!config) return;
+  await whatsappDialer.tick(config);
   await updateDialerCampaigns(async (campaigns) => {
     const now = Date.now();
     await reconcileDialerCampaigns(config, campaigns);
     for (const campaign of campaigns) {
+      if (campaign.transport === "whatsapp") continue;
       if (campaign.status !== "running") continue;
       if (campaign.nextDialAt && new Date(campaign.nextDialAt).getTime() > now) continue;
       const active = (campaign.numbers || []).filter((lead) => lead.status === "queued").length;
@@ -2248,6 +2284,7 @@ function inferTrunk(call, config) {
 
 function normalizeReportTrunk(value, config) {
   const source = String(value || "").toLowerCase();
+  if (source === "whatsapp" || /(?:^|\s)audiosocket\//.test(source)) return "WhatsApp";
   if (!source) return "";
   const configuredIds = [
     ...(Array.isArray(config.trunks) ? config.trunks.map((trunk) => trunk.id) : []),
@@ -2283,6 +2320,8 @@ function inferDid(call, type) {
 }
 
 function reportDestinationForType(raw, type, extension) {
+  const whatsappTarget = String(raw.userfield || raw.userField || "").match(/^dialer:wa-[0-9a-f-]+:(?:answered|accepted):(\d{12,13}):whatsapp(?:$|[;\s])/i)?.[1];
+  if (whatsappTarget) return whatsappTarget;
   if (type === "inbound" && extension) return extension;
   return raw.dst;
 }
@@ -2618,7 +2657,7 @@ function extensionCallMatcher(extensionNumber) {
 }
 
 function compactExtensionCall(call) {
-  const campaignTarget = String(call.userField || call.userfield || "").match(/^dialer:[^:]+:(?:answered|accepted):([+\d]+)(?:$|[;\s])/i)?.[1];
+  const campaignTarget = String(call.userField || call.userfield || "").match(/^dialer:[^:]+:(?:answered|accepted):([+\d]+)(?:$|[:;\s])/i)?.[1];
   const dialedThroughTrunk = (String(call.lastData || "").match(/PJSIP\/([^@,\s]+)@([^,\s]+)/i) || []);
   const browserOrigin = /PJSIP\/web-/i.test(`${call.channel || ""} ${call.destinationChannel || ""}`);
   const customerNumber = campaignTarget || (call.type === "inbound"
@@ -3731,6 +3770,16 @@ async function readOutboundDiagnostics(config, extensionNumber, rawNumber) {
 }
 
 app.set("trust proxy", trustedProxySetting());
+// Audio events travel only over the private Docker network with a dedicated
+// bearer credential. Authenticate before parsing, sessions or browser redirects.
+app.post("/internal/whatsapp/events", async (req, res, next) => {
+  res.set("Cache-Control", "no-store");
+  if (!(await whatsappDialer.authenticate(req.headers))) return res.sendStatus(401);
+  next();
+}, express.json({ limit: "8kb" }), async (req, res) => {
+  await whatsappDialer.event(req.body || {}, await getConfig());
+  res.json({ ok: true });
+});
 app.use(enforceHttps);
 app.use(helmet({
   contentSecurityPolicy: {
@@ -4692,12 +4741,14 @@ app.get("/api/dialer/campaigns", requireAuth, requireAdmin, async (_req, res) =>
   const [config, campaigns, audios] = await Promise.all([getConfig(), readDialerCampaigns(), listIvrAudios()]);
   // Registration health must not hold up the campaign list.
   void dialerTrunkHealth(config).catch(() => {});
+  void whatsappDialer.status().catch(() => {});
   res.json({
     campaigns: campaigns.map(publicDialerCampaign),
     destinations: dialerDestinationOptions(config),
     trunks: configTrunks(config),
     trunkHealth: dialerTrunkHealthCache.values || {},
-    audios
+    audios,
+    whatsapp: whatsappDialer.cachedStatus
   });
 });
 
@@ -4711,7 +4762,7 @@ app.get("/api/dialer/campaigns/:id/report.csv", requireAuth, requireAdmin, async
   const campaign = (await readDialerCampaigns()).find((item) => item.id === req.params.id);
   if (!campaign) return res.status(404).json({ error: "Campanha nao encontrada." });
   const columns = ["Numero", "Status", "Tentativas", "Motivo", "Tronco", "Ultima tentativa"];
-  const rows = (campaign.numbers || []).map((lead) => [lead.number, dialerLeadStatusLabel(lead.status), lead.attempts, dialerLeadReasonLabel(lead), lead.trunkId, lead.lastAttemptAt]);
+  const rows = (campaign.numbers || []).map((lead) => [lead.number, dialerLeadStatusLabel(lead.status, campaign.transport), lead.attempts, dialerLeadReasonLabel(lead, campaign.transport), lead.trunkId, lead.lastAttemptAt]);
   const csv = [columns, ...rows].map((row) => row.map(csvEscape).join(";")).join("\r\n");
   res.set("Content-Type", "text/csv; charset=utf-8");
   res.set("Content-Disposition", `attachment; filename="campanha-${campaign.id}.csv"`);
@@ -4734,9 +4785,10 @@ app.post("/api/dialer/campaigns", requireAuth, requireAdmin, async (req, res) =>
       throw error;
     }
     const campaign = normalizeDialerCampaign(req.body || {}, previous, config);
-    if (!campaign.audio || !audios.some((audio) => audio.playback === campaign.audio)) throw new Error("Selecione um audio valido para a campanha.");
+    if (campaign.transport !== "whatsapp" && (!campaign.audio || !audios.some((audio) => audio.playback === campaign.audio))) throw new Error("Selecione um audio valido para a campanha.");
     if (!dialerDestinationExists(config, campaign.destinationType, campaign.destination)) throw new Error("Selecione uma fila ou ramal valido para receber os atendimentos.");
-    if (!campaign.trunkIds.length) throw new Error("Selecione pelo menos um tronco ativo para a campanha.");
+    if (campaign.transport !== "whatsapp" && !campaign.trunkIds.length) throw new Error("Selecione pelo menos um tronco ativo para a campanha.");
+    if (campaign.transport === "whatsapp") campaign.numbers.forEach((lead) => whatsappNumber(lead.number));
     if (!campaign.numbers.length) throw new Error("Adicione pelo menos um numero para discar.");
     savedCampaign = campaign;
     return previous ? campaigns.map((item) => (item.id === previous.id ? campaign : item)) : [campaign, ...campaigns];
@@ -4755,15 +4807,17 @@ app.post("/api/dialer/campaigns", requireAuth, requireAdmin, async (req, res) =>
 app.post("/api/dialer/campaigns/:id/start", requireAuth, requireAdmin, async (req, res) => {
   const config = await getConfig();
   const audios = await listIvrAudios();
-  const health = await dialerTrunkHealth(config);
+  const selected = (await readDialerCampaigns()).find((item) => item.id === req.params.id);
+  const health = selected?.transport === "whatsapp" ? {} : await dialerTrunkHealth(config);
+  if (selected?.transport === "whatsapp" && !(await whatsappDialer.status(true)).connected) throw Object.assign(new Error("O WhatsApp está desconectado. Vincule a conta antes de iniciar."), { status: 409 });
   let campaign = null;
   await updateDialerCampaigns(async (campaigns) =>
     campaigns.map((item) => {
       if (item.id !== req.params.id) return item;
-      if (!item.audio || !audios.some((audio) => audio.playback === item.audio)) throw new Error("Audio da campanha nao encontrado.");
+      if (item.transport !== "whatsapp" && (!item.audio || !audios.some((audio) => audio.playback === item.audio))) throw new Error("Audio da campanha nao encontrado.");
       if (!dialerDestinationExists(config, item.destinationType, item.destination)) throw new Error("Destino da campanha nao encontrado.");
-      if (!(item.trunkIds || []).some((id) => configTrunks(config).some((trunk) => trunk.id === id))) throw new Error("Nenhum tronco ativo selecionado para esta campanha.");
-      if (!(item.trunkIds || []).some((id) => health[id] === "registered")) throw new Error("Nenhum tronco selecionado esta registrado. Verifique os troncos antes de iniciar.");
+      if (item.transport !== "whatsapp" && !(item.trunkIds || []).some((id) => configTrunks(config).some((trunk) => trunk.id === id))) throw new Error("Nenhum tronco ativo selecionado para esta campanha.");
+      if (item.transport !== "whatsapp" && !(item.trunkIds || []).some((id) => health[id] === "registered")) throw new Error("Nenhum tronco selecionado esta registrado. Verifique os troncos antes de iniciar.");
       campaign = { ...item, status: "running", nextDialAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
       return campaign;
     })

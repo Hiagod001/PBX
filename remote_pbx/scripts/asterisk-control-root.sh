@@ -153,6 +153,15 @@ case "$ACTION" in
       exit 2
     fi
     DEST="/var/spool/asterisk/outgoing/$(basename "$CALLFILE")"
+    if [[ "$(basename "$CALLFILE")" =~ ^wa-[0-9a-f-]{36}\.call$ ]]; then
+      # One-use marker survives spool consumption and web process restarts.
+      # A crash during delivery fails this attempt safely instead of ringing twice.
+      install -d -o root -g root -m 0700 "$BASE_DIR/.whatsapp-delivered"
+      if ! mkdir "$BASE_DIR/.whatsapp-delivered/$(basename "$CALLFILE")" 2>/dev/null; then
+        rm -f "$CALLFILE"
+        exit 0
+      fi
+    fi
     install -d -o root -g root -m 0700 /var/spool/asterisk/outgoing/.staging
     TMP="$(mktemp /var/spool/asterisk/outgoing/.staging/dialer.XXXXXX)"
     APP_USER="$(stat -c %U "$BASE_DIR")"

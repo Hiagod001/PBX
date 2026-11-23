@@ -1,6 +1,6 @@
 # Laboratório de ligações WhatsApp
 
-Serviço gratuito e independente do PBX, usando o projeto comunitário [whatsapp-rust](https://github.com/oxidezap/whatsapp-rust), versão 0.7.0 no commit `f8165f282008935732e0b26d6f5cca5038ecd222`. Não utiliza WaVoIP nem assinatura de provedor. O servidor e a conexão com a Internet continuam necessários.
+Serviço gratuito em contêiner separado, integrado ao Discador do PBX, usando o projeto comunitário [whatsapp-rust](https://github.com/oxidezap/whatsapp-rust), versão 0.7.0 no commit `f8165f282008935732e0b26d6f5cca5038ecd222`. Não utiliza WaVoIP nem assinatura de provedor. O servidor e a conexão com a Internet continuam necessários.
 
 ## O que este primeiro laboratório faz
 
@@ -12,7 +12,7 @@ Serviço gratuito e independente do PBX, usando o projeto comunitário [whatsapp
 - Exibe contadores de quadros e guarda apenas os metadados do último teste.
 - Protege o painel por chave de acesso, cookie HttpOnly, expiração e limite de tentativas.
 
-Este estágio ainda não implementa tronco SIP, discagem em massa, filas, gravação de conversas ou transferência para ramais. Essas integrações dependem de validar primeiro a chamada e o áudio reais. A vinculação não envia mensagens nem inicia ligações automaticamente.
+O painel de laboratório mantém o teste manual de retorno da voz. As campanhas são iniciadas separadamente no Discador do PBX e usam a ponte de áudio descrita abaixo para atender em filas ou ramais, com a gravação configurada no PBX. A vinculação pelo QR Code não envia mensagens nem inicia ligações automaticamente.
 
 Trata-se de uma implementação comunitária, sem suporte oficial do WhatsApp. Mudanças no protocolo podem exigir atualização. Use uma conta de laboratório separada; não trate este teste como capacidade de produção comprovada.
 
@@ -57,3 +57,15 @@ O processo restaura a sessão após reiniciar. Se o QR Code expirar antes da vin
 `GET /healthz` confirma que o processo responde; a conexão WhatsApp é apresentada separadamente no painel. Rotas de estado, QR Code e chamada exigem autenticação. Chamadas e encerramento exigem também o cabeçalho de ação usado pelo painel, sem CORS público.
 
 Para interromper ou reverter este experimento, pare apenas **WhatsApp Lab** no projeto **WhatsApp - Laboratorio**. Não reinicie Docker, Traefik, Asterisk ou os outros projetos.
+
+## Campanhas no PBX
+
+No Discador, escolha **Ligar por → WhatsApp**, informe a fila ou o ramal de destino e os números com DDD. Quando o cliente atender, a chamada segue diretamente para o atendimento, sem áudio e sem tecla. Campanhas por linha telefônica continuam usando áudio e confirmação normalmente.
+
+Há uma chamada de WhatsApp por vez para esta conta, compartilhada entre campanhas e testes de laboratório. Pausar impede novos envios e preserva a conversa em andamento. Uma chamada que foi atendida não é repetida automaticamente; falhas de resultado incerto também exigem revisão antes de repetir. O relatório diferencia atendimento no WhatsApp de uma conversa efetivamente conectada a um agente.
+
+O serviço usa uma segunda rede privada, `pbx-validation-internal`, com alias `whatsapp-gateway`. A API de integração exige uma chave própria em `gateway-secret`, diferente da chave do laboratório. O PBX a lê de `data/whatsapp-gateway.json` (`url`, `token`, `audioSocketAddress`), com acesso restrito ao usuário do serviço. Esses arquivos nunca entram no Git. O Compose monta a chave em `/run/secrets/pbx-gateway` e notifica `http://web:3090/internal/whatsapp/events`; a consulta periódica recupera notificações perdidas.
+
+O Asterisk 20.6 conecta por AudioSocket em `127.0.0.1:3099`, usando PCM mono de 8 kHz; o serviço converte para os 16 kHz do WhatsApp com filtro e buffers limitados. A porta de áudio não é pública. Os módulos `res_audiosocket.so` e `chan_audiosocket.so` devem estar carregados; o gerador do PBX mantém essas cargas. O contexto `dialer-whatsapp` grava a chamada conforme a configuração existente e usa exatamente a fila escolhida, sem destino alternativo de outra fila.
+
+`gateway-calls.json` conserva as chaves de tentativa por sete dias e os resultados após reiniciar. O PBX grava a intenção antes de chamar a API; repetir a mesma chave não faz outra chamada. Marcadores em `data/dialer-outgoing/.whatsapp-delivered` impedem duplicar a conexão ao atendente. Não apague esses arquivos para tentar recuperar chamadas: confira primeiro o resultado e o histórico.
