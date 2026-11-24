@@ -30,13 +30,16 @@ pub struct Gateway {
     callback: String,
     jobs: Mutex<HashMap<String,Arc<Job>>>,
     accepted: Mutex<HashSet<String>>,
+    end_signals: Mutex<HashMap<String,String>>,
     wake: Notify,
 }
 #[derive(Deserialize)]
 pub struct Start { id:String, number:String }
+#[derive(Deserialize)]
+pub struct ContactCheck { number:String }
 impl Gateway {
     #[cfg(test)]
-    pub fn disabled()->Self {Self {secret:String::new(),callback:String::new(),jobs:Mutex::new(HashMap::new()),accepted:Mutex::new(HashSet::new()),wake:Notify::new()}}
+    pub fn disabled()->Self {Self {secret:String::new(),callback:String::new(),jobs:Mutex::new(HashMap::new()),accepted:Mutex::new(HashSet::new()),end_signals:Mutex::new(HashMap::new()),wake:Notify::new()}}
     pub async fn new(data_dir: &str) -> anyhow::Result<Self> {
         let secret = if let Ok(file)=std::env::var("GATEWAY_SECRET_FILE") {
             let value=tokio::fs::read_to_string(file).await?.trim().to_owned();
@@ -54,7 +57,7 @@ impl Gateway {
             if record.phase!="ended" {record.phase="ended".into();record.result="interrupted".into();record.ended_at=now();}
             jobs.insert(record.id.clone(),Arc::new(Job {record:Mutex::new(record),cancel:AtomicBool::new(false),media:Mutex::new(None)}));
         }
-        Ok(Self {secret,callback,jobs:Mutex::new(jobs),accepted:Mutex::new(HashSet::new()),wake:Notify::new()})
+        Ok(Self {secret,callback,jobs:Mutex::new(jobs),accepted:Mutex::new(HashSet::new()),end_signals:Mutex::new(HashMap::new()),wake:Notify::new()})
     }
     fn authorized(&self,h:&HeaderMap)->bool {
         !self.secret.is_empty() && h.get("authorization").and_then(|v|v.to_str().ok())
@@ -64,6 +67,28 @@ impl Gateway {
         let mut accepted=self.accepted.lock().await;
         if accepted.len()>64 {accepted.clear();}
         accepted.insert(id.to_owned()); self.wake.notify_waiters();
+    }
+    pub async fn peer_end(&self,id:&str,reject:bool,reason:Option<&str>) {
+        // A busy companion device does not mean that the person's other devices
+        // stopped ringing. Record a final busy result only for a terminate signal.
+        if reject && reason.is_some() && !matches!(reason,Some("rejected"|"rejected_elsewhere")) {return;}
+        let code=if reject || matches!(reason,Some("rejected"|"rejected_elsewhere")) {"declined"}
+            else if reason==Some("busy") {"busy"}
+            else if reason==Some("timeout") {"no_answer"}
+            else {"ended_before_answer"};
+        let mut signals=self.end_signals.lock().await;
+        if signals.len()>=128 {signals.clear();}
+        // An explicit decline is more specific than a subsequent generic terminate.
+        if signals.get(id).map(String::as_str)!=Some("declined") {signals.insert(id.into(),code.into());}
+        self.wake.notify_waiters();
+    }
+    async fn ended_result(&self,id:&str,was_answered:bool)->(String,bool) {
+        // Signaling dispatch and the media-ended notification are asynchronous.
+        // Let the typed signaling callback settle before choosing the final label.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let answered=was_answered || self.accepted.lock().await.remove(id);
+        let signal=self.end_signals.lock().await.remove(id);
+        (if answered {"completed".into()} else {signal.unwrap_or_else(||"ended_before_answer".into())},answered)
     }
     async fn persist(&self,app:&Lab)->anyhow::Result<()> {
         // Serialize snapshots under the jobs lock so an older write cannot replace a new one.
@@ -86,6 +111,19 @@ pub async fn get_call(State(app):State<App>,h:HeaderMap,Path(id):Path<String>)->
     if !app.gateway.authorized(&h) {return Err(error(StatusCode::UNAUTHORIZED,"Acesso não autorizado."));}
     let job=app.gateway.jobs.lock().await.get(&id).cloned().ok_or_else(||error(StatusCode::NOT_FOUND,"Ligação não encontrada."))?;
     Ok(Json(serde_json::to_value(job.record.lock().await.clone()).unwrap()))
+}
+pub async fn check_contact(State(app):State<App>,h:HeaderMap,Json(request):Json<ContactCheck>)->ApiResult {
+    if !app.gateway.authorized(&h) {return Err(error(StatusCode::UNAUTHORIZED,"Acesso não autorizado."));}
+    if !valid_number(&request.number) {return Err(error(StatusCode::BAD_REQUEST,"Informe um número válido com país e DDD."));}
+    let client=app.client.read().await.clone().ok_or_else(||error(StatusCode::SERVICE_UNAVAILABLE,"O WhatsApp está desconectado."))?;
+    let phone:Jid=format!("{}@s.whatsapp.net",request.number).parse().map_err(|_|error(StatusCode::BAD_REQUEST,"Número inválido."))?;
+    let results=query_destination(&client,&phone).await.map_err(|_|error(StatusCode::SERVICE_UNAVAILABLE,"Não foi possível consultar o contato. Tente novamente em instantes."))?;
+    let resolved=resolve_contact_results(&phone,&results);
+    // Contact discovery only: this endpoint never creates a call or reads messages.
+    Ok(Json(serde_json::json!({"requested":request.number,"call_ready":resolved.is_ok(),"message":resolved.as_ref().err().map(|e|call_error_message(&anyhow::anyhow!(e.to_string()))),"results":results.iter().map(|r|serde_json::json!({
+        "jid":r.jid.to_string(),"pn_jid":r.pn_jid.as_ref().map(|j|j.to_string()),"lid":r.lid.as_ref().map(|j|j.to_string()),
+        "registered":r.is_registered,"contact_error":r.contact_error.is_some(),"lid_error":r.lid_error.is_some()
+    })).collect::<Vec<_>>()})))
 }
 pub async fn start(State(app):State<App>,h:HeaderMap,Json(request):Json<Start>)->ApiResult {
     if !app.gateway.authorized(&h) {return Err(error(StatusCode::UNAUTHORIZED,"Acesso não autorizado."));}
@@ -207,16 +245,16 @@ async fn run_inner(app:&App,job:&Arc<Job>)->anyhow::Result<String> {
     let events=handle.events();let ended=handle.wait_ended();tokio::pin!(ended);
     let started=Instant::now();let mut answered=None;
     let mut tick=tokio::time::interval(Duration::from_millis(100));
-    let result=loop {
+    let mut result=loop {
         tokio::select! {
-            _=&mut ended=>break if answered.is_some(){"completed"}else{"no_answer"}.into(),
+            _=&mut ended=>break "peer_ended".into(),
             _=app.gateway.wake.notified()=>{},
             _=tick.tick()=>{},
             event=events.recv()=>match event {
                 Ok(CallEvent::ForeignAudio(payload))=>if let Ok(pcm)=decoder.decode_mlow_escape(&payload){let _=speaker_tx.try_send(pcm.to_vec());},
                 Ok(CallEvent::RelayAllocateFailed(_)|CallEvent::RelayAllocateTimedOut|CallEvent::RelayReconnectTimedOut)=>break "media_failed".into(),
                 Ok(CallEvent::AudioFormatMismatch{..})=>break "media_failed".into(),
-                Ok(_)=>{},Err(_)=>break "connection_failed".into(),
+                Ok(_)=>{},Err(_)=>break "peer_ended".into(),
             }
         }
         if job.cancel.load(Ordering::SeqCst){break if answered.is_some(){"completed"}else{"canceled"}.into();}
@@ -232,6 +270,13 @@ async fn run_inner(app:&App,job:&Arc<Job>)->anyhow::Result<String> {
             if at.elapsed()>Duration::from_secs(2*3600){break "time_limit".into();}
         }
     };
+    if result=="peer_ended" {
+        let (reason,accepted)=app.gateway.ended_result(handle.call_id(),answered.is_some()).await;
+        result=reason;
+        if accepted && answered.is_none() {job.record.lock().await.answered_at=now();}
+    }
+    app.gateway.accepted.lock().await.remove(handle.call_id());
+    app.gateway.end_signals.lock().await.remove(handle.call_id());
     job.cancel.store(true,Ordering::SeqCst);send.abort();receive.abort();
     Ok(result)
 }
@@ -324,5 +369,21 @@ mod tests {
         assert_eq!(result.phase,"ended");assert_eq!(result.result,"interrupted");assert!(result.ended_at>0);
         assert!(jobs[&r.id].media.lock().await.is_none());
         tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+    #[tokio::test]
+    async fn peer_end_is_independent_of_event_queue_close_order() {
+        let gateway=Gateway::disabled();
+        gateway.peer_end("declined",true,None).await;
+        gateway.peer_end("declined",false,None).await;
+        assert_eq!(gateway.ended_result("declined",false).await,("declined".into(),false));
+        gateway.peer_end("busy-device",true,Some("busy")).await;
+        assert!(!gateway.end_signals.lock().await.contains_key("busy-device"));
+        gateway.peer_end("unsupported-device",true,Some("unsupported")).await;
+        assert!(!gateway.end_signals.lock().await.contains_key("unsupported-device"));
+        gateway.peer_end("timeout",false,Some("timeout")).await;
+        assert_eq!(gateway.ended_result("timeout",false).await,("no_answer".into(),false));
+        gateway.accept("race").await;
+        assert_eq!(gateway.ended_result("race",false).await,("completed".into(),true));
+        assert_eq!(gateway.ended_result("unknown",false).await,("ended_before_answer".into(),false));
     }
 }

@@ -54,6 +54,10 @@ O cookie não usa `Secure` porque o endpoint local utiliza HTTP dentro do túnel
 
 O processo restaura a sessão após reiniciar. Se o QR Code expirar antes da vinculação, reinicie apenas o serviço **WhatsApp Lab** pelo Dokploy para gerar outro. Para invalidar a sessão, desvincule o dispositivo pelo próprio WhatsApp.
 
+Para destinos brasileiros, a consulta pode devolver um celular no formato anterior ao nono dígito. O serviço aceita essa identidade somente quando ela vem da resposta do WhatsApp e corresponde ao mesmo DDD e aos mesmos oito dígitos restantes de um celular; não tenta ligar para variações por conta própria. A identificação da conta vinculada continua exigindo correspondência exata. Uma consulta temporariamente indisponível é repetida uma vez, antes de enviar qualquer chamada.
+
+A API privada `POST /internal/contact-check`, autenticada pela chave da integração, permite verificar se um destino pode ser identificado sem fazer uma ligação. O encerramento da chamada usa os sinais de recusa e término do WhatsApp; uma mensagem de ocupado de um único dispositivo não interrompe os demais aparelhos que ainda estejam chamando.
+
 `GET /healthz` confirma que o processo responde; a conexão WhatsApp é apresentada separadamente no painel. Rotas de estado, QR Code e chamada exigem autenticação. Chamadas e encerramento exigem também o cabeçalho de ação usado pelo painel, sem CORS público.
 
 Para interromper ou reverter este experimento, pare apenas **WhatsApp Lab** no projeto **WhatsApp - Laboratorio**. Não reinicie Docker, Traefik, Asterisk ou os outros projetos.

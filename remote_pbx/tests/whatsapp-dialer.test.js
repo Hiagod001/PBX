@@ -92,6 +92,9 @@ test("WhatsApp results distinguish recipient answer from an actual agent convers
   assert.equal(whatsappOutcome({ result: "no_answer" }).status, "no_answer");
   assert.equal(whatsappOutcome({ result: "interrupted" }).retryable, false);
   assert.equal(whatsappOutcome({ result: "not_registered" }).retryable, false);
+  assert.deepEqual(whatsappOutcome({ result: "declined" }), {status:"canceled",label:"A pessoa recusou a ligação no WhatsApp",retryable:false});
+  assert.equal(whatsappOutcome({ result: "busy" }).status, "busy");
+  assert.equal(whatsappOutcome({ result: "ended_before_answer" }).status, "canceled");
 });
 
 test("late imported agent results correct the report without dialing the customer again", async () => {

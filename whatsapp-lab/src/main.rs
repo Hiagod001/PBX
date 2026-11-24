@@ -23,6 +23,7 @@ use whatsapp_rust::{
 use whatsapp_rust::wacore::types::call::CallAction;
 mod gateway;
 mod media;
+mod destination;
 
 const MAX_CALL: Duration = Duration::from_secs(90);
 const MAX_SESSION: Duration = Duration::from_secs(8 * 3600);
@@ -55,7 +56,7 @@ fn call_error_message(error: &anyhow::Error) -> String {
     }.into()
 }
 
-async fn resolve_destination(client: &Client, phone: &Jid) -> anyhow::Result<Jid> {
+async fn query_destination(client: &Client, phone: &Jid) -> anyhow::Result<Vec<whatsapp_rust::wacore::iq::usync::IsOnWhatsAppResult>> {
     // A device-list query does not always return the LID for a new contact.
     // Explicit contact discovery requests both registration and the authoritative LID.
     let results = match tokio::time::timeout(
@@ -69,25 +70,33 @@ async fn resolve_destination(client: &Client, phone: &Jid) -> anyhow::Result<Jid
         }
         Err(_) => return Err(DestinationError::LookupUnavailable.into()),
     };
-    // Never dial a result for a different phone number, including unsolicited aliases.
-    let result = results.iter().find(|result| {
-        (result.jid.server == Server::Pn && result.jid.user == phone.user)
-            || result.pn_jid.as_ref().is_some_and(|jid| jid.server == Server::Pn && jid.user == phone.user)
-    }).ok_or(DestinationError::IdentityUnavailable)?;
-    log::info!("Contact discovery: registered={}, lid_available={}, contact_error={}, lid_error={}",
-        result.is_registered, result.lid.is_some() || result.jid.server == Server::Lid,
-        result.contact_error.is_some(), result.lid_error.is_some());
-    if result.contact_error.is_some() || result.lid_error.is_some() {
-        return Err(DestinationError::LookupUnavailable.into());
+    Ok(results)
+}
+
+fn resolve_contact_results(phone:&Jid, results:&[whatsapp_rust::wacore::iq::usync::IsOnWhatsAppResult])->Result<Jid,DestinationError> {
+    let contacts:Vec<_>=results.iter().map(|r|destination::Contact {
+        jid:&r.jid,phone:r.pn_jid.as_ref(),lid:r.lid.as_ref(),registered:r.is_registered,
+        lookup_error:r.contact_error.is_some() || r.lid_error.is_some()
+    }).collect();
+    destination::select_contact(phone,&contacts)
+}
+
+async fn resolve_destination(client: &Client, phone: &Jid) -> anyhow::Result<Jid> {
+    for attempt in 0..2 {
+        let result=match query_destination(client,phone).await {
+            Ok(results)=>resolve_contact_results(phone,&results).map_err(anyhow::Error::from),
+            Err(error)=>Err(error),
+        };
+        match result {
+            Ok(peer)=>{log::info!("Contact discovery: registered and identity confirmed");return Ok(peer);},
+            Err(error) if attempt==0 && matches!(error.downcast_ref::<DestinationError>(),Some(DestinationError::LookupUnavailable|DestinationError::IdentityUnavailable))=>{
+                log::warn!("Contact discovery incomplete; retrying lookup before any call is sent");
+                tokio::time::sleep(Duration::from_millis(350)).await;
+            },
+            Err(error)=>return Err(error),
+        }
     }
-    if !result.is_registered {
-        return Err(DestinationError::NotRecognized.into());
-    }
-    if result.jid.server == Server::Lid {
-        return Ok(result.jid.clone());
-    }
-    result.lid.as_ref().filter(|jid| jid.server == Server::Lid).cloned()
-        .ok_or_else(|| DestinationError::IdentityUnavailable.into())
+    Err(DestinationError::LookupUnavailable.into())
 }
 
 #[derive(Default, Serialize, Clone)]
@@ -528,7 +537,12 @@ async fn main() -> anyhow::Result<()> {
         }})
         .on_event_for(&[EventKind::IncomingCall,EventKind::Connected,EventKind::Disconnected,EventKind::PairSuccess,EventKind::LoggedOut,EventKind::PairingQrCodesExhausted,EventKind::ClientOutdated],move |event,client|{let app=event_app.clone();async move{
             match &*event {
-                Event::IncomingCall(call)=>{if let CallAction::Accept{call_id,..}=&call.action {app.gateway.accept(call_id).await;}},
+                Event::IncomingCall(call)=>{match &call.action {
+                    CallAction::Accept{call_id,..}=>app.gateway.accept(call_id).await,
+                    CallAction::Reject{call_id,reason,..}=>app.gateway.peer_end(call_id,true,reason.as_deref()).await,
+                    CallAction::Terminate{call_id,reason,..}=>app.gateway.peer_end(call_id,false,reason.as_deref()).await,
+                    _=>{}
+                }},
                 Event::Connected(_)=>{
                     *app.client.write().await=Some(client.clone());*app.qr.write().await=None;
                     let mut v=app.view.write().await;v.account=client.pn().map(|j|j.user.to_string()).unwrap_or_default();v.connection="connected".into();v.message="WhatsApp conectado. Confira o número vinculado antes do teste.".into();
@@ -555,6 +569,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/call", post(call))
         .route("/api/hangup", post(hangup))
         .route("/internal/status", get(gateway::status))
+        .route("/internal/contact-check", post(gateway::check_contact))
         .route("/internal/calls", post(gateway::start))
         .route("/internal/calls/{id}", get(gateway::get_call))
         .route("/internal/calls/{id}/hangup", post(gateway::hangup))
