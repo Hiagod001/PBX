@@ -1698,8 +1698,9 @@ function ivrTargetCardByDestination(type, value) {
   return `${type}:${value}`;
 }
 
-function trunkChoices(selected) {
+function trunkChoices(selected, direction = "inbound") {
   return ensureConfigTrunks()
+    .filter(trunk => PbxTrunkPolicy.allows(trunk, direction) && (direction !== "outbound" || trunk.active !== false))
     .map((trunk) => option(trunk.id, selected, trunkLabel(trunk)))
     .join("");
 }
@@ -1741,6 +1742,8 @@ function ensureConfigTrunks() {
     name: trunk.name || (index === 0 ? "Operadora principal" : `Operadora ${index + 1}`),
     inboundDestinationType: trunk.inboundDestinationType || "ivr",
     inboundDestination: trunk.inboundDestinationType === "none" ? "" : trunk.inboundDestination || "main",
+    usage: PbxTrunkPolicy.usage(trunk),
+    authMode: PbxTrunkPolicy.authMode(trunk),
     active: trunk.active !== false
   }));
   state.config.trunk = { ...state.config.trunk, ...state.config.trunks[0] };
@@ -4239,6 +4242,7 @@ function renderTrunk() {
         </div>
         <div class="trunk-card-statuses">
           <span class="badge ${trunk.active === false ? "warn" : "ok"}">${trunk.active === false ? "Inativo" : "Ativo"}</span>
+          <span class="badge">${({ inbound: "Somente entrada", outbound: "Somente saída", both: "Entrada e saída" })[PbxTrunkPolicy.usage(trunk)] || "Uso não definido"}</span>
           <span class="trunk-registration-status" data-trunk-registration="${escapeHtml(trunk.id)}"></span>
         </div>
         <div class="list-card-meta">
@@ -4272,7 +4276,9 @@ function renderTrunk() {
             ${fieldBlock("Nome", "Nome simples para identificar esse tronco no painel.", `<input data-trunk-field="name" value="${escapeHtml(editing.name || "")}" placeholder="Operadora principal" />`)}
             ${fieldBlock("ID interno", "Identificador tecnico usado no Asterisk. Use letras, numeros e hifen.", `<input data-trunk-field="id" value="${escapeHtml(editing.id)}" ${editingIndex === 0 ? "readonly" : ""} />`)}
             ${fieldBlock("Numero principal", "Numero que a operadora entrega para receber e apresentar chamadas. Use so numeros.", `<input data-trunk-field="mainNumber" value="${escapeHtml(editing.mainNumber || "")}" placeholder="Ex: 3431950817" />`)}
+            ${fieldBlock("Uso do tronco", "Somente entrada recebe ligações e nunca é usado pelo discador ou pelos ramais para ligar. Somente saída faz ligações. Entrada e saída permite as duas funções.", `<select data-trunk-field="usage">${option("both", PbxTrunkPolicy.usage(editing), "Entrada e saída")}${option("inbound", PbxTrunkPolicy.usage(editing), "Somente entrada — receptivo")}${option("outbound", PbxTrunkPolicy.usage(editing), "Somente saída")}</select>`)}
             ${fieldBlock("Usuario SIP", "Login que a operadora forneceu para registrar o tronco no servidor SIP.", `<input data-trunk-field="sipUser" value="${escapeHtml(editing.sipUser || "")}" />`)}
+            ${fieldBlock("Autenticação", "Use a opção informada pela operadora. Usuário e senha registra o tronco. Por endereço IP não faz registro e depende da liberação do IP do PBX pela operadora.", `<select data-trunk-field="authMode">${option("registration", PbxTrunkPolicy.authMode(editing), "Usuário e senha (registro SIP)")}${option("ip", PbxTrunkPolicy.authMode(editing), "Por endereço IP (sem registro)")}</select>`)}
             ${fieldBlock("Senha SIP", "Senha do tronco SIP da operadora. Se estiver errada, o tronco nao registra.", `<input class="masked-secret" data-trunk-field="sipPassword" type="text" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore value="${escapeHtml(editing.sipPassword || "")}" />`)}
             ${fieldBlock("Servidor SIP", "Endereco IP ou dominio do servidor da operadora.", `<input data-trunk-field="sipServer" value="${escapeHtml(editing.sipServer || "")}" placeholder="sip.operadora.com.br" />`, "wide")}
             ${fieldBlock("Porta", "Porta de registro SIP. Em geral 5060 para UDP/TCP ou 5061 para TLS.", `<select data-trunk-field="port">${option("5060", String(editing.port || 5060), "5060 UDP/TCP")}${option("5061", String(editing.port || 5060), "5061 TLS")}</select>`)}
@@ -4280,6 +4286,7 @@ function renderTrunk() {
             ${fieldBlock("Chamadas simultaneas", "Limite de chamadas externas ao mesmo tempo nesse tronco.", `<select data-trunk-field="simultaneousCalls">${Array.from({ length: 20 }, (_, optIndex) => option(String(optIndex + 1), String(editing.simultaneousCalls || 4), `${optIndex + 1}`)).join("")}</select>`)}
             ${fieldBlock("Status", "Desative para tirar esse tronco do discador e da geracao SIP sem apagar os dados.", `<select data-trunk-field="active">${option("true", String(editing.active !== false), "Ativo")}${option("false", String(editing.active !== false), "Inativo")}</select>`)}
             ${fieldBlock("Codecs", "Formatos de audio liberados para esse tronco. Separe por virgula.", `<input data-trunk-field="codecs" value="${escapeHtml((editing.codecs || []).join(", "))}" placeholder="alaw, ulaw" />`, "wide")}
+            ${fieldBlock("Observações", "Anote pendências da operadora ou informações úteis sobre este tronco.", `<textarea data-trunk-field="notes" rows="3" maxlength="1000">${escapeHtml(editing.notes || "")}</textarea>`, "wide")}
             ${fieldBlock("Destino de entrada", "Escolha qual URA, fila, grupo ou ramal atende as chamadas que chegam por este tronco.", `<div class="destination-picker">${trunkInboundChoices(editing.inboundDestinationType || "ivr", editing.inboundDestination || "main")}</div>`, "wide")}
           </div>
         </article>
@@ -4301,13 +4308,13 @@ function renderTrunk() {
 }
 
 function updateTrunkRegistrationBadges() {
-  const labels = { registered: "Registrado", rejected: "Registro rejeitado", unregistered: "Não registrado", disabled: "Sem registro", unknown: "Não verificado" };
+  const labels = { registered: "Registrado", rejected: "Registro rejeitado", unregistered: "Não registrado", disabled: "Inativo", ip: "Autenticação por IP", unknown: "Não verificado" };
   for (const badge of pages.trunk?.querySelectorAll("[data-trunk-registration]") || []) {
     const trunk = ensureConfigTrunks().find((item) => item.id === badge.dataset.trunkRegistration);
     const registration = trunk?.active === false ? "disabled" : state.trunkRegistrationStates[badge.dataset.trunkRegistration] || "unknown";
     badge.textContent = labels[registration] || labels.unknown;
     badge.dataset.state = registration;
-    badge.title = registration === "rejected" ? "A operadora recusou o registro SIP deste tronco." : registration === "unknown" ? "Ainda não foi possível consultar o registro SIP." : "Estado atual do registro SIP no Asterisk.";
+    badge.title = registration === "ip" ? "Este tronco usa identificação por IP e não exige registro SIP. Isso não confirma que a operadora já liberou as chamadas." : registration === "rejected" ? "A operadora recusou o registro SIP deste tronco." : registration === "unknown" ? "Ainda não foi possível consultar o registro SIP." : "Estado atual do registro SIP no Asterisk.";
   }
 }
 
@@ -4458,7 +4465,7 @@ function renderRouting() {
           <span class="badge">${escapeHtml(cfg.outbound.defaultTrunk || "trunk-operadora")}</span>
         </div>
         <div class="field-grid">
-          ${fieldBlock("Tronco padrão de saída", "Escolha por qual tronco todas as ligacoes externas devem sair por padrao.", `<select data-outbound="defaultTrunk">${trunkChoices(cfg.outbound.defaultTrunk || "trunk-operadora")}</select>`, "wide")}
+          ${fieldBlock("Tronco padrão de saída", "Escolha por qual tronco os ramais fazem ligações externas. Troncos somente de entrada não aparecem nesta lista.", `<select data-outbound="defaultTrunk">${trunkChoices(cfg.outbound.defaultTrunk || "", "outbound") || option("", "", "Nenhum tronco de saída disponível")}</select>`, "wide")}
           ${fieldBlock("DDD local", "DDD da sua cidade. Ele e usado para completar numeros locais automaticamente.", `<input data-outbound="areaCode" value="${escapeHtml(cfg.outbound.areaCode || cfg.trunk.mainNumber?.slice(0, 2) || "")}" placeholder="34" />`)}
           ${fieldBlock("Completar local", "Quando ativo, um numero local curto recebe o DDD automaticamente antes de sair.", `<select data-outbound="prependAreaCodeToLocal">${option("true", String(cfg.outbound.prependAreaCodeToLocal !== false), "Sim")}${option("false", String(cfg.outbound.prependAreaCodeToLocal !== false), "Nao")}</select>`)}
           ${fieldBlock("Prefixo ao discar", "Use apenas se a operadora exigir adicionar algo antes do numero, como 0 ou codigo da operadora.", `<input data-outbound="dialPrefix" value="${escapeHtml(cfg.outbound.dialPrefix || "")}" placeholder="Ex: 0 ou vazio" />`)}
@@ -4994,7 +5001,7 @@ function dialerDestinationSelect(type, value) {
 
 function dialerTrunkOptions(selected = []) {
   const selectedSet = new Set(selected?.length ? selected : [state.config.outbound?.defaultTrunk || ensureConfigTrunks()[0]?.id || "trunk-operadora"]);
-  const trunks = state.dialerTrunks.length ? state.dialerTrunks : ensureConfigTrunks().filter((trunk) => trunk.active !== false);
+  const trunks = (state.dialerTrunks.length ? state.dialerTrunks : ensureConfigTrunks()).filter((trunk) => trunk.active !== false && PbxTrunkPolicy.allows(trunk, "outbound"));
   return trunks.map((trunk) => `<label class="dialer-trunk-choice"><input type="checkbox" name="trunkIds" value="${escapeHtml(trunk.id)}" ${selectedSet.has(trunk.id) ? "checked" : ""}><span>${escapeHtml(trunkLabel(trunk))}</span><small class="dialer-trunk-selected">${state.dialerTrunkHealth[trunk.id] === "unavailable" ? "Indisponível" : "Selecionado"}</small></label>`).join("");
 }
 
@@ -6182,9 +6189,9 @@ function collectConfig() {
       route.destinationType = cfg.trunk.inboundDestinationType;
       route.destination = cfg.trunk.inboundDestination;
     });
-    if (!cfg.trunks.some((trunk) => trunk.id === cfg.outbound?.defaultTrunk)) {
+    if (!cfg.trunks.some((trunk) => trunk.id === cfg.outbound?.defaultTrunk && trunk.active !== false && PbxTrunkPolicy.allows(trunk, "outbound"))) {
       cfg.outbound = cfg.outbound || {};
-      cfg.outbound.defaultTrunk = cfg.trunks[0]?.id || "trunk-operadora";
+      cfg.outbound.defaultTrunk = PbxTrunkPolicy.outboundTrunk(cfg)?.id || "";
     }
   }
 
@@ -6744,7 +6751,7 @@ async function loadDialerCampaigns({ preserveDraft = false, background = false }
   state.dialerCampaigns = response.campaigns;
   state.dialerCampaignsLoaded = true;
   state.dialerDestinations = response.destinations || { queues: [], extensions: [] };
-  state.dialerTrunks = response.trunks || ensureConfigTrunks().filter((trunk) => trunk.active !== false && trunk.sipServer);
+  state.dialerTrunks = response.trunks || ensureConfigTrunks().filter((trunk) => trunk.active !== false && trunk.sipServer && PbxTrunkPolicy.allows(trunk, "outbound"));
   state.dialerTrunkHealth = response.trunkHealth || {};
   state.dialerWhatsApp = response.whatsapp || {};
   if (response.audios) state.ivrAudios = response.audios;
@@ -7530,6 +7537,8 @@ document.addEventListener("click", async (event) => {
         transport: "udp",
         codecs: ["alaw", "ulaw"],
         simultaneousCalls: 4,
+        usage: "both",
+        authMode: "registration",
         inboundDestinationType: "ivr",
         inboundDestination: "main",
         active: true
@@ -7553,7 +7562,7 @@ document.addEventListener("click", async (event) => {
       if (!trunk || index === 0) return;
       if (!window.confirm(`Remover o tronco ${trunkLabel(trunk)}?`)) return;
       state.config.trunks.splice(index, 1);
-      if (state.config.outbound?.defaultTrunk === trunk.id) state.config.outbound.defaultTrunk = state.config.trunks[0]?.id || "trunk-operadora";
+      if (state.config.outbound?.defaultTrunk === trunk.id) state.config.outbound.defaultTrunk = PbxTrunkPolicy.outboundTrunk(state.config)?.id || "";
       state.editingTrunkIndex = null;
       state.editingTrunkNew = false;
       renderTrunk();

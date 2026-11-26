@@ -1,5 +1,6 @@
 const safeIdPattern = /^[a-zA-Z0-9_.-]+$/;
 const extensionPattern = /^\d{2,8}$/;
+const trunkPolicy = require("../public/trunk-policy");
 
 function invalidCharacters(value) {
   return /[;\r\n\0]/.test(String(value || ""));
@@ -41,6 +42,8 @@ function validateConfig(config) {
   trunks.forEach((trunk, index) => {
     const id = trunkIds[index];
     if (!safeIdPattern.test(id)) add(`Identificador de tronco invalido: ${id || index + 1}`);
+    if (!["both", "inbound", "outbound"].includes(trunkPolicy.usage(trunk))) add(`Uso do tronco ${id} inválido. Escolha entrada, saída ou ambos.`);
+    if (!["registration", "ip"].includes(trunkPolicy.authMode(trunk))) add(`Autenticação do tronco ${id} inválida. Escolha usuário e senha ou endereço IP.`);
     if (invalidCharacters(trunk.sipServer) || invalidCharacters(trunk.sipUser) || invalidCharacters(trunk.sipPassword)) add(`Dados SIP invalidos no tronco ${id}`);
     const port = Number(trunk.port || 5060);
     if (!Number.isInteger(port) || port < 1 || port > 65535) add(`Porta invalida no tronco ${id}`);
@@ -97,6 +100,8 @@ function validateConfig(config) {
   routes.forEach((route) => {
     if (!safeIdPattern.test(String(route.id || ""))) add("Identificador de rota de entrada invalido");
     if (route.trunkId && !trunkIds.includes(route.trunkId)) add(`Tronco da rota ${route.name || route.id} nao encontrado`);
+    const routeTrunk = trunks.find((trunk, index) => trunkIds[index] === (route.trunkId || trunkIds[0]));
+    if (route.active !== false && routeTrunk && !trunkPolicy.allows(routeTrunk, "inbound")) add(`O tronco da rota ${route.name || route.id} está configurado somente para saída.`);
     if (!/^\+?\d{1,32}$/.test(String(route.did || "")) && route.did) add(`DID invalido na rota ${route.name || route.id}. Use apenas o numero recebido.`);
     if (route.active !== false) routeMatches.push(`${route.trunkId || trunkIds[0]}:${route.did || "*"}`);
   });

@@ -18,6 +18,7 @@ const { staticCacheHeaders, privateApiHeaders } = require("./src/http-cache");
 const { buildReportPdf } = require("./src/report-pdf");
 const { historyStart, historyFilters, keepHistoryTime } = require("./src/call-history");
 const { WhatsAppDialer, whatsappCallFile, whatsappNumber } = require("./src/whatsapp-dialer");
+const trunkPolicy = require("./public/trunk-policy");
 
 const {
   ensureStore,
@@ -861,7 +862,7 @@ function configTrunks(config) {
       name: safeDialerText(trunk.name || trunk.label || trunk.mainNumber || trunk.sipUser || trunk.sipServer || (index === 0 ? "Operadora principal" : `Operadora ${index + 1}`), 80),
       active: trunk.active !== false
     }))
-    .filter((trunk) => trunk.active !== false && trunk.sipServer);
+    .filter((trunk) => trunk.active !== false && trunk.sipServer && trunkPolicy.allows(trunk, "outbound"));
 }
 
 function normalizeDialerTrunkIds(input, previous, config) {
@@ -871,7 +872,7 @@ function normalizeDialerTrunkIds(input, previous, config) {
     ? input.trunkIds
     : String(input.trunkIds || input.trunks || previous?.trunkIds?.join(",") || config.outbound?.defaultTrunk || available[0]?.id || "trunk-operadora").split(",");
   const selected = [...new Set(raw.map((item) => safeDialerText(item, 60).replace(/[^a-zA-Z0-9_.-]/g, "-")).filter((item) => allowed.has(item)))];
-  return selected.length ? selected : [config.outbound?.defaultTrunk || available[0]?.id || "trunk-operadora"].filter(Boolean);
+  return selected.length ? selected : [available.find(trunk => trunk.id === config.outbound?.defaultTrunk)?.id || available[0]?.id].filter(Boolean);
 }
 
 function normalizeDialerCampaign(input = {}, previous = null, config = {}) {
@@ -1141,7 +1142,10 @@ let dialerTrunkHealthCache = { expiresAt: 0, values: null };
 async function dialerTrunkHealth(config) {
   if (dialerTrunkHealthCache.values && dialerTrunkHealthCache.expiresAt > Date.now()) return dialerTrunkHealthCache.values;
   const registrations = parseRegistrationsOutput(await runAsteriskRead("registrations"));
+  const ipTrunks = configTrunks(config).filter(trunk => trunkPolicy.authMode(trunk) === "ip");
+  const ipEndpoints = ipTrunks.length ? parseEndpointOutput(await runAsteriskRead("endpoints")) : [];
   const values = Object.fromEntries(configTrunks(config).map((trunk) => {
+    if (trunkPolicy.authMode(trunk) === "ip") return [trunk.id, hasHealthyEndpointContact(ipEndpoints.find(item => item.id === trunk.id) || {}) ? "registered" : "unavailable"];
     const registration = registrations.find((item) => item.id === `${trunk.id}-registration`);
     return [trunk.id, registration?.status?.toLowerCase() === "registered" ? "registered" : "unavailable"];
   }));
@@ -2075,7 +2079,7 @@ function trunkRegistrationStates(config, registrations) {
   return Object.fromEntries(configured.map((trunk, index) => {
     const id = String(trunk.id || (index === 0 ? "trunk-operadora" : `trunk-${index + 1}`));
     const status = registrations.find((item) => item.id === `${id}-registration`)?.status?.toLowerCase();
-    return [id, trunk.active === false ? "disabled" : status === "registered" ? "registered" : status === "rejected" ? "rejected" : "unregistered"];
+    return [id, trunk.active === false ? "disabled" : trunkPolicy.authMode(trunk) === "ip" ? "ip" : status === "registered" ? "registered" : status === "rejected" ? "rejected" : "unregistered"];
   }));
 }
 
@@ -3762,10 +3766,10 @@ function previewOutboundDial(config, extensionNumber, rawNumber) {
     matchedRule,
     matchedPattern,
     normalized,
-    permitted: Boolean(matchedRule),
+    permitted: Boolean(matchedRule && trunkPolicy.outboundTrunk(config)),
     targetType: matchedRule ? "external" : "",
     targetLabel: "",
-    dialString: matchedRule ? `PJSIP/${normalized}@${config.outbound?.defaultTrunk || "trunk-operadora"}` : ""
+    dialString: matchedRule && trunkPolicy.outboundTrunk(config) ? `PJSIP/${normalized}@${trunkPolicy.outboundTrunk(config).id}` : ""
   };
 }
 
@@ -4994,6 +4998,9 @@ module.exports = {
     parseReportFilters,
     pbxStatusForScope,
     trunkRegistrationStates,
+    configTrunks,
+    normalizeDialerTrunkIds,
+    previewOutboundDial,
     recordingDownloadName,
     sanitizeAuditValue,
     userCanInterveneLiveCalls,

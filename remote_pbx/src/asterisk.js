@@ -3,6 +3,7 @@ const path = require("path");
 const { generatedDir } = require("./store");
 const { validateConfig } = require("./validation");
 const { monitorSipPassword } = require("./runtime-secrets");
+const trunkPolicy = require("../public/trunk-policy");
 
 const WEB_SIP_REGISTER_EXPIRES_SECONDS = 8 * 60 * 60;
 
@@ -40,8 +41,7 @@ function permissionsByExtension(config) {
 
 function selectedOutboundTrunk(config) {
   const trunks = configuredTrunks(config);
-  const selected = trunks.find((trunk) => clean(trunk.id) === clean(config.outbound?.defaultTrunk));
-  return clean(selected?.id || trunks[0]?.id || "trunk-operadora");
+  return clean(trunkPolicy.outboundTrunk({ ...config, trunks })?.id || "");
 }
 
 function trunkId(trunk, index = 0) {
@@ -58,6 +58,8 @@ function configuredTrunks(config) {
     transport: ["udp", "tcp", "tls"].includes(trunk.transport) ? trunk.transport : (["udp", "tcp", "tls"].includes(config.trunk?.transport) ? config.trunk.transport : "udp"),
     codecs: Array.isArray(trunk.codecs) && trunk.codecs.length ? trunk.codecs : config.trunk?.codecs || ["alaw", "ulaw"],
     simultaneousCalls: Number(trunk.simultaneousCalls) || Number(config.trunk?.simultaneousCalls) || 4,
+    usage: trunkPolicy.usage(trunk),
+    authMode: trunkPolicy.authMode(trunk),
     active: trunk.active !== false
   }));
 }
@@ -347,7 +349,8 @@ function outboundDialTargetForRule(config, rule, pattern) {
 }
 
 function outboundCallerIdStep(config) {
-  const callerId = clean(config.trunk?.mainNumber || "");
+  const selected = configuredTrunks(config).find(trunk => trunk.id === selectedOutboundTrunk(config));
+  const callerId = clean(selected?.mainNumber || "");
   if (!callerId) return "";
   return ` same => n,Set(CALLERID(num)=${callerId})`;
 }
@@ -530,15 +533,17 @@ function renderPjsip(config) {
     .filter((item) => item.active !== false && item.sipServer)
     .map((item, index) => {
       const id = trunkId(item, index);
+      const registered = trunkPolicy.authMode(item) === "registration";
       return [
         section(id, [
           "type=endpoint",
-          `context=inbound-trunk-${id}`,
+          `context=${trunkPolicy.allows(item, "inbound") ? `inbound-trunk-${id}` : "inbound-blocked"}`,
           "disallow=all",
           `allow=${(item.codecs || ["alaw", "ulaw"]).join(",")}`,
-          `outbound_auth=${id}-auth`,
+          registered ? `outbound_auth=${id}-auth` : "",
+          registered ? "" : "identify_by=ip",
           `aors=${id}-aor`,
-          "from_user=" + clean(item.sipUser),
+          registered ? "from_user=" + clean(item.sipUser) : "",
           "from_domain=" + clean(item.sipServer),
           "direct_media=no",
           "force_rport=yes",
@@ -550,23 +555,24 @@ function renderPjsip(config) {
           "timers=no",
           config.security.srtpEnabled ? "media_encryption=sdes" : ""
         ]),
-        section(`${id}-auth`, [
+        registered ? section(`${id}-auth`, [
           "type=auth",
           "auth_type=userpass",
           `username=${clean(item.sipUser)}`,
           `password=${clean(item.sipPassword)}`
-        ]),
+        ]) : "",
         section(`${id}-aor`, [
           "type=aor",
           `contact=sip:${clean(item.sipServer)}:${Number(item.port) || 5060}`,
-          `max_contacts=${Number(item.simultaneousCalls) || 4}`
+          `max_contacts=${Number(item.simultaneousCalls) || 4}`,
+          registered ? "" : "qualify_frequency=30"
         ]),
         section(`${id}-identify`, [
           "type=identify",
           `endpoint=${id}`,
           `match=${clean(item.sipServer)}`
         ]),
-        section(`${id}-registration`, [
+        registered ? section(`${id}-registration`, [
           "type=registration",
           `transport=transport-${transportProtocol}`,
           `outbound_auth=${id}-auth`,
@@ -574,7 +580,7 @@ function renderPjsip(config) {
           `client_uri=sip:${clean(item.sipUser)}@${clean(item.sipServer)}`,
           "retry_interval=60",
           "expiration=3600"
-        ])
+        ]) : ""
       ].join("\n");
     })
     .join("\n") || "; Configure o tronco no painel para habilitar registro SIP.\n";
@@ -651,6 +657,10 @@ function renderExtensions(config) {
   config.extensions.forEach((ext) => {
     const extPerms = perms[ext.number] || [];
     lines.push(`[outbound-${clean(ext.number)}]`);
+    if (!selectedOutboundTrunk(config)) {
+      lines.push("exten => _X!,1,Hangup(21)", "");
+      return;
+    }
     Object.entries(config.outboundRules).forEach(([rule, data]) => {
       if (!extPerms.includes(rule)) return;
       data.patterns.forEach((pattern) => {
@@ -686,10 +696,13 @@ function renderExtensions(config) {
   });
 
   lines.push("", "[inbound-trunk]");
-  const firstInboundTrunk = trunkId(configuredTrunks(config)[0]);
+  const inboundTrunks = configuredTrunks(config).filter(trunk => trunk.active !== false && trunkPolicy.allows(trunk, "inbound"));
+  const firstInboundTrunk = inboundTrunks[0] ? trunkId(inboundTrunks[0]) : "";
   ["s", "_X!", "_+X!"].forEach((pattern) => {
-    lines.push(`exten => ${pattern},1,Goto(inbound-trunk-${firstInboundTrunk},\${EXTEN},1)`);
+    lines.push(`exten => ${pattern},1,Goto(${firstInboundTrunk ? `inbound-trunk-${firstInboundTrunk}` : "inbound-blocked"},\${EXTEN},1)`);
   });
+  lines.push("", "[inbound-blocked]");
+  ["s", "_X!", "_+X!"].forEach(pattern => lines.push(`exten => ${pattern},1,Hangup(21)`));
 
   config.inboundRoutes.filter((route) => route.active !== false).forEach((route) => {
     renderInboundDestinationContext(
@@ -705,7 +718,7 @@ function renderExtensions(config) {
   });
 
   configuredTrunks(config)
-    .filter((trunk) => trunk.active !== false)
+    .filter((trunk) => trunk.active !== false && trunkPolicy.allows(trunk, "inbound"))
     .forEach((trunk, index) => {
       const id = trunkId(trunk, index);
       const inbound = inboundDestinationForTrunk(config, trunk, index);

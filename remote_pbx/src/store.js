@@ -3,6 +3,7 @@ const path = require("path");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const db = require("./db");
+const trunkPolicy = require("../public/trunk-policy");
 
 const rootDir = path.join(__dirname, "..");
 const dataDir = path.join(rootDir, "data");
@@ -45,6 +46,8 @@ function normalizeTrunk(item = {}, index = 0) {
     simultaneousCalls: Number(item.simultaneousCalls) || 4,
     inboundDestinationType: item.inboundDestinationType || "",
     inboundDestination: item.inboundDestination || "",
+    usage: trunkPolicy.usage(item),
+    authMode: trunkPolicy.authMode(item),
     active: item.active !== false
   };
 }
@@ -383,7 +386,7 @@ async function readConfigJson() {
 function normalizeConfig(config) {
   const extensionTemplate = defaultConfig.extensions[0];
   const trunks = normalizeTrunks(config);
-  const defaultTrunk = trunks.find((trunk) => trunk.id === config.outbound?.defaultTrunk)?.id || trunks[0]?.id || "trunk-operadora";
+  const defaultTrunk = trunkPolicy.outboundTrunk({ ...config, trunks })?.id || "";
   return {
     ...defaultConfig,
     ...config,
