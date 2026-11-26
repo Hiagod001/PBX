@@ -1,5 +1,6 @@
 const fs = require("fs-extra");
 const path = require("path");
+const { isIP } = require("node:net");
 const { generatedDir } = require("./store");
 const { validateConfig } = require("./validation");
 const { monitorSipPassword } = require("./runtime-secrets");
@@ -913,7 +914,16 @@ function renderCdrCustom() {
 }
 
 function renderRtp(config) {
-  return [`[general]`, `rtpstart=${Number(config.security.rtpPortStart) || 10000}`, `rtpend=${Number(config.security.rtpPortEnd) || 20000}`, ""].join("\n");
+  const permitted = String(process.env.PBX_WEBRTC_ICE_PERMIT || "").split(",").map(value => value.trim()).filter(Boolean);
+  for (const network of permitted) {
+    const [address, prefix, extra] = network.split("/");
+    const family = isIP(address);
+    if (!family || extra !== undefined || (prefix !== undefined && (!/^\d+$/.test(prefix) || Number(prefix) > (family === 4 ? 32 : 128)))) throw new Error("Rede de mídia ICE inválida.");
+  }
+  return [
+    "[general]", `rtpstart=${Number(config.security.rtpPortStart) || 10000}`, `rtpend=${Number(config.security.rtpPortEnd) || 20000}`,
+    ...(permitted.length ? ["ice_deny=0.0.0.0/0", "ice_deny=::/0", ...permitted.map(network => `ice_permit=${network}`)] : []), ""
+  ].join("\n");
 }
 
 function renderHttp() {
@@ -1091,6 +1101,7 @@ async function generateAsteriskConfigs(config, targetDir = generatedDir) {
 }
 
 module.exports = {
+  renderRtp,
   outboundNumberTarget,
   generateAsteriskConfigs,
   renderPjsip,

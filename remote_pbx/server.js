@@ -66,6 +66,7 @@ const spaRoutes = new Set([
 ]);
 let protocolCounterLock = Promise.resolve();
 let protocolEventLock = Promise.resolve();
+let protocolRequestLock = Promise.resolve();
 let dialerStoreLock = Promise.resolve();
 let cdrImportRunning = false;
 let databaseBackupRunning = false;
@@ -252,6 +253,7 @@ async function recordCallProtocolEvent(event) {
         extension: String(event.extension || "").replace(/[^\d]/g, ""),
         direction: String(event.direction || ""),
         number: String(event.number || "").replace(/[^\d#*]/g, ""),
+        requestId: String(event.requestId || ""),
         createdAt: new Date(now).toISOString()
       }
     ].filter((item) => item.protocol).slice(-20000);
@@ -262,6 +264,23 @@ async function recordCallProtocolEvent(event) {
     return events[events.length - 1];
   });
   return protocolEventLock;
+}
+
+function allocateProtocolEvent(input) {
+  const operation = protocolRequestLock.catch(() => {}).then(async () => {
+    if (input.requestId) {
+      const events = await readCallProtocolEvents();
+      const existing = events.find(event => event.extension === input.extension && event.requestId === input.requestId);
+      if (existing) {
+        if (existing.number !== input.number || existing.direction !== input.direction) throw Object.assign(new Error("Identificador de chamada já utilizado."), { status: 409 });
+        return existing;
+      }
+    }
+    const protocol = await allocateCallProtocol();
+    return recordCallProtocolEvent({ ...input, protocol });
+  });
+  protocolRequestLock = operation;
+  return operation;
 }
 
 async function readExtensionPauses() {
@@ -555,6 +574,7 @@ async function requireExtensionAuth(req, res, next) {
     return rejectSession(req, res, "Sessao do ramal expirada apos alteracao de credencial. Entre novamente.");
   }
   req.session.extension = publicExtension(current);
+  req.pbxConfig = config;
   return next();
 }
 
@@ -663,13 +683,20 @@ function browserSipSettings(req, extension) {
     process.env.BROWSER_SIP_WS ||
     `${req.secure ? "wss" : "ws"}://${process.env.BROWSER_SIP_WS_HOST || hostname}:${process.env.BROWSER_SIP_WS_PORT || (req.secure ? "8089" : "8088")}${process.env.BROWSER_SIP_WS_PATH || "/ws"}`;
 
+  const media = {};
+  if (process.env.PBX_WEBRTC_ICE_SERVERS !== undefined) {
+    const servers = JSON.parse(process.env.PBX_WEBRTC_ICE_SERVERS);
+    if (!Array.isArray(servers)) throw new Error("PBX_WEBRTC_ICE_SERVERS deve conter uma lista JSON.");
+    media.iceServers = servers;
+  }
   return {
     uri: `sip:${browserUser}@${sipDomain}`,
     authorizationUsername: browserUser,
     password: String(extension.secret || ""),
     displayName: extension.name || String(extension.number || ""),
     domain: sipDomain,
-    wsServer
+    wsServer,
+    ...media
   };
 }
 
@@ -3835,6 +3862,19 @@ app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev", {
 app.use(express.json({ limit: "1mb" }));
 // Public assets do not need a session lookup or a rolling session cookie.
 app.use(express.static(path.join(__dirname, "public"), { setHeaders: staticCacheHeaders }));
+const desktopReleaseDir = path.join(__dirname, "data", "desktop-releases");
+app.get("/downloads/UAI-PBX-Ramal-Setup.exe", async (_req, res) => {
+  const file = path.join(desktopReleaseDir, "UAI-PBX-Ramal-Setup.exe");
+  if (!(await fs.pathExists(file))) return res.status(404).json({ error: "O instalador ainda não está disponível." });
+  res.setHeader("Cache-Control", "no-cache");
+  res.download(file, "UAI-PBX-Ramal-Setup.exe");
+});
+app.get("/api/desktop-release", async (_req, res) => {
+  const release = await fs.readJson(path.join(desktopReleaseDir, "latest.json")).catch(() => null);
+  if (!release || !/^\d+\.\d+\.\d+$/.test(release.version || "") || !/^[a-f0-9]{64}$/.test(release.sha256 || "")) return res.status(404).json({ error: "Ainda não há atualização publicada." });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ version: release.version, sha256: release.sha256, size: release.size, releasedAt: release.releasedAt, downloadUrl: "/downloads/UAI-PBX-Ramal-Setup.exe" });
+});
 app.use("/api", privateApiHeaders);
 app.use(
   session({
@@ -3975,7 +4015,7 @@ app.get("/api/extensions/me", async (req, res) => {
 });
 
 app.get("/api/extensions/portal", requireExtensionAuth, async (req, res) => {
-  const config = await getConfig();
+  const config = req.pbxConfig;
   const extension = (config.extensions || []).find((candidate) => String(candidate.number) === req.session.extension.number);
   if (!extension) return res.status(404).json({ error: "Ramal nao encontrado" });
   res.json({
@@ -3986,16 +4026,17 @@ app.get("/api/extensions/portal", requireExtensionAuth, async (req, res) => {
       hold: true,
       mute: true,
       queuePause: true,
-      hangup: true
+      hangup: true,
+      protocolIdempotency: true
     }
   });
 });
 
 app.get("/api/extensions/status", requireExtensionAuth, async (req, res) => {
-  const config = await getConfig();
+  const config = req.pbxConfig;
   const status = await readPbxStatus(config);
   const extensionStatus = extensionStatusFromPbx(status, req.session.extension.number);
-  extensionStatus.recentCalls = await readRecentExtensionCalls(config, req.session.extension.number);
+  if (req.query.history !== "0") extensionStatus.recentCalls = await readRecentExtensionCalls(config, req.session.extension.number);
   res.json(extensionStatus);
 });
 
@@ -4006,15 +4047,16 @@ app.get("/api/extensions/dial-preview", requireExtensionAuth, async (req, res) =
 });
 
 app.post("/api/extensions/protocol", requireExtensionAuth, async (req, res) => {
-  const protocol = await allocateCallProtocol();
-  const event = await recordCallProtocolEvent({
-    protocol,
+  const requestId = String(req.body?.requestId || "");
+  if (requestId && !/^[a-zA-Z0-9_-]{8,80}$/.test(requestId)) return res.status(400).json({ error: "Identificador de chamada inválido." });
+  const event = await allocateProtocolEvent({
     extension: req.session.extension.number,
     direction: String(req.body?.direction || ""),
-    number: normalizeDigits(req.body?.number || "")
+    number: normalizeDigits(req.body?.number || ""),
+    requestId
   });
   res.json({
-    protocol,
+    protocol: event.protocol,
     extension: req.session.extension.number,
     direction: String(req.body?.direction || ""),
     number: normalizeDigits(req.body?.number || ""),

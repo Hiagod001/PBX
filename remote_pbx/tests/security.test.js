@@ -54,7 +54,9 @@ test("management UI exposes only the assigned operator menus", () => {
   for (const menu of ["dialer", "queues", "audios"]) assert.equal(context.canAccessTab(menu), true);
   for (const menu of ["users", "security", "status", "reports"]) assert.equal(context.canAccessTab(menu), false);
   assert.equal(source.includes('data-user-field="extension"'), false);
-  assert.equal(source.includes('data-user-field="allowedExtensions"'), false);
+  // Management login has no personal extension; live supervision retains its explicit scope.
+  assert.equal(source.includes('data-user-field="allowedExtensions"'), true);
+  assert.equal(source.includes('data-user-permission="interveneCalls"'), true);
 });
 
 test("administrative middleware blocks regular users", () => {
@@ -103,7 +105,7 @@ test("audit payloads redact nested credentials", () => {
   assert.equal(result.safe, "visible");
 });
 
-test("management users can access all extensions without extension assignments", () => {
+test("live supervision requires authorized extensions or departments", () => {
   const config = {
     extensions: [
       { number: "505", department: "Suporte" },
@@ -114,15 +116,20 @@ test("management users can access all extensions without extension assignments",
     session: { user: { role: "supervisor", allowedExtensions: ["505"], departments: [] } }
   };
   assert.equal(_test.userCanMonitorExtension(supervisor, config, "505"), true);
+  assert.equal(_test.userCanMonitorExtension(supervisor, config, "701"), false);
+  supervisor.session.user.departments = ["Financeiro"];
   assert.equal(_test.userCanMonitorExtension(supervisor, config, "701"), true);
+  assert.equal(_test.userCanMonitorExtension({ session: { user: { role: "user", allowedExtensions: ["701"], permissions: { menus: {} } } } }, config, "701"), false);
   assert.equal(_test.userCanMonitorExtension({ session: { user: { role: "admin" } } }, config, "701"), true);
 });
 
-test("call intervention follows the monitor menu permission", () => {
+test("call intervention requires monitor access and explicit intervention permission", () => {
   assert.equal(_test.userCanInterveneLiveCalls({ session: { user: { role: "admin" } } }), true);
   assert.equal(_test.userCanInterveneLiveCalls({ session: { user: { role: "supervisor", permissions: {} } } }), false);
   assert.equal(
     _test.userCanInterveneLiveCalls({ session: { user: { role: "user", permissions: { menus: { status: true } } } } }),
-    true
+    false
   );
+  assert.equal(_test.userCanInterveneLiveCalls({ session: { user: { role: "user", permissions: { menus: { status: true }, interveneCalls: true } } } }), true);
+  assert.equal(_test.userCanInterveneLiveCalls({ session: { user: { role: "user", permissions: { menus: {}, interveneCalls: true } } } }), false);
 });

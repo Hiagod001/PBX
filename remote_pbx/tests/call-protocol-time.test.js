@@ -92,3 +92,24 @@ test("parallel protocol requests retain unique counters and all events, and corr
     assert.equal(await fs.readFile(context.protocolCounterPath, "utf8"), "invalid-json");
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
+
+test("duplicate protocol requests return the original event without allocating another number", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pbx-protocol-retry-"));
+  try {
+    const source = await fs.readFile(require.resolve("../server"), "utf8");
+    const context = {
+      fs: require("fs-extra"), path, Date, process, Promise,
+      protocolYear: () => "2026", parseFlexibleDate: text => new Date(text),
+      historyStart: async () => "", keepHistoryTime,
+      protocolCounterPath:path.join(dir,"counter.json"),callProtocolsPath:path.join(dir,"events.json"),
+      protocolCounterLock:Promise.resolve(),protocolEventLock:Promise.resolve(),protocolRequestLock:Promise.resolve()
+    };
+    vm.runInNewContext(source.slice(source.indexOf("async function allocateCallProtocol()"),source.indexOf("async function readExtensionPauses()")),context);
+    const input={extension:"9971",direction:"entrada",number:"9972",requestId:"test-call-request"};
+    const responses=await Promise.all(Array.from({length:20},()=>context.allocateProtocolEvent(input)));
+    assert.equal(new Set(responses.map(r=>r.protocol)).size,1);
+    assert.equal(JSON.parse(await fs.readFile(context.protocolCounterPath,"utf8"))["2026"],1);
+    assert.equal(JSON.parse(await fs.readFile(context.callProtocolsPath,"utf8")).events.length,1);
+    await assert.rejects(context.allocateProtocolEvent({...input,number:"9973"}),/já utilizado/);
+  } finally {await fs.rm(dir,{recursive:true,force:true})}
+});

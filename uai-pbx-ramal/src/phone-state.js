@@ -17,7 +17,7 @@
       return number;
     },
     callInProgress(state = {}) {
-      return Boolean(state.session || state.callPending || state.dialStarting);
+      return Boolean(state.session || state.callPending || state.dialStarting || state.endingCall);
     },
     terminationAction(session, states) {
       if (!session || session.state === states.Terminated || session.state === states.Terminating) return null;

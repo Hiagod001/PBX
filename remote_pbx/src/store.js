@@ -4,6 +4,7 @@ const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const db = require("./db");
 const trunkPolicy = require("../public/trunk-policy");
+const { snapshotCache } = require("./snapshot-cache");
 
 const rootDir = path.join(__dirname, "..");
 const dataDir = path.join(rootDir, "data");
@@ -407,11 +408,17 @@ function normalizeConfig(config) {
   };
 }
 
-async function getConfig() {
+async function loadConfig() {
   await ensureStore();
   const databaseConfig = await db.getConfig();
   if (databaseConfig) return normalizeConfig(databaseConfig);
   return readConfigJson();
+}
+
+const configCache = snapshotCache(loadConfig, { ttlMs: Math.max(0, Number(process.env.PBX_CONFIG_CACHE_MS || 1000)) });
+
+async function getConfig() {
+  return configCache.read();
 }
 
 async function writeJsonAtomic(filePath, value) {
@@ -424,13 +431,17 @@ async function saveConfig(config) {
   await ensureStore();
   const merged = normalizeConfig(config);
   const databaseEnabled = await db.ensureDatabase();
-  if (databaseEnabled) await db.saveConfig(merged);
+  if (databaseEnabled) {
+    await db.saveConfig(merged);
+    configCache.invalidate();
+  }
   try {
     await writeJsonAtomic(configPath, merged);
   } catch (error) {
     if (!databaseEnabled) throw error;
     console.warn(`[store] Configuracao salva no PostgreSQL, mas o espelho JSON falhou: ${error.message}`);
   }
+  configCache.invalidate();
   return merged;
 }
 

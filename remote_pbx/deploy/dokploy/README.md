@@ -36,7 +36,7 @@ Atualize essas definições juntas para uma publicação posterior não restaura
 volumes antigos. Valide com `docker compose config --quiet`; a saída completa de
 `docker compose config` pode conter segredos expandidos dos arquivos de ambiente.
 
-As imagens `uai-pbx-web:20261126-algar-ready2` e
+As imagens `uai-pbx-web:20261126-performance2` e
 `uai-pbx-asterisk:20261113-fixes2` estão no Docker deste servidor, com
 `pull_policy: never`. Preserve/exporte essas imagens ao recuperar em outro host.
 O código utilizado na publicação está em `/home/dokploy/pbx-validation/source`.
@@ -68,3 +68,33 @@ O importador interpreta os horários locais do Asterisk com `ASTERISK_CDR_TIMEZO
 ou `TZ` (padrão `America/Sao_Paulo`) antes de gravar instantes no PostgreSQL.
 O vínculo de protocolos considera o horário original do identificador Asterisk
 para distinguir chamadas repetidas mesmo quando o CDR final tem horários iguais.
+
+## Desempenho e aplicativo dos ramais
+
+O painel mantém um cache de configuração por processo de até 1 segundo
+(`PBX_CONFIG_CACHE_MS`), com cópia independente para cada leitor e invalidação
+imediata ao salvar pela aplicação. Alterações diretas no banco aparecem após
+esse intervalo. Usuários e sessões continuam com sua validação própria.
+A inicialização do PostgreSQL é compartilhada e o esquema só recebe DDL quando
+o hash de `src/postgres-schema.sql` muda. O marcador `pbx_schema_version` é
+atualizado dentro de uma transação com trava de migração.
+
+Neste host, `private/web.env` define `PBX_WEBRTC_ICE_SERVERS=[]` e
+`PBX_WEBRTC_ICE_PERMIT=131.0.112.27/32`. Isso usa o caminho de mídia direto
+validado na rede dos atendentes e remove candidatos de interfaces Docker sem
+rota. Preserve essas definições ao regenerar `rtp.conf`. Outros ambientes devem
+validar STUN/TURN e suas próprias redes antes de reutilizar os valores.
+Não altera as portas RTP nem a restrição de acesso ao WebSocket.
+
+O instalador 1.0.11 fica em `data/app/desktop-releases/UAI-PBX-Ramal-Setup.exe`.
+O manifesto `latest.json` contém versão, SHA-256, tamanho e data de publicação.
+A aplicação serve `/downloads/UAI-PBX-Ramal-Setup.exe` e `/api/desktop-release`
+sem uma sessão administrativa; os arquivos distribuídos não incluem credenciais.
+A publicação é manual e não instala atualizações automaticamente nas estações.
+
+Backup desta manutenção: `/home/dokploy/pbx-validation/backups/launcher-performance-20261126`.
+Inclui os arquivos de ambiente, Compose, RTP, dump e dados anteriores aos testes.
+Para recuperar somente o painel, use a imagem e o Compose anteriores desse
+backup; para desfazer a configuração de mídia, restaure também o ambiente e
+`rtp.conf`, recarregando apenas `res_rtp_asterisk.so` quando não houver chamadas.
+Não restaure o banco inteiro para desfazer uma atualização de interface.

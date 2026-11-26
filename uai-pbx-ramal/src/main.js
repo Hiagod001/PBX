@@ -7,6 +7,7 @@ const PhoneState = require("./phone-state");
 
 const PBX_URL = process.env.UAI_PBX_URL || "https://uaipbx.uaitelecom.com.br";
 const APP_PARTITION = "persist:uai-pbx-ramal";
+const QA_HEADLESS = Boolean(process.env.UAI_PBX_TEST_USER_DATA && process.env.UAI_PBX_TEST_HEADLESS === "1");
 const VALID_TONES = new Set(["ringtone", "ringing"]);
 if (process.env.UAI_PBX_TEST_USER_DATA) app.setPath("userData", path.resolve(process.env.UAI_PBX_TEST_USER_DATA));
 
@@ -128,6 +129,7 @@ function stopTone(name) {
 }
 
 function startTone(name) {
+  if (QA_HEADLESS) return;
   const key = String(name || "");
   if (!VALID_TONES.has(key)) {
     toneLog(`start ignored invalid tone=${key}`);
@@ -173,6 +175,7 @@ function startTone(name) {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
+    show: !QA_HEADLESS,
     width: 400,
     height: 760,
     minWidth: 320,
@@ -196,7 +199,7 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, "renderer.html"));
-  mainWindow.webContents.setAudioMuted(false);
+  mainWindow.webContents.setAudioMuted(QA_HEADLESS);
   mainWindow.on("closed", () => {
     stopTone("ringtone");
     stopTone("ringing");
@@ -214,6 +217,7 @@ app.on("second-instance", (_event, argv) => {
 
 ipcMain.handle("app:server", () => ({
   serverUrl: PBX_URL,
+  version: app.getVersion(),
   extension: currentExtension
 }));
 
@@ -235,6 +239,7 @@ ipcMain.handle("app:tone-stop", (_event, name) => {
 });
 
 ipcMain.handle("app:incoming-call", async (_event, payload) => {
+  if (QA_HEADLESS) return { ok: true };
   const number = String(payload?.number || "Chamada recebida");
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
@@ -299,7 +304,8 @@ ipcMain.handle("extension:protocol", async (_event, payload) => {
   if (!currentExtension) throw new Error("Entre com o ramal antes de gerar protocolo.");
   const data = await pbxFetch("/api/extensions/protocol", {
     method: "POST",
-    body: JSON.stringify({ number, direction })
+    body: JSON.stringify({ number, direction, requestId: String(payload?.requestId || "") }),
+    signal: AbortSignal.timeout(5000)
   });
   return { ok: true, protocol: data };
 });
@@ -314,9 +320,9 @@ ipcMain.handle("extension:call", async (_event, payload) => {
   return { ok: true, call: data };
 });
 
-ipcMain.handle("extension:status", async () => {
+ipcMain.handle("extension:status", async (_event, options = {}) => {
   if (!currentExtension) throw new Error("Entre com o ramal antes de consultar status.");
-  const data = await pbxFetch("/api/extensions/status");
+  const data = await pbxFetch(`/api/extensions/status${options.includeHistory === false ? "?history=0" : ""}`);
   return { ok: true, status: data };
 });
 

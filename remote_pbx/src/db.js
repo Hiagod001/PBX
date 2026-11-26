@@ -1,12 +1,15 @@
 const fs = require("fs-extra");
 const path = require("path");
 const { Pool } = require("pg");
+const { ensureSchema } = require("./database-schema");
 
 const schemaPath = path.join(__dirname, "postgres-schema.sql");
 
 let pool = null;
 let ready = false;
 let unavailable = false;
+let initialization = null;
+let retryAfter = 0;
 
 function isEnabled() {
   if (String(process.env.PBX_DATABASE_ENABLED || "").toLowerCase() === "false") return false;
@@ -29,6 +32,7 @@ function connectionConfig() {
     return {
       connectionString,
       max: Number(process.env.PGPOOL_MAX || 10),
+      connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS || 5000),
       idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000)
     };
   }
@@ -39,6 +43,7 @@ function connectionConfig() {
     user: process.env.PGUSER || "pbx",
     password: process.env.PGPASSWORD || "",
     max: Number(process.env.PGPOOL_MAX || 10),
+    connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS || 5000),
     idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000)
   };
 }
@@ -46,21 +51,31 @@ function connectionConfig() {
 async function ensureDatabase() {
   if (!isEnabled()) return false;
   if (ready) return true;
-  if (unavailable && !isRequired()) return false;
+  if (initialization) return initialization;
+  if (unavailable && !isRequired() && Date.now() < retryAfter) return false;
 
-  try {
-    if (!pool) pool = new Pool(connectionConfig());
-    await pool.query("SELECT 1");
-    await pool.query(await fs.readFile(schemaPath, "utf8"));
-    ready = true;
-    unavailable = false;
-    return true;
-  } catch (error) {
-    unavailable = true;
-    if (isRequired()) throw error;
-    console.warn(`[postgres] Banco indisponivel, usando JSON local: ${error.message}`);
-    return false;
-  }
+  initialization = (async () => {
+    try {
+      if (!pool) {
+        pool = new Pool(connectionConfig());
+        pool.on("error", error => {
+          ready = false;
+          console.warn(`[postgres] Conexao ociosa encerrada: ${error.message}`);
+        });
+      }
+      await ensureSchema(pool, await fs.readFile(schemaPath, "utf8"));
+      ready = true;
+      unavailable = false;
+      return true;
+    } catch (error) {
+      unavailable = true;
+      retryAfter = Date.now() + 5000;
+      if (isRequired()) throw error;
+      console.warn(`[postgres] Banco indisponivel, usando JSON local: ${error.message}`);
+      return false;
+    }
+  })().finally(() => { initialization = null; });
+  return initialization;
 }
 
 async function query(text, params = []) {

@@ -14,7 +14,7 @@ contextBridge.exposeInMainWorld("pbxAPI", {
   protocol: (payload) => ipcRenderer.invoke("extension:protocol", payload),
   call: (payload) => ipcRenderer.invoke("extension:call", payload),
   incomingCall: (payload) => ipcRenderer.invoke("app:incoming-call", payload),
-  status: () => ipcRenderer.invoke("extension:status"),
+  status: (options) => ipcRenderer.invoke("extension:status", options),
   pause: (payload) => ipcRenderer.invoke("extension:pause", payload),
   hangup: (payload) => ipcRenderer.invoke("extension:hangup", payload),
   transfer: (payload) => ipcRenderer.invoke("extension:transfer", payload)

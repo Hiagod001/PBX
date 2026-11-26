@@ -15,6 +15,8 @@ const state = {
   incoming: false,
   autoAnswerNext: false,
   callPending: false,
+  endingCall: false,
+  protocolPending: false,
   currentNumber: "",
   currentDirection: "saida",
   currentProtocol: "",
@@ -100,6 +102,13 @@ const refreshDevicesBtn = document.querySelector("#refreshDevicesBtn");
 const testRingBtn = document.querySelector("#testRingBtn");
 const testRingbackBtn = document.querySelector("#testRingbackBtn");
 const remoteAudio = document.querySelector("#remoteAudio");
+const callProtocols = CallControl.protocolTracker({
+  request: payload => window.pbxAPI.protocol(payload),
+  createId: () => crypto.randomUUID(),
+  retry: () => Boolean(state.portal?.features?.protocolIdempotency),
+  apply(protocol) { state.currentProtocol = protocol; state.protocolPending = false; renderActiveCallPanel(); },
+  failed(error) { state.protocolPending = false; sipLog(`protocol unavailable: ${error.message || "unknown"}`); renderActiveCallPanel(); }
+});
 
 let paused = false;
 let speakerMuted = false;
@@ -122,6 +131,26 @@ let statusInFlight = false;
 let pauseInFlight = false;
 let pauseRevision = 0;
 let statusTimer = null;
+let webRtcWarmup = null;
+
+function warmWebRtc() {
+  if (webRtcWarmup) return webRtcWarmup;
+  webRtcWarmup = (async () => {
+    const started = performance.now();
+    const peer = new RTCPeerConnection({ iceServers: [] });
+    try {
+      peer.addTransceiver("audio", { direction: "sendrecv" });
+      await peer.createOffer();
+    } finally {
+      peer.close();
+    }
+    sipLog(`media engine ready durationMs=${Math.round(performance.now() - started)}`);
+  })().catch(error => {
+    webRtcWarmup = null;
+    sipLog(`media warmup unavailable: ${error.message || "unknown"}`);
+  });
+  return webRtcWarmup;
+}
 
 function sipLog(message) {
   window.pbxAPI.sipLog?.(String(message || "")).catch(() => null);
@@ -261,7 +290,7 @@ function renderActiveCallPanel() {
   activeCallStatus.textContent = state.callStatus || (state.session ? "Em chamada" : "Conectando");
   activeCallDuration.textContent = state.callStartedAt ? callDurationLabel(state.callStartedAt) : "0s";
   activeCallExtension.textContent = state.extension?.number || "-";
-  activeCallProtocol.textContent = state.currentProtocol || "-";
+  activeCallProtocol.textContent = state.currentProtocol || (state.protocolPending ? "Gerando…" : "-");
   activeAnswerBtn.classList.toggle("hidden", !(state.incoming && state.session));
   activeSpeakerBtn.classList.toggle("warn", speakerMuted);
   activeSpeakerBtn.textContent = speakerMuted ? "Som off" : "Som";
@@ -541,6 +570,8 @@ async function terminateSipSession(session) {
 }
 
 function finishSipCall(message = "Chamada encerrada.") {
+  callProtocols.clear();
+  state.protocolPending = false;
   assistedTransfer.dispose().catch(error => sipLog("transfer cleanup", error));
   clearPendingCallTimeout();
   stopRingtone();
@@ -570,17 +601,23 @@ async function hangupCurrentCall(message = "Chamada encerrada.") {
   stopRingtone();
   stopRingback();
   const session = state.session;
+  const wasPending = state.callPending;
+  if (!session && !wasPending) return;
+  if (state.endingCall) return;
+  state.endingCall = true;
   state.autoAnswerNext = false;
-  state.callPending = false;
   state.callStatus = "Encerrando";
   renderActiveCallPanel();
 
-  await Promise.all([
-    finishSipOperation("terminate call", terminateSipSession(session)),
-    finishSipOperation("hangup server", window.pbxAPI.hangup?.({}))
-  ]).catch(() => null);
-
-  finishSipCall(message);
+  try {
+    const ended = session ? await finishSipOperation("terminate call", terminateSipSession(session), 1000) : false;
+    if (!ended && ((!session && state.callPending) || (state.session === session && session?.state !== SIP.SessionState.Terminated))) {
+      await finishSipOperation("hangup server fallback", window.pbxAPI.hangup?.({}), 3000);
+    }
+  } finally {
+    if (state.session === session || (!session && !state.session)) finishSipCall(message);
+    state.endingCall = false;
+  }
 }
 
 function watchSipSession(session) {
@@ -627,14 +664,30 @@ function watchSipSession(session) {
   });
 }
 
-async function answerSipCall(session) {
-  if (!session?.accept) return;
+const acceptSipCall = CallControl.singleFlight(async session => {
+  if (!session?.accept || state.session !== session) return;
+  const started = performance.now();
   stopRingtone();
   stopRingback();
   state.incoming = false;
   state.callStatus = "Atendendo";
   renderActiveCallPanel();
-  await session.accept({ sessionDescriptionHandlerOptions: { constraints: { audio: audioConstraints(), video: false } } });
+  try {
+    await session.accept({ sessionDescriptionHandlerOptions: { constraints: { audio: audioConstraints(), video: false } } });
+    sipLog(`answer completed durationMs=${Math.round(performance.now() - started)}`);
+  } catch (error) {
+    if (state.session === session && session.state === SIP.SessionState.Initial) {
+      state.incoming = true;
+      state.callStatus = "Recebendo chamada";
+      renderActiveCallPanel();
+    }
+    throw error;
+  }
+});
+
+function answerSipCall(session) {
+  if (!session) return Promise.resolve();
+  return acceptSipCall(session);
 }
 
 async function loadPortal() {
@@ -679,8 +732,10 @@ async function finishSipOperation(label, operation, timeoutMs = 3000) {
       })
     ]);
     if (!finished) sipLog(`${label} timed out after ${timeoutMs}ms`);
+    return finished;
   } catch (error) {
     sipLog(`${label} failed error=${error.message || "unknown"}`);
+    return false;
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -710,6 +765,7 @@ async function startSoftphone() {
 
     const portal = await loadPortal();
     await waitForSipLibrary();
+    await warmWebRtc();
     assertSoftphoneAttemptActive();
     const sip = portal.sip;
     const userAgent = new SIP.UserAgent({
@@ -717,6 +773,8 @@ async function startSoftphone() {
       authorizationUsername: sip.authorizationUsername,
       authorizationPassword: sip.password,
       displayName: sip.displayName,
+      logConfiguration: false,
+      logLevel: "error",
       transportOptions: {
         server: sip.wsServer,
         connectionTimeout: 10,
@@ -725,7 +783,8 @@ async function startSoftphone() {
       },
       sessionDescriptionHandlerFactoryOptions: {
         constraints: { audio: audioConstraints(), video: false },
-        iceGatheringTimeout: 750
+        iceGatheringTimeout: Number(sip.iceGatheringTimeout) || 750,
+        ...(Array.isArray(sip.iceServers) ? { peerConnectionConfiguration: { iceServers: sip.iceServers } } : {})
       }
     });
 
@@ -733,7 +792,7 @@ async function startSoftphone() {
     state.sipGeneration = generation;
     userAgent.delegate = {
       async onInvite(invitation) {
-        if (PhoneState.rejectInvitation({ paused: paused || pauseInFlight, busy: Boolean(state.session), stopping: state.stoppingSoftphone || generation !== state.sipGeneration, callback: state.autoAnswerNext && state.callPending })) {
+        if (PhoneState.rejectInvitation({ paused: paused || pauseInFlight, busy: Boolean(state.session), stopping: state.endingCall || state.stoppingSoftphone || generation !== state.sipGeneration, callback: state.autoAnswerNext && state.callPending })) {
           await invitation.reject({ statusCode: 486 }).catch(() => null);
           return;
         }
@@ -748,12 +807,12 @@ async function startSoftphone() {
         state.incoming = true;
         state.currentNumber = normalizeCallerNumber(invitation.remoteIdentity?.uri?.user || invitation.remoteIdentity?.displayName || "entrada");
         state.currentProtocol = "";
-        await assignCallProtocol("entrada", state.currentNumber).catch(() => null);
         state.callStatus = "Recebendo chamada";
         setMessage("Chamada recebida.", true);
         startRingtone();
         window.pbxAPI?.incomingCall?.({ number: state.currentNumber, extension: state.extension?.number || "" }).catch(() => null);
         renderActiveCallPanel();
+        void assignCallProtocol("entrada", state.currentNumber);
       }
     };
 
@@ -799,6 +858,8 @@ async function startSoftphone() {
 }
 
 async function stopSoftphone() {
+  callProtocols.clear();
+  state.protocolPending = false;
   await assistedTransfer.dispose();
   state.stoppingSoftphone = true;
   clearSipReconnectTimer();
@@ -821,10 +882,9 @@ async function stopSoftphone() {
 
 async function assignCallProtocol(direction, number) {
   if (state.currentProtocol) return state.currentProtocol;
-  const result = await window.pbxAPI.protocol({ direction, number });
-  state.currentProtocol = result.protocol?.protocol || "";
+  state.protocolPending = true;
   renderActiveCallPanel();
-  return state.currentProtocol;
+  return callProtocols.start({ direction, number });
 }
 
 function setBusy(button, busy, label) {
@@ -951,8 +1011,9 @@ async function refreshStatus() {
   statusInFlight = true;
   const extension = state.extension;
   const revision = pauseRevision;
+  const includeHistory = !historyPanel.classList.contains("hidden");
   try {
-    const result = await window.pbxAPI.status();
+    const result = await window.pbxAPI.status({ includeHistory });
     if (state.extension !== extension) return;
     const status = result.status || {};
     if (!pauseInFlight && revision === pauseRevision) {
@@ -961,12 +1022,13 @@ async function refreshStatus() {
       pauseStartedAt = pause.startedAt;
       setPaused(pause.paused);
     }
-    if (!historyPanel.classList.contains("hidden")) renderHistory(status.recentCalls || []);
+    if (includeHistory && !historyPanel.classList.contains("hidden")) renderHistory(status.recentCalls || []);
     if (!isSipRegistered() && !state.session) scheduleSipReconnect("verificacao periodica");
   } catch (_error) {
     setMessage("Sem resposta do servidor. Tentando novamente...");
   } finally {
     statusInFlight = false;
+    if (!includeHistory && state.extension === extension && !historyPanel.classList.contains("hidden")) void refreshStatus();
   }
 }
 
@@ -1123,7 +1185,7 @@ callBtn.addEventListener("click", async () => {
     state.currentDirection = "saida";
     state.callStatus = "Conectando";
     state.currentProtocol = "";
-    await assignCallProtocol("saida", number);
+    void assignCallProtocol("saida", number);
     state.autoAnswerNext = true;
     state.callPending = true;
     renderActiveCallPanel();
@@ -1139,6 +1201,8 @@ callBtn.addEventListener("click", async () => {
     pendingCallTimeout = setTimeout(() => {
       pendingCallTimeout = null;
       if (!state.session && state.callPending) {
+        callProtocols.clear();
+        state.protocolPending = false;
         stopRingback();
         state.callPending = false;
         state.autoAnswerNext = false;
@@ -1153,6 +1217,8 @@ callBtn.addEventListener("click", async () => {
     refreshStatus();
   } catch (error) {
     clearPendingCallTimeout();
+    callProtocols.clear();
+    state.protocolPending = false;
     state.autoAnswerNext = false;
     state.callPending = false;
     stopRingback();
@@ -1285,6 +1351,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   try {
     const info = await window.pbxAPI.server();
     state.serverUrl = info.serverUrl;
+    document.querySelector("#appVersion").textContent = info.version ? `Versão ${info.version}` : "";
     await loadAudioDevices();
     showLogin();
   } catch (error) {
