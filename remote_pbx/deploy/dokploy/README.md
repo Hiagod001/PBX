@@ -36,7 +36,7 @@ Atualize essas definições juntas para uma publicação posterior não restaura
 volumes antigos. Valide com `docker compose config --quiet`; a saída completa de
 `docker compose config` pode conter segredos expandidos dos arquivos de ambiente.
 
-As imagens `uai-pbx-web:20261126-performance2` e
+As imagens `uai-pbx-web:20261126-queue-apply` e
 `uai-pbx-asterisk:20261113-fixes2` estão no Docker deste servidor, com
 `pull_policy: never`. Preserve/exporte essas imagens ao recuperar em outro host.
 O código utilizado na publicação está em `/home/dokploy/pbx-validation/source`.
@@ -98,3 +98,25 @@ Para recuperar somente o painel, use a imagem e o Compose anteriores desse
 backup; para desfazer a configuração de mídia, restaure também o ambiente e
 `rtp.conf`, recarregando apenas `res_rtp_asterisk.so` quando não houver chamadas.
 Não restaure o banco inteiro para desfazer uma atualização de interface.
+
+## Aplicação de filas e preparação de áudios
+
+O helper do contêiner sincroniza os áudios somente em
+`/usr/share/asterisk/sounds/custom`, volume persistente compartilhado com o
+Asterisk. O `astdatadir` deste ambiente é `/usr/share/asterisk`. As cópias antigas
+em diretórios alternativos não são necessárias para os áudios `custom/...` e
+uma delas era refeita dentro do contêiner a cada recriação do painel, causando
+conversões de MP3 durante o primeiro salvamento de uma fila.
+
+`Dockerfile.queue-apply` deriva da imagem anterior e executa
+`prepare-apply-helper.cjs` sobre o helper específico do contêiner. O ajuste
+preserva suas regras de permissões, trava, backup, rollback e recarga seletiva.
+O build falha se encontrar uma lista de diretórios diferente da esperada.
+O helper para instalações Linux fora do Dokploy permanece independente.
+
+Validação em 26/11/2026: o aplicador em contêiner recém-criado passou de
+11,035 s para 0,176 s. A recarga efetiva de `queues.conf` em produção levou
+0,243 s, mantendo os cadastros e parâmetros da fila de Suporte. Um áudio novo
+foi convertido nos quatro formatos de telefonia, e os arquivos temporários do
+teste foram removidos. Esses tempos medem o aplicador, não o clique completo
+no navegador. Backup: `data/backups/queue-apply-20261126`.

@@ -1,0 +1,4 @@
+FROM uai-pbx-web:20261126-performance2
+WORKDIR /opt/pbx-sip-admin
+COPY deploy/dokploy/prepare-apply-helper.cjs ./deploy/dokploy/prepare-apply-helper.cjs
+RUN node deploy/dokploy/prepare-apply-helper.cjs scripts/apply-root.sh

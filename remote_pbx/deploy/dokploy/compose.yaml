@@ -37,7 +37,7 @@ services:
       timeout: 5s
       retries: 4
   web:
-    image: uai-pbx-web:20261126-performance2
+    image: uai-pbx-web:20261126-queue-apply
     pull_policy: never
     restart: unless-stopped
     init: true
