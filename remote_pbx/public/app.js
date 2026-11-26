@@ -242,6 +242,7 @@ const pages = {
   ivr: document.querySelector("#tab-ivr"),
   dialer: document.querySelector("#tab-dialer"),
   audios: document.querySelector("#tab-audios"),
+  ivrAudios: document.querySelector("#tab-ivrAudios"),
   queues: document.querySelector("#tab-queues"),
   security: document.querySelector("#tab-security"),
   logs: document.querySelector("#tab-logs"),
@@ -260,7 +261,8 @@ const titleByTab = {
   routing: "Rotas e regras",
   ivr: "URAs",
   dialer: "Discador",
-  audios: "Gravacoes",
+  audios: "Gravações",
+  ivrAudios: "Áudios da URA",
   queues: "Filas de atendimento",
   security: "Seguranca",
   logs: "Sistema",
@@ -278,6 +280,7 @@ const subtitleByTab = {
   ivr: "Fluxos de atendimento automatico",
   dialer: "Campanhas e chamadas de saida",
   audios: "Pesquisa, reproducao e organizacao das gravacoes",
+  ivrAudios: "Mensagens usadas no atendimento automático e nas campanhas",
   queues: "Equipes, estrategias e distribuicao de chamadas",
   security: "Protecao e politicas do ambiente",
   logs: "Saude, conectividade e eventos do PBX",
@@ -296,6 +299,7 @@ const menuPermissions = {
   ivr: "ivr",
   dialer: "dialer",
   audios: "audios",
+  ivrAudios: "ivrAudios",
   queues: "queues",
   logs: "logs",
   security: "security",
@@ -307,12 +311,12 @@ const userMenuGroups = [
   {
     label: "Operacao",
     icon: "activity",
-    tabs: ["overview", "status", "reports", "queues", "extensions", "dialer"]
+    tabs: ["overview", "status", "reports", "audios", "queues", "extensions", "dialer"]
   },
   {
     label: "Telefonia",
     icon: "phone",
-    tabs: ["trunk", "routing", "ivr", "audios"]
+    tabs: ["trunk", "routing", "ivr", "ivrAudios"]
   },
   {
     label: "Governanca",
@@ -333,6 +337,7 @@ const tabRoutes = {
   ivr: "/ura",
   dialer: "/dialer",
   audios: "/audios",
+  ivrAudios: "/audios-ura",
   queues: "/queues",
   logs: "/logs",
   security: "/security",
@@ -361,6 +366,7 @@ const routeTabs = {
   "/dialer": "dialer",
   "/discador": "dialer",
   "/audios": "audios",
+  "/audios-ura": "ivrAudios",
   "/queues": "queues",
   "/filas": "queues",
   "/logs": "logs",
@@ -458,6 +464,7 @@ function renderSurfaceInBackground(root, render) {
 }
 
 function iconRefresh() {
+  $all("[data-upload-dialer-audio]").forEach(button => button.classList.toggle("hidden", !canAccessTab("ivrAudios")));
   persistViewPreferences();
   installLocalSaveActions();
   window.installRecordSearch?.(state.user?.username || "");
@@ -1815,6 +1822,7 @@ function updateOperatorIdentity() {
 }
 
 function renderShell() {
+  clearRestrictedAudioViews();
   $("#loginView").classList.toggle("hidden", Boolean(state.user || state.extensionSession));
   $("#appView").classList.toggle("hidden", !state.user);
   $("#extensionView")?.classList.toggle("hidden", !state.extensionSession);
@@ -1826,6 +1834,7 @@ function renderShell() {
     $all("[data-tab]").forEach((button) => {
       button.classList.toggle("hidden", !canAccessTab(button.dataset.tab));
     });
+    updateNavigationGroups();
     if (!canAccessTab(state.activeTab)) {
       state.activeTab = firstAllowedTab();
       window.history.replaceState({ tab: state.activeTab }, "", routeForTab(state.activeTab));
@@ -1834,6 +1843,31 @@ function renderShell() {
   }
   renderDesktopNotificationButton();
   iconRefresh();
+}
+
+function clearRestrictedAudioViews() {
+  if (!state.user || !canAccessTab("ivrAudios")) {
+    state.ivrAudios = [];
+    if (pages.ivrAudios) pages.ivrAudios.innerHTML = "";
+  }
+  if (!state.user || !canAccessTab("audios")) {
+    state.recordingLibrary.requestId = (state.recordingLibrary.requestId || 0) + 1;
+    state.recordingLibrary.calls = [];
+    state.recordingLibrary.dashboard = null;
+    state.recordingLibrary.meta = {};
+    if (pages.audios) pages.audios.innerHTML = "";
+  }
+}
+
+function updateNavigationGroups(root = $("#navTabs")) {
+  if (!root) return;
+  root.querySelectorAll(".nav-group").forEach((heading) => {
+    let visible = false;
+    for (let item = heading.nextElementSibling; item && !item.matches(".nav-group"); item = item.nextElementSibling) {
+      if (item.matches("[data-tab]") && !item.classList.contains("hidden")) visible = true;
+    }
+    heading.classList.toggle("hidden", !visible);
+  });
 }
 
 function canAccessTab(tab) {
@@ -1876,7 +1910,7 @@ const tabDataLoadedAt = new Map();
 function loadTabData(tab = state.activeTab) {
   const key = `${state.user?.username || ""}:${tab}`;
   if (tabDataRequests.has(key)) return tabDataRequests.get(key);
-  if (["reports", "audios", "audit", "logs"].includes(tab) && Date.now() - (tabDataLoadedAt.get(key) || 0) < 5000) return Promise.resolve();
+  if (["reports", "audios", "ivrAudios", "audit", "logs"].includes(tab) && Date.now() - (tabDataLoadedAt.get(key) || 0) < 5000) return Promise.resolve();
   pages[tab]?.setAttribute("aria-busy", "true");
   const pending = fetchTabData(tab).then(() => {
     tabDataLoadedAt.set(key, Date.now());
@@ -1907,9 +1941,10 @@ async function fetchTabData(tab = state.activeTab) {
     renderLogs();
     iconRefresh();
   }
-  if (tab === "ivr") await loadIvrAudios();
+  if (tab === "ivr" && canAccessTab("ivrAudios")) await loadIvrAudios();
+  if (tab === "ivrAudios") { await loadIvrAudios(); renderIvrAudios(); iconRefresh(); }
   if (tab === "audios") {
-    await Promise.all([loadRecordingLibrary(), loadIvrAudios()]);
+    await loadRecordingLibrary();
     renderAudios();
     iconRefresh();
   }
@@ -3296,6 +3331,7 @@ function renderAll() {
   renderIvr();
   renderDialer();
   renderAudios();
+  renderIvrAudios();
   renderQueues();
   renderSecurity();
   renderLogs();
@@ -5221,14 +5257,19 @@ function renderIvrAudioLibrary() {
     </section>`;
 }
 
+function renderIvrAudios() {
+  if (!pages.ivrAudios) return;
+  pages.ivrAudios.innerHTML = state.user && canAccessTab("ivrAudios") ? renderIvrAudioLibrary() : "";
+}
+
 function renderAudios() {
   if (!pages.audios) return;
+  if (!state.user || !canAccessTab("audios")) { pages.audios.innerHTML = ""; return; }
   const library = state.recordingLibrary;
   const filters = library.filters || {};
   const meta = library.meta || {};
   const dashboard = library.dashboard || {};
   const permissions = meta.permissions || {};
-  const view = library.view || "calls";
   const activeFilterCount = Object.values(filters).filter((value) => String(value || "") !== "").length;
   const extensionOptions = `<option value="">Todos os ramais</option>${(state.config.extensions || [])
     .map((extension) => option(extension.number, filters.extension || "", `${extension.number} - ${extension.name || "Ramal"}`))
@@ -5313,16 +5354,7 @@ function renderAudios() {
       </div>
     </section>`;
 
-  pages.audios.innerHTML = `
-    <div class="recordings-shell">
-      <section class="recording-toolbar">
-        <div class="segmented-control" role="group" aria-label="Tipo de audio">
-          <button type="button" data-recording-view="calls" class="${view === "calls" ? "active" : ""}"><i data-lucide="headphones"></i>Chamadas gravadas</button>
-          <button type="button" data-recording-view="ivr" class="${view === "ivr" ? "active" : ""}"><i data-lucide="audio-lines"></i>Audios da URA</button>
-        </div>
-      </section>
-      ${view === "ivr" ? renderIvrAudioLibrary() : callLibrary}
-    </div>`;
+  pages.audios.innerHTML = `<div class="recordings-shell">${callLibrary}</div>`;
 }
 
 function removeQueueReferences(queueId) {
@@ -6721,20 +6753,25 @@ async function loadOutboundDiagnostics(number = "", extension = "") {
 }
 
 async function loadIvrAudios() {
+  const user = state.user;
+  if (!user || !canAccessTab("ivrAudios")) return;
   const response = await api("/api/ivr-audios");
+  if (state.user !== user || !canAccessTab("ivrAudios")) return;
   state.ivrAudios = response.audios || [];
   if (state.activeTab === "ivr" && !state.ivrBuilderOpen && !state.ivrFullscreen) {
     renderIvr();
     iconRefresh();
   }
-  if (state.activeTab === "audios") {
-    renderAudios();
+  if (state.activeTab === "ivrAudios") {
+    renderIvrAudios();
     iconRefresh();
   }
 }
 
 let dialerCampaignsRequest = null;
 async function loadDialerCampaigns({ preserveDraft = false, background = false } = {}) {
+  const user = state.user;
+  if (!user || !canAccessTab("dialer")) return;
   if (!dialerCampaignsRequest) {
     dialerCampaignsRequest = api("/api/dialer/campaigns").finally(() => { dialerCampaignsRequest = null; });
   }
@@ -6742,8 +6779,10 @@ async function loadDialerCampaigns({ preserveDraft = false, background = false }
   state.dialerCampaignsError = false;
   try {
     response = await dialerCampaignsRequest;
+    if (state.user !== user) return;
     if (!Array.isArray(response.campaigns)) throw new Error("Resposta de campanhas invalida. Tente atualizar novamente.");
   } catch (error) {
+    if (state.user !== user) return;
     state.dialerCampaignsError = true;
     if (state.activeTab === "dialer") renderDialerCampaignLiveData();
     throw error;
@@ -8486,10 +8525,7 @@ document.addEventListener("click", async (event) => {
     }
 
     if (recordingViewButton) {
-      state.recordingLibrary.view = recordingViewButton.dataset.recordingView === "ivr" ? "ivr" : "calls";
-      renderAudios();
-      iconRefresh();
-      if (state.recordingLibrary.view === "calls" && !state.recordingLibrary.calls.length) await loadRecordingLibrary({ page: 1 });
+      await setActiveTab(recordingViewButton.dataset.recordingView === "ivr" ? "ivrAudios" : "audios", { push: true, load: true });
       return;
     }
 

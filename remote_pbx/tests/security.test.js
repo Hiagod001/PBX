@@ -21,7 +21,7 @@ function responseStub() {
 }
 
 test("dialer operator can use assigned modules but cannot elevate access", () => {
-  const user = { role: "user", permissions: { menus: { dialer: true, queues: true, audios: true } } };
+  const user = { role: "user", permissions: { menus: { dialer: true, queues: true, ivrAudios: true } } };
   for (const [method, path, body, expected] of [
     ["GET", "/api/dialer/campaigns", {}, true],
     ["POST", "/api/dialer/campaigns", {}, true],

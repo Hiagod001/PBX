@@ -36,7 +36,7 @@ Atualize essas definições juntas para uma publicação posterior não restaura
 volumes antigos. Valide com `docker compose config --quiet`; a saída completa de
 `docker compose config` pode conter segredos expandidos dos arquivos de ambiente.
 
-As imagens `uai-pbx-web:20261126-queue-apply` e
+As imagens `uai-pbx-web:20261126-config-save2` e
 `uai-pbx-asterisk:20261113-fixes2` estão no Docker deste servidor, com
 `pull_policy: never`. Preserve/exporte essas imagens ao recuperar em outro host.
 O código utilizado na publicação está em `/home/dokploy/pbx-validation/source`.
@@ -120,3 +120,32 @@ Validação em 26/11/2026: o aplicador em contêiner recém-criado passou de
 foi convertido nos quatro formatos de telefonia, e os arquivos temporários do
 teste foram removidos. Esses tempos medem o aplicador, não o clique completo
 no navegador. Backup: `data/backups/queue-apply-20261126`.
+
+## Salvamento por módulo e permissões de áudio
+
+O servidor passa a configuração anterior, lida sob a trava de alterações, ao
+salvamento do banco. Apenas as tabelas dos módulos modificados são regravadas.
+Filhos são removidos antes de seus pais e tudo permanece na mesma transação,
+incluindo o snapshot. A gravação completa continua disponível para migrações e
+rollback. As leituras usam uma transação somente de leitura com snapshot
+consistente, sem misturar módulos de duas versões durante uma gravação.
+
+Na comparação de três alterações reais por módulo em banco descartável no
+mesmo PostgreSQL, a mediana da gravação passou de 845 para 21 ms em Ramais, de
+795 para 11 ms em Troncos e de 1070 para 33 ms em Filas. URAs, Rotas, Sistema,
+Segurança e Usuários também foram conferidos. Esses números não incluem o tempo
+de rede e da interface. As recargas do Asterisk medidas separadamente ficaram
+em 441 ms para Ramais, 407 ms para Troncos e 266 ms para URAs/Rotas.
+
+`permissions.menus.audios` mantém o acesso às gravações de chamadas.
+`permissions.menus.ivrAudios` controla a biblioteca de áudios da URA, em
+`/audios-ura`. A nova permissão não é concedida automaticamente a usuários
+antigos. Administradores continuam com acesso total. O acesso a Relatórios
+não libera a reprodução ou o download de gravações sem a permissão Gravações.
+O Discador pode selecionar os áudios existentes para campanhas, mas seu botão
+de envio e as operações da biblioteca exigem a permissão Áudios da URA.
+
+Os títulos Telefonia e Administração somem quando todos os seus itens estão
+ocultos. O painel de usuários apresenta as duas permissões separadamente.
+Recarregue a página após publicar para carregar o novo menu.
+Backups e medições: `data/backups/menu-save-20261126`.

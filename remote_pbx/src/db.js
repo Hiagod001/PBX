@@ -2,6 +2,7 @@ const fs = require("fs-extra");
 const path = require("path");
 const { Pool } = require("pg");
 const { ensureSchema } = require("./database-schema");
+const { configWritePlan, effectiveTrunks } = require("./config-write-plan");
 
 const schemaPath = path.join(__dirname, "postgres-schema.sql");
 
@@ -118,40 +119,28 @@ function withoutKeys(source, keys) {
   return JSON.stringify(Object.fromEntries(Object.entries(source || {}).filter(([key]) => !skip.has(key))));
 }
 
-async function hasStoredConfig() {
-  const result = await query("SELECT EXISTS (SELECT 1 FROM pbx_settings WHERE key = 'company') AS exists");
+async function hasStoredConfig(read = query) {
+  const result = await read("SELECT EXISTS (SELECT 1 FROM pbx_settings WHERE key = 'company') AS exists");
   return Boolean(result?.rows?.[0]?.exists);
 }
 
-async function saveConfig(config) {
+async function saveConfig(config, previous = null) {
+  const plan = configWritePlan(config, previous);
+  if (!plan.settings.length && !plan.groups.size) return;
   await transaction(async (client) => {
+    await client.query("SELECT pg_advisory_xact_lock(786482105)");
     await client.query("INSERT INTO pbx_config_snapshots (config) VALUES ($1)", [JSON.stringify(config)]);
-    await client.query(`
-      TRUNCATE
-        pbx_settings,
-        pbx_trunks,
-        pbx_extensions,
-        pbx_inbound_routes,
-        pbx_ivr_options,
-        pbx_ivr_menus,
-        pbx_ring_group_members,
-        pbx_ring_groups,
-        pbx_queue_members,
-        pbx_queues,
-        pbx_outbound_rule_patterns,
-        pbx_outbound_rules
-      RESTART IDENTITY CASCADE
-    `);
+    if (plan.full) await client.query("DELETE FROM pbx_settings");
+    for (const table of plan.deleteTables) await client.query(`DELETE FROM ${table}`);
 
-    const settings = ["company", "outbound", "businessHours", "recording", "voicemail", "security"];
-    for (const key of settings) {
+    for (const key of plan.settings) {
       await client.query(
-        "INSERT INTO pbx_settings (key, value, updated_at) VALUES ($1, $2, NOW())",
+        "INSERT INTO pbx_settings (key, value, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at",
         [key, json(config[key], {})]
       );
     }
 
-    const trunks = Array.isArray(config.trunks) && config.trunks.length ? config.trunks : [{ ...(config.trunk || {}), id: "trunk-operadora", name: "Operadora principal" }];
+    const trunks = plan.groups.has("trunks") ? effectiveTrunks(config) : [];
     for (const [index, trunk] of trunks.entries()) {
       await client.query(
         `INSERT INTO pbx_trunks
@@ -172,7 +161,7 @@ async function saveConfig(config) {
       );
     }
 
-    for (const [index, extension] of (config.extensions || []).entries()) {
+    for (const [index, extension] of (plan.groups.has("extensions") ? config.extensions || [] : []).entries()) {
       await client.query(
         `INSERT INTO pbx_extensions
          (number, name, department, secret, voicemail, record_calls, permissions, block_extension, bridge_mode, temporary,
@@ -206,7 +195,7 @@ async function saveConfig(config) {
       );
     }
 
-    for (const [index, route] of (config.inboundRoutes || []).entries()) {
+    for (const [index, route] of (plan.groups.has("inboundRoutes") ? config.inboundRoutes || [] : []).entries()) {
       await client.query(
         `INSERT INTO pbx_inbound_routes (id, name, did, destination_type, destination, extra, sort_order)
          VALUES ($1,$2,$3,$4,$5,$6,$7)`,
@@ -223,7 +212,7 @@ async function saveConfig(config) {
     }
 
     const mainIvr = config.ivr || {};
-    const ivrMenus = [{ ...mainIvr, id: mainIvr.id || "main", isMain: true }, ...(mainIvr.menus || []).map((menu) => ({ ...menu, isMain: false }))];
+    const ivrMenus = plan.groups.has("ivr") ? [{ ...mainIvr, id: mainIvr.id || "main", isMain: true }, ...(mainIvr.menus || []).map((menu) => ({ ...menu, isMain: false }))] : [];
     for (const [menuIndex, menu] of ivrMenus.entries()) {
       await client.query(
         `INSERT INTO pbx_ivr_menus
@@ -276,7 +265,7 @@ async function saveConfig(config) {
       }
     }
 
-    for (const [index, group] of (config.ringGroups || []).entries()) {
+    for (const [index, group] of (plan.groups.has("ringGroups") ? config.ringGroups || [] : []).entries()) {
       await client.query(
         `INSERT INTO pbx_ring_groups (id, name, strategy, timeout, fallback, extra, sort_order)
          VALUES ($1,$2,$3,$4,$5,$6,$7)`,
@@ -290,7 +279,7 @@ async function saveConfig(config) {
       }
     }
 
-    for (const [index, queue] of (config.queues || []).entries()) {
+    for (const [index, queue] of (plan.groups.has("queues") ? config.queues || [] : []).entries()) {
       await client.query(
         `INSERT INTO pbx_queues (id, name, strategy, timeout, max_wait, fallback, extra, sort_order)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
@@ -313,7 +302,7 @@ async function saveConfig(config) {
       }
     }
 
-    for (const [index, [ruleId, rule]] of Object.entries(config.outboundRules || {}).entries()) {
+    for (const [index, [ruleId, rule]] of Object.entries(plan.groups.has("outboundRules") ? config.outboundRules || {} : {}).entries()) {
       await client.query(
         "INSERT INTO pbx_outbound_rules (id, label, extra, sort_order) VALUES ($1,$2,$3,$4)",
         [ruleId, rule.label || "", withoutKeys(rule, ["label", "patterns"]), index]
@@ -328,9 +317,24 @@ async function saveConfig(config) {
   });
 }
 
-async function getConfig() {
-  if (!(await hasStoredConfig())) return null;
+async function readConfig(query) {
+  if (!(await hasStoredConfig(query))) return null;
 
+  const rows = [];
+  for (const sql of [
+    "SELECT key, value FROM pbx_settings",
+    "SELECT * FROM pbx_trunks ORDER BY id",
+    "SELECT * FROM pbx_extensions ORDER BY sort_order, number",
+    "SELECT * FROM pbx_inbound_routes ORDER BY sort_order, id",
+    "SELECT * FROM pbx_ivr_menus ORDER BY is_main DESC, sort_order, id",
+    "SELECT * FROM pbx_ivr_options ORDER BY menu_id, sort_order, id",
+    "SELECT * FROM pbx_ring_groups ORDER BY sort_order, id",
+    "SELECT * FROM pbx_ring_group_members ORDER BY ring_group_id, sort_order, extension_number",
+    "SELECT * FROM pbx_queues ORDER BY sort_order, id",
+    "SELECT * FROM pbx_queue_members ORDER BY queue_id, sort_order, extension_number",
+    "SELECT * FROM pbx_outbound_rules ORDER BY sort_order, id",
+    "SELECT * FROM pbx_outbound_rule_patterns ORDER BY rule_id, sort_order, pattern"
+  ]) rows.push(await query(sql));
   const [
     settings,
     trunks,
@@ -344,20 +348,7 @@ async function getConfig() {
     queueMembers,
     outboundRules,
     outboundPatterns
-  ] = await Promise.all([
-    query("SELECT key, value FROM pbx_settings"),
-    query("SELECT * FROM pbx_trunks ORDER BY id"),
-    query("SELECT * FROM pbx_extensions ORDER BY sort_order, number"),
-    query("SELECT * FROM pbx_inbound_routes ORDER BY sort_order, id"),
-    query("SELECT * FROM pbx_ivr_menus ORDER BY is_main DESC, sort_order, id"),
-    query("SELECT * FROM pbx_ivr_options ORDER BY menu_id, sort_order, id"),
-    query("SELECT * FROM pbx_ring_groups ORDER BY sort_order, id"),
-    query("SELECT * FROM pbx_ring_group_members ORDER BY ring_group_id, sort_order, extension_number"),
-    query("SELECT * FROM pbx_queues ORDER BY sort_order, id"),
-    query("SELECT * FROM pbx_queue_members ORDER BY queue_id, sort_order, extension_number"),
-    query("SELECT * FROM pbx_outbound_rules ORDER BY sort_order, id"),
-    query("SELECT * FROM pbx_outbound_rule_patterns ORDER BY rule_id, sort_order, pattern")
-  ]);
+  ] = rows;
 
   const settingMap = Object.fromEntries((settings?.rows || []).map((row) => [row.key, row.value || {}]));
   const trunkRows = trunks?.rows || [];
@@ -518,9 +509,16 @@ async function getConfig() {
   };
 }
 
+async function getConfig() {
+  return transaction(async client => {
+    await client.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    return readConfig(client.query.bind(client));
+  });
+}
+
 async function saveUsers(users) {
   await transaction(async (client) => {
-    await client.query("TRUNCATE pbx_users");
+    await client.query("DELETE FROM pbx_users");
     for (const user of users.users || []) {
       await client.query(
         `INSERT INTO pbx_users

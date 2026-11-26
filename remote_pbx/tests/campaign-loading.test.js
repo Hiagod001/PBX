@@ -21,12 +21,22 @@ test('failed or malformed campaign response never clears previously loaded campa
   const code = source.slice(source.indexOf('async function loadDialerCampaigns'), source.indexOf('async function saveDialerCampaign'));
   for (const api of [async () => { throw new Error('offline'); }, async () => ({})]) {
     const campaigns = [{ id: 'existing' }];
-    const context = { state: { dialerCampaigns: campaigns, activeTab: 'dialer' }, api, renderDialerCampaignLiveData() {} };
+    const context = { state: { user:{username:'operator'}, dialerCampaigns: campaigns, activeTab: 'dialer' }, canAccessTab:()=>true, api, renderDialerCampaignLiveData() {} };
     vm.runInNewContext('let dialerCampaignsRequest = null;\n' + code, context);
     await assert.rejects(context.loadDialerCampaigns());
     assert.equal(context.state.dialerCampaigns, campaigns);
     assert.equal(context.state.dialerCampaignsError, true);
   }
+});
+
+test('a campaign response from an ended session cannot populate the next user audio catalog',async()=>{
+ const code=source.slice(source.indexOf('async function loadDialerCampaigns'),source.indexOf('async function saveDialerCampaign'));
+ let resolve;
+ const context={state:{user:{username:'previous'},dialerCampaigns:[],ivrAudios:[]},canAccessTab:()=>true,api:()=>new Promise(done=>{resolve=done})};
+ vm.runInNewContext('let dialerCampaignsRequest=null;\n'+code,context);
+ const pending=context.loadDialerCampaigns();context.state.user={username:'next'};
+ resolve({campaigns:[{id:'private'}],audios:[{url:'/old-user-audio'}]});await pending;
+ assert.equal(context.state.dialerCampaigns.length,0);assert.equal(context.state.ivrAudios.length,0);
 });
 
 test('campaign endpoint does not await trunk registration before returning the list', () => {

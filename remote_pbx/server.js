@@ -61,7 +61,7 @@ const pauseReasons = new Set(["Cafezinho", "Almoço", "Treinamento", "Atendiment
 const spaRoutes = new Set([
   "/", "/resume", "/resumo", "/overview", "/reports", "/relatorios", "/monitor", "/status",
   "/trunk", "/troncos", "/extensions", "/ramais", "/routes", "/rotas", "/routing", "/ura", "/ivr",
-  "/dialer", "/discador", "/audios", "/queues", "/filas", "/logs", "/security", "/seguranca",
+  "/dialer", "/discador", "/audios", "/audios-ura", "/queues", "/filas", "/logs", "/security", "/seguranca",
   "/audit", "/auditoria", "/users", "/usuarios"
 ]);
 let protocolCounterLock = Promise.resolve();
@@ -522,7 +522,7 @@ async function requireAuth(req, res, next) {
   if (current.mustChangePassword && !passwordChangeRoutes.has(req.path)) {
     return res.status(403).json({ error: "Troque a senha inicial antes de acessar o sistema", mustChangePassword: true });
   }
-  const readMenus = req.path.startsWith("/api/pbx/recordings/") ? ["audios", "reports"]
+  const readMenus = req.path.startsWith("/api/pbx/recordings/") ? ["audios"]
     : req.path.startsWith("/api/pbx/reports/") || req.path === "/api/reports" ? ["reports", "overview", "audios"]
     : ["/api/pbx-status", "/api/inbound-calls"].includes(req.path) ? ["status", "overview", "reports", "security", "logs"]
     : req.path.startsWith("/api/monitor/") || req.path.startsWith("/api/pbx/monitor/") ? ["status"] : null;
@@ -540,7 +540,7 @@ function requireAdmin(req, res, next) {
   if (userRole(req) === "admin") return next();
   const requestPath = String(req.path || "");
   const menu = requestPath.startsWith("/api/dialer/") ? "dialer"
-    : requestPath.startsWith("/api/ivr-audios") ? "audios" : null;
+    : requestPath.startsWith("/api/ivr-audios") ? "ivrAudios" : null;
   if (menu && hasMenuAccess(req, menu)) return next();
   if (req.method === "PATCH" && req.path === "/api/config/apply" && canEditConfigSections(req, req.body?.sections)) return next();
   return res.status(403).json({ error: "Acao restrita a administradores" });
@@ -3024,8 +3024,8 @@ function userReportScope(req, config) {
   const role = user.role || (user.username === "admin" ? "admin" : "user");
   return {
     role, all: true,
-    canListen: hasMenuAccess(req, "audios") || hasMenuAccess(req, "reports"),
-    canDownload: hasMenuAccess(req, "audios") || hasMenuAccess(req, "reports")
+    canListen: hasMenuAccess(req, "audios"),
+    canDownload: hasMenuAccess(req, "audios")
   };
 }
 
@@ -4306,7 +4306,7 @@ async function saveAndApplyConfig(req, previous, incoming) {
   const files = await generateAsteriskConfigs(incoming);
   let saved = null;
   try {
-    saved = await saveConfig(incoming);
+    saved = await saveConfig(incoming, previous);
     const applied = await applyAsteriskConfig(saved, files);
     await configUpdateAudit(req, previous, saved, incoming);
     pbxStatusCache = { revision: "", expiresAt: 0, value: null, pending: null };
@@ -4338,7 +4338,7 @@ app.put("/api/config", requireAuth, requireAdmin, async (req, res) => {
     }
     validateConfig(incoming);
     const files = await generateAsteriskConfigs(incoming);
-    const saved = await saveConfig(incoming);
+    const saved = await saveConfig(incoming, previous);
     await configUpdateAudit(req, previous, saved, incoming);
     return { config: withConfigRevision(saved), generatedFiles: files };
   });
@@ -4810,7 +4810,7 @@ app.get("/api/trunks/registrations", requireAuth, requireAdmin, async (_req, res
   res.json({ states: trunkRegistrationStates(config, registrations), checkedAt: new Date().toISOString() });
 });
 
-app.get("/api/dialer/campaigns", requireAuth, requireAdmin, async (_req, res) => {
+app.get("/api/dialer/campaigns", requireAuth, requireAdmin, async (req, res) => {
   const [config, campaigns, audios] = await Promise.all([getConfig(), readDialerCampaigns(), listIvrAudios()]);
   // Registration health must not hold up the campaign list.
   void dialerTrunkHealth(config).catch(() => {});
@@ -4820,7 +4820,7 @@ app.get("/api/dialer/campaigns", requireAuth, requireAdmin, async (_req, res) =>
     destinations: dialerDestinationOptions(config),
     trunks: configTrunks(config),
     trunkHealth: dialerTrunkHealthCache.values || {},
-    audios,
+    audios: hasMenuAccess(req, "ivrAudios") ? audios : audios.map(({ file, label, playback }) => ({ file, label, playback })),
     whatsapp: whatsappDialer.cachedStatus
   });
 });
@@ -5047,6 +5047,7 @@ module.exports = {
     sanitizeAuditValue,
     userCanInterveneLiveCalls,
     userCanMonitorExtension,
+    userReportScope,
     ownedChannelForRequest,
     userRole,
     dialerAttemptId,

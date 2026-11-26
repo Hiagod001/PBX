@@ -42,8 +42,9 @@ test("live monitor audio plays without showing native duration controls", () => 
 });
 
 test("recording library exposes detailed call filters and keeps IVR audio separate", () => {
-  assert.match(appSource, /data-recording-view="calls"/);
-  assert.match(appSource, /data-recording-view="ivr"/);
+  assert.match(indexSource, /data-tab="audios"/);
+  assert.match(indexSource, /data-tab="ivrAudios"/);
+  assert.match(appSource, /ivrAudios: "ivrAudios"/);
   assert.match(appSource, /data-recording-filter="number"/);
   assert.match(appSource, /data-recording-filter="extension"/);
   assert.match(appSource, /data-recording-filter="queue"/);

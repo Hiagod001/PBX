@@ -427,12 +427,12 @@ async function writeJsonAtomic(filePath, value) {
   await fs.move(temporaryPath, filePath, { overwrite: true });
 }
 
-async function saveConfig(config) {
+async function saveConfig(config, previous = null) {
   await ensureStore();
   const merged = normalizeConfig(config);
   const databaseEnabled = await db.ensureDatabase();
   if (databaseEnabled) {
-    await db.saveConfig(merged);
+    await db.saveConfig(merged, previous ? normalizeConfig(previous) : null);
     configCache.invalidate();
   }
   try {
