@@ -99,6 +99,8 @@ function initialExtensionCallState(overrides = {}) {
   return {
     ua: null,
     registerer: null,
+    registrationStatus: "offline",
+    stopping: false,
     session: null,
     status: "desconectado",
     message: "",
@@ -601,6 +603,8 @@ function showExtensionLogin(message = "") {
 }
 
 async function stopExtensionClientPhone() {
+  extensionSipRecovery.stop();
+  state.extensionCall.stopping = true;
   stopIncomingRingtone();
   await terminateSipSession(state.extensionCall.consultSession).catch(() => {});
   await terminateSipSession(state.extensionCall.session).catch(() => {});
@@ -610,6 +614,8 @@ async function stopExtensionClientPhone() {
 
 function notifyExtensionLogoutOnClose() {
   if (!state.extensionSession) return;
+  extensionSipRecovery.stop();
+  state.extensionCall.stopping = true;
   state.extensionCall.registerer?.unregister?.().catch?.(() => {});
   state.extensionCall.ua?.stop?.().catch?.(() => {});
   const payload = new Blob(["{}"], { type: "application/json" });
@@ -2325,9 +2331,8 @@ function renderExtensionPortal() {
   const live = status.extension || {};
   const queues = status.queues || [];
   const activeChannel = (status.active || [])[0] || null;
-  const localRegistered = ["registrado", "originando", "chamando", "tocando", "em chamada"].includes(String(state.extensionCall.status || "").toLowerCase());
-  const isRegistered = Boolean(live.registered || localRegistered);
-  const registered = isRegistered ? "Online" : "Offline";
+  const isRegistered = extensionSoftphoneRegistered();
+  const registered = isRegistered ? "Online" : state.extensionCall.registrationStatus === "connecting" ? "Reconectando…" : "Offline";
   const tone = isRegistered ? "available" : "unavailable";
   const statusDetail = extensionStatusLabel();
   const showStatusDetail = !["registrado", "desconectado", "sem registro"].includes(String(statusDetail || "").toLowerCase());
@@ -2972,18 +2977,52 @@ function watchSipSession(session) {
   }
 }
 
-async function startSoftphone() {
+function extensionSoftphoneRegistered() {
+  return Boolean(window.SIP && state.extensionCall.ua?.transport.state === SIP.TransportState.Connected && state.extensionCall.registerer?.state === SIP.RegistererState.Registered);
+}
+
+const extensionSipRecovery = SipRecovery.create({
+  enabled: () => Boolean(state.extensionSession && !state.extensionCall.stopping),
+  healthy: extensionSoftphoneRegistered,
+  connect: connectExtensionSoftphone,
+  status(value) {
+    state.extensionCall.registrationStatus = value;
+    if (!state.extensionCall.session) state.extensionCall.status = value === "online" ? "registrado" : "registrando";
+    if (state.extensionSession) renderSurfaceInBackground($("#extensionView"), renderExtensionPortal);
+  }
+});
+
+function startSoftphone() {
+  return extensionSipRecovery.start();
+}
+
+async function connectExtensionSoftphone({ force, valid }) {
+  const phone = state.extensionCall;
+  const session = state.extensionSession;
+  const active = () => valid() && state.extensionCall === phone && state.extensionSession === session;
   const sip = state.extensionPortal?.sip;
   if (!sip) await loadExtensionPortal();
   await waitForSipLibrary();
-  if (state.extensionCall.ua) return;
+  if (!active()) throw new Error("Conexão cancelada.");
+  if (phone.ua && phone.registerer) {
+    await SipRecovery.restoreTransport(phone.ua, { force, valid: active });
+    if (phone.registerer.state === SIP.RegistererState.Terminated) {
+      phone.registerer = new SIP.Registerer(phone.ua, { expires: WEB_SIP_REGISTER_EXPIRES_SECONDS });
+      watchExtensionRegistration(phone, active);
+    }
+    await SipRecovery.registerConfirmed(phone.registerer, { valid: active });
+    return;
+  }
 
   const userAgent = new SIP.UserAgent({
     uri: SIP.UserAgent.makeURI(state.extensionPortal.sip.uri),
     authorizationUsername: state.extensionPortal.sip.authorizationUsername,
     authorizationPassword: state.extensionPortal.sip.password,
     displayName: state.extensionPortal.sip.displayName,
-    transportOptions: { server: state.extensionPortal.sip.wsServer },
+    logConfiguration: false,
+    logLevel: "error",
+    reconnectionAttempts: 0,
+    transportOptions: { server: state.extensionPortal.sip.wsServer, connectionTimeout: 10, keepAliveInterval: 20, keepAliveDebounce: 10 },
     sessionDescriptionHandlerFactoryOptions: {
       constraints: { audio: extensionAudioConstraints(), video: false },
       iceGatheringTimeout: WEBRTC_ICE_GATHERING_TIMEOUT_MS
@@ -2992,6 +3031,7 @@ async function startSoftphone() {
 
   userAgent.delegate = {
     async onInvite(invitation) {
+      if (!active()) { await invitation.reject({ statusCode: 480 }).catch(() => {}); return; }
       const outgoingOriginate = state.extensionCall.autoAnswerNext;
       state.extensionCall.session = invitation;
       state.extensionCall.incoming = true;
@@ -3026,26 +3066,31 @@ async function startSoftphone() {
     }
   };
 
-  state.extensionCall.ua = userAgent;
-  state.extensionCall.registerer = new SIP.Registerer(userAgent, { expires: WEB_SIP_REGISTER_EXPIRES_SECONDS });
-  await userAgent.start();
-  await state.extensionCall.registerer.register();
-  state.extensionCall.status = "registrado";
-  setExtensionMessage("Ramal online no navegador.", "ok");
-  renderExtensionPortal();
+  phone.ua = userAgent;
+  phone.registerer = new SIP.Registerer(userAgent, { expires: WEB_SIP_REGISTER_EXPIRES_SECONDS });
+  userAgent.transport.stateChange.addListener(nextState => {
+    if (active() && nextState === SIP.TransportState.Disconnected) extensionSipRecovery.schedule("conexão interrompida");
+  });
+  watchExtensionRegistration(phone, active);
+  await SipRecovery.restoreTransport(userAgent, { force, valid: active });
+  await SipRecovery.registerConfirmed(phone.registerer, { valid: active });
+}
+
+function watchExtensionRegistration(phone, active) {
+  phone.registerer.stateChange.addListener(nextState => {
+    if (!active()) return;
+    if (nextState === SIP.RegistererState.Unregistered || nextState === SIP.RegistererState.Terminated) extensionSipRecovery.schedule("registro interrompido");
+  });
 }
 
 async function refreshSoftphoneRegistration() {
   await startSoftphone();
-  if (!state.extensionCall.registerer) return;
-  await state.extensionCall.registerer.register();
-  state.extensionCall.status = "registrado";
-  await wait(500);
+  await extensionSipRecovery.ensure({ probe: true });
   await loadExtensionStatus().catch(() => {});
 }
 
 async function autoRegisterSoftphone() {
-  if (!state.extensionSession || state.extensionCall.ua) return;
+  if (!state.extensionSession) return;
   restoreExtensionAudioPreferences();
   state.extensionCall.status = "registrando";
   renderExtensionPortal();
@@ -3053,7 +3098,7 @@ async function autoRegisterSoftphone() {
     await startSoftphone();
     await loadExtensionStatus();
   } catch (error) {
-    setExtensionMessage(`Registro automatico pendente: ${error.message}`, "error");
+    setExtensionMessage("Conexão interrompida. Tentando reconectar automaticamente…", "info");
   }
 }
 
@@ -9188,9 +9233,15 @@ setInterval(() => {
 
 setInterval(() => {
   if (state.extensionSession) {
+    extensionSipRecovery.check("verificação periódica");
     loadExtensionStatus({ background: true }).catch(() => {});
   }
 }, MONITOR_REFRESH_MS);
+
+window.addEventListener("online", () => extensionSipRecovery.check("rede restabelecida", true));
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) extensionSipRecovery.check("navegador retomado", true);
+});
 
 setInterval(() => {
   if (state.extensionSession && (currentExtensionPauseInfo().paused || isExtensionCallActive())) {

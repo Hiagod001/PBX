@@ -18,5 +18,5 @@ test('WebRTC is prepared before registration without capturing the microphone or
   assert.equal(first,second);
   await first;
   assert.equal(peers,1);assert.equal(offers,1);assert.equal(closed,1);
-  assert.ok(source.indexOf('await warmWebRtc();') < source.indexOf('await registerer.register();'));
+  assert.ok(source.indexOf('await warmWebRtc();') < source.indexOf('await SipRecovery.registerConfirmed(registerer,'));
 });

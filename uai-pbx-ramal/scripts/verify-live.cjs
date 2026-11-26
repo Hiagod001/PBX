@@ -70,6 +70,17 @@ async function main() {
       await b.locator('#activeMuteBtn').click();
       assert.equal(await b.evaluate(()=>state.session.sessionDescriptionHandler.peerConnection.getSenders().filter(s=>s.track?.kind==='audio').every(s=>s.track.enabled)),true);
     });
+    await check('transport reconnect preserves an established call and bidirectional media',async()=>{
+      await b.evaluate(async()=>{ window.qaLiveSession=state.session; window.qaLiveAgent=state.ua; await state.ua.transport.disconnect(); });
+      await b.waitForFunction(()=>state.registrationStatus==='online'&&state.ua.transport.state==='Connected',null,{timeout:45000});
+      assert.equal(await b.evaluate(()=>state.session===window.qaLiveSession&&state.ua===window.qaLiveAgent&&state.session.state==='Established'),true);
+      for(const p of [a,b]) await p.waitForFunction(async()=>{
+        const pc=state.session?.sessionDescriptionHandler?.peerConnection;
+        if(!pc)return false;
+        const stats=[...(await pc.getStats()).values()];
+        return stats.some(x=>x.type==='inbound-rtp'&&x.packetsReceived>30)&&stats.some(x=>x.type==='outbound-rtp'&&x.packetsSent>30);
+      },null,{timeout:15000});
+    });
     if(pages[2]) {
       const c=pages[2];
       const consult=async()=>{

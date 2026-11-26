@@ -1,0 +1,4 @@
+FROM uai-pbx-web:20261126-config-save2
+WORKDIR /opt/pbx-sip-admin
+COPY public ./public
+COPY tests ./tests

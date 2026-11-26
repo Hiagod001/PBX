@@ -36,7 +36,7 @@ Atualize essas definições juntas para uma publicação posterior não restaura
 volumes antigos. Valide com `docker compose config --quiet`; a saída completa de
 `docker compose config` pode conter segredos expandidos dos arquivos de ambiente.
 
-As imagens `uai-pbx-web:20261126-config-save2` e
+As imagens `uai-pbx-web:20261126-reconnect` e
 `uai-pbx-asterisk:20261113-fixes2` estão no Docker deste servidor, com
 `pull_policy: never`. Preserve/exporte essas imagens ao recuperar em outro host.
 O código utilizado na publicação está em `/home/dokploy/pbx-validation/source`.
@@ -149,3 +149,31 @@ Os títulos Telefonia e Administração somem quando todos os seus itens estão
 ocultos. O painel de usuários apresenta as duas permissões separadamente.
 Recarregue a página após publicar para carregar o novo menu.
 Backups e medições: `data/backups/menu-save-20261126`.
+
+## Reconexão dos ramais
+
+O launcher 1.0.12 e o telefone do navegador usam `sip-recovery.js`. Quando o
+WebSocket cai, reconectam o mesmo agente SIP e confirmam um novo registro,
+preservando as sessões de chamada existentes. As tentativas continuam com
+esperas crescentes até aproximadamente 30 segundos, com pequena variação
+entre estações. O retorno da rede ou do computador antecipa a tentativa.
+
+Uma verificação a cada cinco segundos detecta estados desconectados; a cada
+45 segundos, um novo REGISTER precisa receber confirmação do servidor. Isso
+também detecta conexões que parecem abertas, mas pararam de responder. Somente
+essa confirmação permite indicar Online. O transporte mantém o keepalive de
+20 segundos. Sair do ramal cancela as tentativas e invalida respostas antigas;
+uma sessão expirada ainda exige autenticação, preservando o controle de acesso.
+
+Validação em 26/11/2026: 24 testes do launcher e 188 testes do servidor passaram
+(três integrações condicionais não foram executadas). Nove testes do controlador
+também passaram na imagem Linux. O executável Windows empacotado passou pelos
+13 cenários de chamadas internas, incluindo recuperação durante conversa,
+RTP nos dois sentidos, pausa, transferência assistida e logout. O navegador
+passou pelos testes de desconexão, retorno da rede, recuperação durante chamada
+e saída, com ramais temporários 9971–9973, sem chamadas externas. Esses cenários
+validam a recuperação; não provam a causa de toda interrupção de rede.
+
+Instale a versão 1.0.12 nas estações para receber a correção no aplicativo.
+O instalador não substitui aplicativos que já estão abertos. Backups e logs
+da publicação: `data/backups/ramal-reconnect-20261126`.

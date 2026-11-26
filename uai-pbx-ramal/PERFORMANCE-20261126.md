@@ -83,3 +83,26 @@ externa. Eles devem ser removidos após a validação, arquivando apenas os
 registros e áudios comprovadamente gerados pelo ensaio e preservando a sequência
 dos protocolos. Use a configuração de mídia real do ambiente; não desative
 STUN/TURN em outras redes sem testar o áudio.
+
+## Atualização 1.0.12: reconexão
+
+A recuperação agora reutiliza o agente SIP, inclusive durante chamadas, em vez
+de adiar a tentativa até o fim da conversa ou parar o agente. O controlador
+confirma respostas novas de registro, verifica conexões sem resposta a cada
+45 segundos e repete falhas com espera crescente de aproximadamente 1 a 30
+segundos, sem limite de tentativas. O retorno da rede, o desbloqueio e a retomada
+do computador antecipam a verificação. Logout cancela as tentativas; credenciais
+revogadas e sessões expiradas continuam exigindo novo login.
+
+Os 24 testes locais passaram. O executável 1.0.12 empacotado passou pelos 13
+cenários internos de `scripts/verify-live.cjs --packaged`, incluindo recuperação
+do transporte durante uma chamada estabelecida sem substituir o agente ou a
+sessão e com RTP nos dois sentidos. Também passaram pausa, cancelamento,
+atendimento, microfone, transferência assistida com retorno e conclusão,
+desligamento e logout. Foram usados apenas os ramais temporários 9971–9973.
+
+Os logs do Asterisk registravam fechamento abrupto de WebSocket; o servidor
+estava saudável, sem reinício ou falta de memória registrada nos contêineres.
+Isso confirma a interrupção da conexão, mas não identifica por si só sua origem
+na rede ou na estação. A correção trata as falhas encontradas na recuperação e
+acrescenta o motivo da desconexão ao `sip.log` local para diagnóstico futuro.
