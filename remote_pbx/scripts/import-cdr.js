@@ -4,6 +4,8 @@ const fs = require("fs-extra");
 const nativeFs = require("fs/promises");
 const path = require("path");
 const { ensureDatabase, query } = require("../src/db");
+const { cdrTimestamp } = require("../src/cdr-time");
+const { historyStart, keepHistoryTime } = require("../src/call-history");
 
 const importStatePath = path.join(__dirname, "..", "data", "cdr-import-state.json");
 
@@ -133,8 +135,8 @@ function rowFromColumns(columns) {
   return row;
 }
 
-async function importRow(row) {
-  await query(
+async function importRow(row, execute = query) {
+  await execute(
     `INSERT INTO pbx_cdr
      (calldate, start_at, answer_at, end_at, callerid, src, dst, dcontext, channel, dstchannel, lastapp, lastdata,
       duration, billsec, disposition, amaflags, accountcode, uniqueid, linkedid, peeraccount, recordingfile,
@@ -170,10 +172,10 @@ async function importRow(row) {
        sequence = EXCLUDED.sequence,
        raw = EXCLUDED.raw`,
     [
-      row.calldate,
-      row.start_at,
-      row.answer_at,
-      row.end_at,
+      cdrTimestamp(row.calldate),
+      cdrTimestamp(row.start_at),
+      cdrTimestamp(row.answer_at),
+      cdrTimestamp(row.end_at),
       row.callerid,
       row.src,
       row.dst,
@@ -210,6 +212,7 @@ async function main() {
     "/var/log/asterisk/cdr-csv/Master.csv"
   ].filter(Boolean))];
   if (!(await ensureDatabase())) throw new Error("Configure DATABASE_URL ou PGHOST/PGDATABASE para importar CDR.");
+  const since = await historyStart();
   const currentCount = Number((await query("SELECT COUNT(*)::int AS count FROM pbx_cdr"))?.rows?.[0]?.count || 0);
   const importState = currentCount > 0 ? await fs.readJson(importStatePath).catch(() => ({})) : {};
   const cdrPaths = [];
@@ -239,6 +242,8 @@ async function main() {
     for (const line of lines) {
       const row = rowFromColumns(parseCsvLine(line));
       if (!row.calldate || !hasLikelyCdrDate(row.calldate)) continue;
+      const timestamp = cdrTimestamp(row.calldate);
+      if (!timestamp || !keepHistoryTime(timestamp, since)) continue;
       await importRow(row);
       imported += 1;
     }
@@ -261,4 +266,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { hasLikelyCdrDate, parseCsvLine, rowFromColumns };
+module.exports = { hasLikelyCdrDate, parseCsvLine, rowFromColumns, cdrTimestamp, importRow };

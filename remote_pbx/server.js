@@ -16,6 +16,7 @@ const { promisify } = require("util");
 const crypto = require("crypto");
 const { staticCacheHeaders, privateApiHeaders } = require("./src/http-cache");
 const { buildReportPdf } = require("./src/report-pdf");
+const { historyStart, historyFilters, keepHistoryTime } = require("./src/call-history");
 const { WhatsAppDialer, whatsappCallFile, whatsappNumber } = require("./src/whatsapp-dialer");
 
 const {
@@ -63,6 +64,7 @@ const spaRoutes = new Set([
   "/audit", "/auditoria", "/users", "/usuarios"
 ]);
 let protocolCounterLock = Promise.resolve();
+let protocolEventLock = Promise.resolve();
 let dialerStoreLock = Promise.resolve();
 let cdrImportRunning = false;
 let databaseBackupRunning = false;
@@ -213,38 +215,52 @@ function localDateKey(date = new Date()) {
 async function allocateCallProtocol() {
   protocolCounterLock = protocolCounterLock.catch(() => {}).then(async () => {
     const year = protocolYear();
-    const current = (await fs.readJson(protocolCounterPath).catch(() => ({}))) || {};
+    const current = (await fs.readJson(protocolCounterPath).catch((error) => {
+      if (error.code === "ENOENT") return {};
+      throw error;
+    })) || {};
     const next = Number(current[year] || 0) + 1;
     current[year] = next;
     await fs.ensureDir(path.dirname(protocolCounterPath));
-    await fs.writeJson(protocolCounterPath, current, { spaces: 2 });
+    const temporary = `${protocolCounterPath}.${process.pid}.tmp`;
+    await fs.writeJson(temporary, current, { spaces: 2, mode: 0o600 });
+    await fs.rename(temporary, protocolCounterPath);
     return `${year}${String(next).padStart(6, "0")}`;
   });
   return protocolCounterLock;
 }
 
 async function readCallProtocolEvents() {
-  const payload = (await fs.readJson(callProtocolsPath).catch(() => ({}))) || {};
-  return Array.isArray(payload.events) ? payload.events : [];
+  const payload = (await fs.readJson(callProtocolsPath).catch((error) => {
+    if (error.code === "ENOENT") return {};
+    throw error;
+  })) || {};
+  const since = await historyStart();
+  return Array.isArray(payload.events) ? payload.events.filter((event) => keepHistoryTime(event.createdAt, since)) : [];
 }
 
 async function recordCallProtocolEvent(event) {
-  const current = await readCallProtocolEvents();
-  const now = Date.now();
-  const cutoff = now - 35 * 24 * 60 * 60 * 1000;
-  const events = [
-    ...current.filter((item) => (parseFlexibleDate(item.createdAt)?.getTime() || now) >= cutoff),
-    {
-      protocol: String(event.protocol || ""),
-      extension: String(event.extension || "").replace(/[^\d]/g, ""),
-      direction: String(event.direction || ""),
-      number: String(event.number || "").replace(/[^\d#*]/g, ""),
-      createdAt: new Date(now).toISOString()
-    }
-  ].filter((item) => item.protocol).slice(-20000);
-  await fs.ensureDir(path.dirname(callProtocolsPath));
-  await fs.writeJson(callProtocolsPath, { events }, { spaces: 2 });
-  return events[events.length - 1];
+  protocolEventLock = protocolEventLock.catch(() => {}).then(async () => {
+    const current = await readCallProtocolEvents();
+    const now = Date.now();
+    const cutoff = now - 35 * 24 * 60 * 60 * 1000;
+    const events = [
+      ...current.filter((item) => (parseFlexibleDate(item.createdAt)?.getTime() || now) >= cutoff),
+      {
+        protocol: String(event.protocol || ""),
+        extension: String(event.extension || "").replace(/[^\d]/g, ""),
+        direction: String(event.direction || ""),
+        number: String(event.number || "").replace(/[^\d#*]/g, ""),
+        createdAt: new Date(now).toISOString()
+      }
+    ].filter((item) => item.protocol).slice(-20000);
+    await fs.ensureDir(path.dirname(callProtocolsPath));
+    const temporary = `${callProtocolsPath}.${process.pid}.tmp`;
+    await fs.writeJson(temporary, { events }, { spaces: 2, mode: 0o600 });
+    await fs.rename(temporary, callProtocolsPath);
+    return events[events.length - 1];
+  });
+  return protocolEventLock;
 }
 
 async function readExtensionPauses() {
@@ -2584,7 +2600,16 @@ function protocolDirectionKey(value) {
   return text;
 }
 
-function protocolMatchScore(call, event, callTime = reportCallTime(call), eventTime = parseFlexibleDate(event.createdAt)?.getTime() || 0) {
+function protocolCallTime(call) {
+  const recorded = reportCallTime(call);
+  const epoch = String(call.uniqueId || call.id || "").match(/^(\d{10})\.\d+$/);
+  const created = epoch ? Number(epoch[1]) * 1000 : 0;
+  // Asterisk can emit another CDR for the same channel at hangup. Its original
+  // unique ID retains the creation time and distinguishes rapid repeat calls.
+  return created && recorded && created <= recorded + 12 * 60 * 1000 && recorded - created <= 7 * 24 * 60 * 60 * 1000 ? created : recorded;
+}
+
+function protocolMatchScore(call, event, callTime = protocolCallTime(call), eventTime = parseFlexibleDate(event.createdAt)?.getTime() || 0) {
   if (call.protocol) return -1;
   if (!callTime || !eventTime) return -1;
   const distance = Math.abs(callTime - eventTime);
@@ -2614,7 +2639,7 @@ function attachCallProtocolEvents(calls, events) {
   if (!events.length) return calls;
   const timedEvents = events.map((event, index) => ({ event, index, time: parseFlexibleDate(event.createdAt)?.getTime() || 0 }));
   const used = new Set();
-  calls.map((call) => ({ call, time: reportCallTime(call) }))
+  calls.map((call) => ({ call, time: protocolCallTime(call) }))
     .sort((left, right) => left.time - right.time)
     .forEach(({ call, time }) => {
       if (call.protocol) return;
@@ -2812,7 +2837,8 @@ function collapseReportCallLegs(calls) {
 const mapReportCdrRows = require("./src/cdr-mapper").createCdrMapper(mapDbCdrRow);
 
 async function readPbxReportCallsFresh(config, filters = {}) {
-  const databaseRows = await getReportCdrRows(filters);
+  const since = await historyStart();
+  const databaseRows = await getReportCdrRows(historyFilters(filters, since));
   if (databaseRows.length) {
     const calls = collapseReportCallLegs(await mapReportCdrRows(databaseRows, config, configRevision(config)));
     await attachCallProtocols(calls);
@@ -2832,7 +2858,8 @@ async function readPbxReportCallsFresh(config, filters = {}) {
       .filter((line) => line.trim())
       .forEach((line, index) => {
         const columns = parseCsvLine(line);
-        mappedCalls.push(mapCdrColumns(columns, baseIndex + index, config));
+        const call = mapCdrColumns(columns, baseIndex + index, config);
+        if (keepHistoryTime(call.startedAt, since)) mappedCalls.push(call);
       });
   }
   const calls = collapseReportCallLegs(mappedCalls);
