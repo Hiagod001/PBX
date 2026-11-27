@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>UAI PBX | Central de Operacoes</title>
     <link rel="stylesheet" href="/styles.css?v=20260828-overview-width-2" />
-    <link rel="stylesheet" href="/workspace.css?v=20261127-pausa-gestor" />
+    <link rel="stylesheet" href="/workspace.css?v=20261127-supervisao-ura" />
     <script src="/vendor/lucide.js?v=1.34.0" defer></script>
     <script src="/vendor/sip.js?v=20260528-local" defer></script>
   </head>
@@ -221,7 +221,7 @@
         <h2 id="agentPauseTitle">Pausar atendente</h2>
         <p id="agentPauseIdentity"></p>
         <label>Motivo da pausa<select id="agentPauseReason" required></select></label>
-        <p>Durante a pausa, o ramal deixa de receber ligações das filas.</p>
+        <p id="agentPauseHint">Durante a pausa, o ramal deixa de receber ligações das filas.</p>
         <p id="agentPauseFeedback" role="alert"></p>
         <footer><button type="button" class="secondary-btn" id="agentPauseCancel">Cancelar</button>
           <button type="submit" class="primary-btn" id="agentPauseSubmit">Pausar atendente</button></footer>
@@ -245,6 +245,6 @@
     <script src="/assisted-transfer.js?v=20260914-assisted-1"></script>
     <script src="/trunk-policy.js?v=20261126-trunk-directions-2"></script>
     <script src="/sip-recovery.js?v=20261126-reconnect-1"></script>
-    <script src="/app.js?v=20261127-pausa-gestor"></script>
+    <script src="/app.js?v=20261127-supervisao-ura"></script>
   </body>
 </html>

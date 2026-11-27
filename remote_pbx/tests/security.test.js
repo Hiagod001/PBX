@@ -105,7 +105,7 @@ test("audit payloads redact nested credentials", () => {
   assert.equal(result.safe, "visible");
 });
 
-test("live supervision requires authorized extensions or departments", () => {
+test("monitor scope includes all registered extensions unless a number or department is selected", () => {
   const config = {
     extensions: [
       { number: "505", department: "Suporte" },
@@ -113,11 +113,16 @@ test("live supervision requires authorized extensions or departments", () => {
     ]
   };
   const supervisor = {
-    session: { user: { role: "supervisor", allowedExtensions: ["505"], departments: [] } }
+    session: { user: { role: "supervisor", permissions: { menus: { status: true } }, allowedExtensions: ["505"], departments: [] } }
   };
   assert.equal(_test.userCanMonitorExtension(supervisor, config, "505"), true);
   assert.equal(_test.userCanMonitorExtension(supervisor, config, "701"), false);
+  supervisor.session.user.allowedExtensions = [];
+  assert.equal(_test.userCanMonitorExtension(supervisor, config, "505"), true);
+  assert.equal(_test.userCanMonitorExtension(supervisor, config, "701"), true);
+  assert.equal(_test.userCanMonitorExtension(supervisor, config, "999"), false);
   supervisor.session.user.departments = ["Financeiro"];
+  assert.equal(_test.userCanMonitorExtension(supervisor, config, "505"), false);
   assert.equal(_test.userCanMonitorExtension(supervisor, config, "701"), true);
   assert.equal(_test.userCanMonitorExtension({ session: { user: { role: "user", allowedExtensions: ["701"], permissions: { menus: {} } } } }, config, "701"), false);
   assert.equal(_test.userCanMonitorExtension({ session: { user: { role: "admin" } } }, config, "701"), true);
@@ -132,4 +137,14 @@ test("call intervention requires monitor access and explicit intervention permis
   );
   assert.equal(_test.userCanInterveneLiveCalls({ session: { user: { role: "user", permissions: { menus: { status: true }, interveneCalls: true } } } }), true);
   assert.equal(_test.userCanInterveneLiveCalls({ session: { user: { role: "user", permissions: { menus: {}, interveneCalls: true } } } }), false);
+});
+
+test("monitor pause management is independent of call intervention and preserves legacy grants", () => {
+  const request = (status, permissions) => ({ session: { user: { role: "supervisor", permissions: { menus: { status }, ...permissions } } } });
+  assert.equal(_test.userCanManagePauses(request(true, { managePauses: true })), true);
+  assert.equal(_test.userCanInterveneLiveCalls(request(true, { managePauses: true })), false);
+  assert.equal(_test.userCanManagePauses(request(true, { interveneCalls: true })), true);
+  assert.equal(_test.userCanManagePauses(request(true, { interveneCalls: true, managePauses: false })), false);
+  assert.equal(_test.userCanManagePauses(request(false, { managePauses: true })), false);
+  assert.equal(_test.userCanInterveneLiveCalls(request(false, { interveneCalls: true })), false);
 });

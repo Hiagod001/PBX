@@ -308,7 +308,7 @@ function normalizePauseReason(reason) {
 
 let pauseMutation = Promise.resolve();
 let monitorSpyOwner = null;
-function updateExtensionPause(number, paused, reason = "", { requireAvailable = false } = {}) {
+function updateExtensionPause(number, paused, reason = "", { requireAvailable = false, expectedPauseId } = {}) {
   const operation = pauseMutation.catch(() => {}).then(async () => {
     if (paused) {
       const config = await getConfig();
@@ -320,6 +320,12 @@ function updateExtensionPause(number, paused, reason = "", { requireAvailable = 
       }
       if (requireAvailable && !status.extensions.some(ext => String(ext.number) === number && ext.captureReady)) {
         throw Object.assign(new Error("O ramal já está em pausa ou deixou de estar disponível."), { status: 409 });
+      }
+    }
+    if (expectedPauseId !== undefined) {
+      const current = (await readExtensionPauses())[number];
+      if (!current?.paused || !expectedPauseId || (current.pauseId || current.startedAt) !== expectedPauseId) {
+        throw Object.assign(new Error("A pausa mudou. Atualize o monitor e confira o ramal."), { status: 409 });
       }
     }
     const output = await runAsteriskControl(paused ? "queue-pause" : "queue-unpause", number, { reason });
@@ -384,6 +390,7 @@ function pauseRecordFor(pauses, number, now = Date.now()) {
   const startedAt = Number.isFinite(started) ? started : now;
   const pauseSeconds = Math.max(0, Math.round((now - startedAt) / 1000));
   return {
+    pauseId: record.pauseId || record.startedAt,
     reason: record.reason || "Pausa",
     startedAt: new Date(startedAt).toISOString(),
     pauseSeconds,
@@ -562,7 +569,6 @@ function canEditConfigSections(req, sections) {
 
 function requireSupervisor(req, res, next) {
   if (hasMenuAccess(req, "status")) return next();
-  if (["admin", "supervisor"].includes(userRole(req))) return next();
   return res.status(403).json({ error: "Acao restrita a supervisores" });
 }
 
@@ -1918,6 +1924,7 @@ async function readPbxStatusFresh(config) {
       pauseReason: activePause?.reason || "",
       pauseSeconds: activePause?.pauseSeconds || 0,
       pauseDurationLabel: activePause?.pauseDurationLabel || "",
+      pauseId: activePause?.pauseId || "",
       pauseStartedAt: activePause?.startedAt || "",
       idleSeconds: idle.idleSeconds ?? null,
       idleTime: idle.idleTime || "",
@@ -3069,19 +3076,26 @@ function userReportScope(req, config) {
   };
 }
 
+function userCanManagePauses(req) {
+  const permissions = req.session?.user?.permissions || {};
+  return userRole(req) === "admin" || (hasMenuAccess(req, "status")
+    && (permissions.managePauses ?? permissions.interveneCalls) === true);
+}
+
 function userCanInterveneLiveCalls(req) {
   if (userRole(req) === "admin") return true;
-  return (userRole(req) === "supervisor" || hasMenuAccess(req, "status"))
+  return hasMenuAccess(req, "status")
     && req.session?.user?.permissions?.interveneCalls === true;
 }
 
 function userCanMonitorExtension(req, config, extensionNumber) {
   if (userRole(req) === "admin") return true;
-  if (userRole(req) !== "supervisor" && !hasMenuAccess(req, "status")) return false;
+  if (!hasMenuAccess(req, "status")) return false;
   const user = req.session?.user || {};
   const target = String(extensionNumber || "");
   const extension = (config.extensions || []).find((item) => String(item.number) === target);
   if (!extension) return false;
+  if (!user.allowedExtensions?.length && !user.departments?.length) return true;
   if ((user.allowedExtensions || []).map(String).includes(target)) return true;
   const department = String(extension.department || "");
   return Boolean(department) && (user.departments || []).map(String).includes(department);
@@ -4211,13 +4225,20 @@ app.get("/api/users", requireAuth, requireAdmin, async (req, res) => {
 
 app.put("/api/users", requireAuth, requireAdmin, async (req, res) => {
   const current = await getUsers();
-  const incoming = Array.isArray(req.body?.users) ? req.body.users : [];
+  const incoming = req.body?.users;
+  if (!Array.isArray(incoming) || !incoming.length) return res.status(400).json({ error: "Informe as contas que deseja salvar." });
+  const names = new Set();
   const currentByUsername = new Map((current.users || []).map((user) => [user.username, user]));
   const nextUsers = [];
+  const config = await getConfig();
 
   for (const item of incoming) {
-    const username = String(item.username || "").trim();
-    if (!username) continue;
+    const username = String(item?.username || "").trim();
+    if (!username || names.has(username.toLowerCase())) return res.status(400).json({ error: "Cada conta precisa de um nome de usuário único." });
+    names.add(username.toLowerCase());
+    if (!["admin", "supervisor", "user"].includes(item.role) || (username === "admin" && item.role !== "admin")) {
+      return res.status(400).json({ error: "Confira o perfil da conta. O usuário admin precisa manter o perfil Administrador." });
+    }
     const existing = currentByUsername.get(username) || {};
     const next = {
       ...existing,
@@ -4231,6 +4252,20 @@ app.put("/api/users", requireAuth, requireAdmin, async (req, res) => {
       createdAt: existing.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
+    const grants = next.permissions;
+    const monitorChanged = ["interveneCalls", "managePauses"].some(key =>
+      (grants[key] ?? (key === "managePauses" && grants.interveneCalls)) !==
+      (existing.permissions?.[key] ?? (key === "managePauses" && existing.permissions?.interveneCalls))) ||
+      next.role !== existing.role || grants.menus?.status !== existing.permissions?.menus?.status ||
+      JSON.stringify(next.allowedExtensions) !== JSON.stringify(existing.allowedExtensions || []) ||
+      JSON.stringify(next.departments) !== JSON.stringify(existing.departments || []);
+    if (monitorChanged && next.role !== "admin" && (grants.interveneCalls === true || grants.managePauses === true)) {
+      if (grants.menus?.status !== true) return res.status(400).json({ error: "Libere o Monitor de Filas para autorizar ações de supervisão." });
+      const restricted = next.allowedExtensions.length || next.departments.length;
+      if (restricted && !config.extensions.some(e => next.allowedExtensions.includes(String(e.number)) || (e.department && next.departments.includes(e.department)))) {
+        return res.status(400).json({ error: "A seleção de ramais e setores não corresponde a nenhum ramal cadastrado para " + username + "." });
+      }
+    }
     const providedPassword = String(item.password || "").trim();
     if (providedPassword && !isStrongPassword(providedPassword)) {
       const error = new Error(`A senha do usuario ${username} precisa ter 8 caracteres, maiuscula, minuscula e numero`);
@@ -4531,24 +4566,27 @@ app.post("/api/pbx/monitor/action", requireAuth, requireSupervisor, async (req, 
     return res.status(400).json({ error: "Modo de monitoramento invalido" });
   }
 
-  if (action === "pause-agent") {
-    if (!userCanInterveneLiveCalls(req) || !userCanMonitorExtension(req, config, target)) {
-      return res.status(403).json({ error: "Você não tem permissão para pausar este ramal." });
+  if (action === "pause-agent" || action === "resume-agent") {
+    const pausing = action === "pause-agent";
+    if (!userCanManagePauses(req) || !userCanMonitorExtension(req, config, target)) {
+      return res.status(403).json({ error: "Você não tem permissão para gerenciar a pausa deste ramal." });
     }
     if (!config.extensions.some(ext => String(ext.number) === target)) {
       return res.status(404).json({ error: "Ramal não encontrado." });
     }
     const reason = req.body.reason;
-    if (!pauseReasons.has(reason)) return res.status(400).json({ error: "Escolha um motivo de pausa." });
+    if (pausing && !pauseReasons.has(reason)) return res.status(400).json({ error: "Escolha um motivo de pausa." });
     try {
-      await updateExtensionPause(target, true, reason, { requireAvailable: true });
+      await updateExtensionPause(target, pausing, pausing ? reason : "", { requireAvailable: pausing,
+        expectedPauseId: pausing ? undefined : String(req.body.pauseId || "") });
     } catch (error) {
       if (error.status === 409) return res.status(409).json({ error: error.message });
       console.error("Falha na pausa pelo monitor:", error.message);
       return res.status(503).json({ error: "Não foi possível confirmar a pausa. Confira o estado do ramal." });
     }
-    await writeSystemAuditEvent(req, "monitor-pause-agent", {
-      label: "Pausou atendente pelo monitor", summary: `Ramal ${target} · ${reason}`, target, after: { reason }
+    await writeSystemAuditEvent(req, pausing ? "monitor-pause-agent" : "monitor-resume-agent", {
+      label: pausing ? "Pausou atendente pelo monitor" : "Retomou atendimento pelo monitor",
+      summary: pausing ? `Ramal ${target} · ${reason}` : `Ramal ${target}`, target, after: { paused: pausing, ...(pausing ? { reason } : {}) }
     });
     return res.json({ ok: true });
   }
@@ -4794,8 +4832,10 @@ app.get("/api/pbx-status", requireAuth, async (req, res) => {
   const intervene = userCanInterveneLiveCalls(req);
   const availableTargets = intervene ? scoped.extensions.filter(e => e.captureReady && userCanMonitorExtension(req, config, e.number))
     .map(({ number, name }) => ({ number, name })) : [];
+  const pauseScope = userCanManagePauses(req) ? scoped.extensions.filter(e => userCanMonitorExtension(req, config, e.number)) : [];
   res.json({ ...scoped,
-    pauseTargets: availableTargets.map(e => String(e.number)),
+    pauseTargets: pauseScope.filter(e => e.captureReady).map(e => String(e.number)),
+    resumeTargets: Object.fromEntries(pauseScope.filter(e => e.paused && e.pauseId).map(e => [e.number, e.pauseId])),
     captureQueues: intervene ? config.queues.filter((q) => captureQueueAllowed(req, config, q)).map((q) => q.id) : [],
     captureTargets: availableTargets
   });
@@ -5172,6 +5212,7 @@ module.exports = {
     recordingDownloadName,
     sanitizeAuditValue,
     userCanInterveneLiveCalls,
+    userCanManagePauses,
     userCanMonitorExtension,
     userReportScope,
     ownedChannelForRequest,

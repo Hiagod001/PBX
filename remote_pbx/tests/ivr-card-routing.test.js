@@ -30,3 +30,26 @@ test("independent schedules may share a queue but cannot link to a missing targe
   b.outDestination = "missing";
   assert.throws(() => validateConfig(config), /destino não encontrado/);
 });
+
+test("unlinking a Plantão shortcut removes only edges drawn to that card", () => {
+  const vm = require("node:vm");
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
+  const helpers = source.slice(source.indexOf("function linkedIvrCardKey("), source.indexOf("function replaceIvrMenuReferences("));
+  const branch = suffix => ({ inDestinationType: "queue", inDestination: "25", inDestinationCardKey: suffix });
+  const conditions = [branch("queue:25:left"), branch("queue:25:right"), branch("")];
+  const menu = { options: [], timeConditions: conditions };
+  const context = {
+    ensureIvrDuplicateTargetCards: () => ["left", "right"].map(id => ({ id, type: "queue", value: "25" })),
+    ivrTargetCardByDestination: (type, value) => type + ":" + value,
+    ensureIvrMenus: () => [], ensureIvrLooseOptions: () => [], ensureIvrTimeConditions: () => conditions
+  };
+  vm.runInNewContext(helpers, context);
+  assert.equal(context.clearIvrDestinationLinks("queue", "25", menu, "queue:25:left"), 1);
+  assert.deepEqual(conditions.map(c => c.inDestination), ["", "25", "25"]);
+  assert.equal(context.clearIvrDestinationLinks("queue", "25", menu, "queue:25:left"), 0);
+  assert.equal(context.linkedIvrCardKey("queue", "25", "queue:25:removed", menu), "queue:25");
+  assert.equal(context.clearIvrDestinationLinks("queue", "25", menu, "queue:25"), 1);
+  assert.equal(conditions[1].inDestinationCardKey, "queue:25:right");
+});

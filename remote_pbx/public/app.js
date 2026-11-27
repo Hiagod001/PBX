@@ -310,7 +310,7 @@ const menuPermissions = {
 
 const userMenuGroups = [
   {
-    label: "Operacao",
+    label: "Operação",
     icon: "activity",
     tabs: ["overview", "status", "reports", "audios", "queues", "extensions", "dialer"]
   },
@@ -320,7 +320,7 @@ const userMenuGroups = [
     tabs: ["trunk", "routing", "ivr", "ivrAudios"]
   },
   {
-    label: "Governanca",
+    label: "Administração",
     icon: "shield-check",
     tabs: ["logs", "security", "audit", "users"]
   }
@@ -1478,14 +1478,24 @@ function eachIvrOption(callback) {
   });
 }
 
+function linkedIvrCardKey(type, value, storedKey, workspace) {
+  if (!value) return "";
+  const base = ivrTargetCardByDestination(type, value);
+  if (!storedKey || storedKey === base) return base;
+  return ensureIvrDuplicateTargetCards(workspace).some(alias =>
+    alias.type === type && String(alias.value) === String(value) && storedKey === base + ":" + alias.id)
+    ? storedKey : base;
+}
+
 function clearIvrDestinationLinks(type, value, workspace = null, cardKey = "") {
   let removed = 0;
   function clear(item, prefix = "") {
     const typeField = prefix ? prefix + "DestinationType" : "destinationType";
     const valueField = prefix ? prefix + "Destination" : "destination";
     const keyField = prefix ? prefix + "DestinationCardKey" : "destinationCardKey";
+    if (!item[valueField]) return;
     if (item[typeField] !== type || String(item[valueField]) !== String(value)) return;
-    if (cardKey && (item[keyField] || ivrTargetCardByDestination(type, value)) !== cardKey) return;
+    if (cardKey && linkedIvrCardKey(type, value, item[keyField], workspace) !== cardKey) return;
     item[typeField] = item[valueField] = item[keyField] = "";
     removed++;
   }
@@ -3597,9 +3607,11 @@ function renderWaitingCalls(calls) {
 
 function monitorPauseButton(agent) {
   const number = String(agent.number || "");
-  if (!state.pbxStatus?.pauseTargets?.includes(number)) return "";
+  const pauseId = state.pbxStatus?.resumeTargets?.[number] || "";
+  if (!pauseId && !state.pbxStatus?.pauseTargets?.includes(number)) return "";
+  const label = pauseId ? "Retomar atendimento" : "Pausar atendente";
   return `<button type="button" class="icon-btn compact" data-pause-agent="${escapeHtml(number)}"
-    aria-label="Pausar atendente do ramal ${escapeHtml(number)}" title="Pausar atendente"><i data-lucide="pause"></i></button>`;
+    data-pause-id="${escapeHtml(pauseId)}" aria-label="${label} do ramal ${escapeHtml(number)}" title="${label}"><i data-lucide="${pauseId ? "play" : "pause"}"></i></button>`;
 }
 
 const agentPauseDialog = $("#agentPauseDialog");
@@ -3608,33 +3620,40 @@ const agentPauseSubmit = $("#agentPauseSubmit");
 const agentPauseFeedback = $("#agentPauseFeedback");
 let submittingAgentPause = false;
 
-function openAgentPause(number) {
+function openAgentPause(number, pauseId) {
   const agent = state.pbxStatus?.extensions?.find(ext => String(ext.number) === number);
-  if (!agent || !state.pbxStatus.pauseTargets?.includes(number)) return;
+  if (!agent || (pauseId ? state.pbxStatus.resumeTargets?.[number] !== pauseId : !state.pbxStatus.pauseTargets?.includes(number))) return;
+  agentPauseDialog.dataset.pauseId = pauseId;
+  const label = pauseId ? "Retomar atendimento" : "Pausar atendente";
+  $("#agentPauseTitle").textContent = agentPauseSubmit.textContent = label;
+  agentPauseReason.disabled = Boolean(pauseId);
+  agentPauseReason.closest("label").hidden = Boolean(pauseId);
+  $("#agentPauseHint").textContent = pauseId ? "Ao encerrar a pausa, o ramal poderá voltar a receber ligações das filas." : "Durante a pausa, o ramal deixa de receber ligações das filas.";
   agentPauseDialog.dataset.target = number;
   $("#agentPauseIdentity").textContent = [agent.name, "Ramal " + number].filter(Boolean).join(" · ");
   agentPauseReason.replaceChildren(new Option("Selecione o motivo", ""), ...PAUSE_REASONS.map(reason => new Option(reason, reason)));
   agentPauseFeedback.textContent = "";
   agentPauseSubmit.disabled = false;
   agentPauseDialog.showModal();
-  agentPauseReason.focus();
+  (pauseId ? agentPauseSubmit : agentPauseReason).focus();
 }
 
 $("#agentPauseCancel").addEventListener("click", () => { if (!submittingAgentPause) agentPauseDialog.close(); });
 agentPauseDialog.addEventListener("cancel", event => { if (submittingAgentPause) event.preventDefault(); });
 $("#agentPauseForm").addEventListener("submit", async event => {
   event.preventDefault();
-  if (submittingAgentPause || !agentPauseReason.value) return;
+  const pauseId = agentPauseDialog.dataset.pauseId;
+  if (submittingAgentPause || (!pauseId && !agentPauseReason.value)) return;
   submittingAgentPause = true;
   agentPauseSubmit.disabled = true;
   agentPauseFeedback.textContent = "";
   const target = agentPauseDialog.dataset.target;
   try {
     await api("/api/pbx/monitor/action", {
-      method: "POST", body: JSON.stringify({ action: "pause-agent", target, reason: agentPauseReason.value })
+      method: "POST", body: JSON.stringify(pauseId ? { action: "resume-agent", target, pauseId } : { action: "pause-agent", target, reason: agentPauseReason.value })
     });
     agentPauseDialog.close();
-    setMessage(`Pausa registrada para o ramal ${target}.`, "ok");
+    setMessage(pauseId ? `Pausa encerrada para o ramal ${target}.` : `Pausa registrada para o ramal ${target}.`, "ok");
   } catch (error) {
     agentPauseFeedback.textContent = error.message;
   } finally {
@@ -4884,10 +4903,7 @@ function renderIvrContextTargetButtons() {
 function renderIvrLinks(cards) {
   const nodeMap = new Map(cards.map((card) => [card.key, card]));
   function targetNode(type, value, key) {
-    if (!value) return null;
-    const base = ivrTargetCardByDestination(type, value);
-    const card = nodeMap.get(key);
-    return card && (key === base || (card.type === type && card.value === value)) ? card : nodeMap.get(base);
+    return nodeMap.get(linkedIvrCardKey(type, value, key, currentIvrWorkspaceMenu()));
   }
   const links = [];
   const cardSize = (card) => {
@@ -4919,7 +4935,7 @@ function renderIvrLinks(cards) {
       }
     }
   });
-  cards.filter((card) => card.type === "timeCondition" && card.condition).forEach((timeCard) => {
+  cards.filter((card) => card.type === "timeCondition" && !card.duplicateId && card.condition).forEach((timeCard) => {
     const openTarget = targetNode(timeCard.condition.inDestinationType, timeCard.condition.inDestination, timeCard.condition.inDestinationCardKey);
     const closedTarget = targetNode(timeCard.condition.outDestinationType, timeCard.condition.outDestination, timeCard.condition.outDestinationCardKey);
     drawLink(timeCard, openTarget, "time-in-link");
@@ -6324,42 +6340,74 @@ function renderAudit() {
     </div>`;
 }
 
-function renderUsers() {
-  const users = state.users.length ? state.users : [state.user].filter(Boolean);
-  const editingIndex = Number.isInteger(state.editingUserIndex) && users[state.editingUserIndex] ? state.editingUserIndex : null;
-  const editing = editingIndex === null ? null : users[editingIndex];
-  const isAdmin = editing?.role === "admin";
-  const enabledMenuCount = editing ? Object.values(menuPermissions).filter((key) => isAdmin || editing.permissions?.menus?.[key]).length : 0;
-  const rows = users.map((user, index) => {
-    const userIsAdmin = user.role === "admin";
-    const userEnabledMenuCount = Object.values(menuPermissions).filter((key) => userIsAdmin || user.permissions?.menus?.[key]).length;
-    return `
-      <article class="panel user-card entity-list-card" data-user-summary-index="${index}">
-        <div class="user-card-title"><span class="user-avatar"><i data-lucide="user-round"></i></span><div><h3>${escapeHtml(user.username || "novo")}</h3><span>${userIsAdmin ? "Administrador com acesso total" : `${escapeHtml(user.role || "user")} · ${userEnabledMenuCount} modulos`}</span></div></div>
-        <div class="list-card-meta"><span><strong>Ramais</strong>Todos</span><span><strong>Acesso</strong>${userIsAdmin ? "Total" : `${userEnabledMenuCount} modulo(s)`}</span></div>
-        <div class="compact-card-actions"><button class="primary-btn compact" data-edit-user="${index}" type="button"><i data-lucide="pencil"></i>Editar</button><button class="icon-btn danger" data-remove-user="${index}" ${user.username === "admin" ? "disabled" : ""} title="Remover usuario"><i data-lucide="trash-2"></i></button></div>
-      </article>`;
-  }).join("");
-  const menuGroups = editing ? userMenuGroups.map((group) => `
-      <section class="user-permission-group">
-        <div class="user-permission-group-title"><i data-lucide="${group.icon}"></i><strong>${group.label}</strong><span>${group.tabs.length}</span></div>
-        <div class="user-permission-list">${group.tabs.map((tab) => {
-          const key = menuPermissions[tab];
-          return `<label class="user-permission-option"><input type="checkbox" data-user-menu="${key}" ${(isAdmin || editing.permissions?.menus?.[key]) ? "checked" : ""} ${isAdmin ? "disabled" : ""}/><span>${escapeHtml(titleByTab[tab] || tab)}</span></label>`;
-        }).join("")}</div>
-      </section>`).join("") : "";
-  const editor = editing ? `
-    <article class="panel user-card entity-editor-shell" data-user-index="${editingIndex}" data-entity-editor>
-      <div class="panel-header entity-editor-header"><div class="user-card-title"><span class="user-avatar"><i data-lucide="user-round"></i></span><div><p class="eyebrow">Editar usuario</p><h3>${escapeHtml(editing.username || "novo")}</h3><span>${isAdmin ? "Administrador com acesso total" : "Acesso personalizado"}</span></div></div><div class="compact-card-actions"><button class="secondary-btn" data-cancel-user-edit type="button"><i data-lucide="arrow-left"></i>Voltar para lista</button><button id="saveUsersBtn" class="primary-btn compact" type="button"><i data-lucide="save"></i>Salvar usuario</button><button class="icon-btn danger" data-remove-user="${editingIndex}" ${editing.username === "admin" ? "disabled" : ""} title="Remover usuario"><i data-lucide="trash-2"></i></button></div></div>
-      <div class="field-grid compact-grid"><label>Usuario<input data-user-field="username" value="${escapeHtml(editing.username || "")}" ${editing.username === "admin" ? "readonly" : ""} /></label><label>Nova senha<input data-user-field="password" type="password" placeholder="Manter senha atual" /></label><label>Perfil<select data-user-field="role">${["admin", "supervisor", "user"].map((role) => option(role, editing.role || "user", role)).join("")}</select></label></div>
-      <section class="user-access-block"><div class="user-access-heading"><div><strong>Acesso aos modulos</strong><span>Defina quais areas ficam disponiveis para este usuario.</span></div><div class="user-access-actions"><span class="user-permission-summary" data-user-menu-count>${enabledMenuCount} de ${Object.keys(menuPermissions).length} modulos</span>${isAdmin ? `<span class="badge ok">Acesso total</span>` : `<button class="secondary-btn compact" type="button" data-user-toggle-menus="${editingIndex}"><i data-lucide="check-check"></i><span data-user-toggle-label>${enabledMenuCount === Object.keys(menuPermissions).length ? "Limpar" : "Selecionar todos"}</span></button>`}</div></div><div class="user-permission-groups">${menuGroups}</div></section>
-      <section class="user-access-block"><strong>Supervisao de chamadas</strong><p class="microcopy">Para usuarios nao administradores, autorize os ramais ou departamentos que podem ser escutados. Sem selecao, nenhuma escuta e permitida. O acesso ao modulo Monitor continua necessario.</p><div class="form-grid"><label>Ramais autorizados (separados por virgula)<input data-user-field="allowedExtensions" value="${escapeHtml((editing.allowedExtensions || []).join(', '))}" ${isAdmin ? 'disabled' : ''}/></label><label>Departamentos autorizados (separados por virgula)<input data-user-field="departments" value="${escapeHtml((editing.departments || []).join(', '))}" ${isAdmin ? 'disabled' : ''}/></label></div><label class="user-setting-option"><input type="checkbox" data-user-permission="interveneCalls" ${(isAdmin || editing.permissions?.interveneCalls === true) ? 'checked' : ''} ${isAdmin ? 'disabled' : ''}/><span>Permitir pausar atendentes e intervir nas chamadas dos ramais autorizados</span></label></section>
-      <section class="user-access-block"><label class="user-setting-option"><input type="checkbox" data-user-field="mustChangePassword" ${editing.mustChangePassword ? "checked" : ""}/><span>Trocar senha no proximo login</span></label></section>
-    </article>` : `
-    <section class="panel"><div class="panel-header"><div><p class="eyebrow">Administracao</p><h3>Usuarios</h3><p class="microcopy">Consulte os usuarios cadastrados e abra somente a conta que deseja editar.</p></div><div class="report-header-actions"><button id="addUserBtn" class="primary-btn" type="button"><i data-lucide="plus"></i>Novo usuario</button><button id="saveUsersBtn" class="secondary-btn" type="button"><i data-lucide="save"></i>Salvar usuarios</button></div></div><div class="entity-list-grid">${rows || `<div class="governance-empty"><i data-lucide="users"></i><strong>Nenhum usuario cadastrado</strong><span>Cadastre um usuario para liberar acessos.</span></div>`}</div></section>`;
-  pages.users.innerHTML = `<div class="section-grid">${editor || `<section class="panel"><div class="panel-header"><div><p class="eyebrow">Administracao</p><h3>Usuarios</h3><p class="microcopy">Consulte os usuarios cadastrados e abra somente a conta que deseja editar.</p></div><div class="report-header-actions"><button id="addUserBtn" class="primary-btn" type="button"><i data-lucide="plus"></i>Novo usuario</button><button id="saveUsersBtn" class="secondary-btn" type="button"><i data-lucide="save"></i>Salvar usuarios</button></div></div><div class="entity-list-grid">${rows || `<div class="governance-empty"><i data-lucide="users"></i><strong>Nenhum usuario cadastrado</strong><span>Cadastre um usuario para liberar acessos.</span></div>`}</div></section>`}</div>`;
+const userRoleLabels = { admin: "Administrador", supervisor: "Supervisor", user: "Usuário" };
+
+function userScopeChoices(field, selected, entries) {
+  const choices = new Map(entries);
+  for (const value of selected) if (!choices.has(value)) choices.set(value, value);
+  return [...choices].map(([value, label]) => `<label class="user-scope-choice"><input type="checkbox"
+    data-user-scope="${field}" value="${escapeHtml(value)}" ${selected.includes(value) ? "checked" : ""}><span>${escapeHtml(label)}</span></label>`).join("");
 }
 
+function syncUserMonitorControls(card) {
+  const block = card.querySelector("[data-monitor-grants]");
+  if (!block) return;
+  block.disabled = !card.querySelector('[data-user-menu="status"]')?.checked;
+  card.querySelector("[data-monitor-hint]").textContent = block.disabled
+    ? "Habilite o Monitor de Filas nos menus para configurar a supervisão."
+    : block.querySelector("[data-user-scope]:checked")
+      ? "Acesso restrito aos ramais marcados e aos ramais dos setores selecionados."
+      : "Todos os ramais autorizados, inclusive os novos. Para limitar o alcance, selecione ramais ou setores.";
+}
+
+function renderUsers() {
+  const users = state.users.length ? state.users : [state.user].filter(Boolean);
+  const index = state.editingUserIndex;
+  const editing = Number.isInteger(index) && users[index];
+  const menusFor = (role) => Object.keys(menuPermissions).filter(tab => role === "admin" || !adminOnlyTabs.has(tab));
+  const countMenus = (user) => menusFor(user.role).filter(tab => user.role === "admin" || user.permissions?.menus?.[menuPermissions[tab]]).length;
+  const remove = (user, i) => `<button class="icon-btn danger" type="button" data-remove-user="${i}" ${user.username === "admin" ? "disabled" : ""} aria-label="Remover usuário" title="Remover usuário"><i data-lucide="trash-2"></i></button>`;
+  if (!editing) {
+    const cards = users.map((user, i) => `<article class="panel user-card entity-list-card" data-user-summary-index="${i}">
+      <div class="user-card-title"><span class="user-avatar"><i data-lucide="${user.role === "admin" ? "shield-check" : "user-round"}"></i></span>
+      <div><h3>${escapeHtml(user.username || "Novo usuário")}</h3><span>${userRoleLabels[user.role] || "Usuário"}</span></div></div>
+      <div class="user-card-footer"><span>${user.role === "admin" ? "Acesso total" : countMenus(user) + " menus liberados"}</span>
+      <div class="compact-card-actions"><button class="secondary-btn compact" type="button" data-edit-user="${i}"><i data-lucide="pencil"></i>Editar</button>${remove(user,i)}</div></div></article>`).join("");
+    pages.users.innerHTML = `<section class="panel users-directory"><div class="panel-header"><div><h3>Usuários e permissões</h3><p class="microcopy">${users.length} conta(s) cadastrada(s)</p></div><div class="report-header-actions"><button id="addUserBtn" class="primary-btn" type="button"><i data-lucide="plus"></i>Novo usuário</button><button id="saveUsersBtn" class="secondary-btn" type="button"><i data-lucide="save"></i>Salvar alterações</button></div></div><div class="entity-list-grid">${cards}</div></section>`;
+    return;
+  }
+  const admin = editing.role === "admin";
+  const menus = menusFor(editing.role);
+  const groups = userMenuGroups.map(group => {
+    const tabs = group.tabs.filter(tab => menus.includes(tab));
+    if (!tabs.length) return "";
+    return `<section class="user-permission-group"><div class="user-permission-group-title"><i data-lucide="${group.icon}"></i><strong>${group.label}</strong></div>
+      <div class="user-permission-list">${tabs.map(tab => `<label class="user-permission-option"><input type="checkbox" data-user-menu="${menuPermissions[tab]}" ${editing.permissions?.menus?.[menuPermissions[tab]] ? "checked" : ""}><span>${escapeHtml(titleByTab[tab] || tab)}</span></label>`).join("")}</div></section>`;
+  }).join("");
+  const ext = state.config?.extensions || [];
+  const numbers = editing.allowedExtensions || [];
+  const departments = editing.departments || [];
+  const perms = editing.permissions || {};
+  pages.users.innerHTML = `<article class="panel entity-editor-shell user-editor" data-user-index="${index}" data-entity-editor>
+    <div class="panel-header entity-editor-header"><div><p class="eyebrow">Usuários e permissões</p><h3>${escapeHtml(editing.username || "Novo usuário")}</h3></div>
+    <div class="compact-card-actions"><button class="secondary-btn" data-cancel-user-edit type="button"><i data-lucide="arrow-left"></i>Voltar para lista</button><button id="saveUsersBtn" class="primary-btn" type="button"><i data-lucide="save"></i>Salvar usuário</button>${remove(editing,index)}</div></div>
+    <section class="user-access-block"><h3>Conta</h3><div class="user-identity-fields"><label>Usuário<input data-user-field="username" required value="${escapeHtml(editing.username || "")}" ${editing.username === "admin" ? "readonly" : ""}></label>
+    <label>Perfil<select data-user-field="role" ${editing.username === "admin" ? "disabled" : ""}>${Object.entries(userRoleLabels).map(([value,label])=>option(value, editing.role || "user", label)).join("")}</select></label>
+    <label>Senha<input data-user-field="password" type="password" autocomplete="new-password" placeholder="${state.editingUserNew ? "Crie uma senha de acesso" : "Manter a senha atual"}"></label></div>
+    <label class="user-setting-option"><input type="checkbox" data-user-field="mustChangePassword" ${editing.mustChangePassword ? "checked" : ""}><span>Exigir troca de senha no próximo acesso</span></label></section>
+    <section class="user-access-block"><div class="user-access-heading"><h3>Menus liberados</h3>
+    ${admin ? '<span class="badge ok">Acesso total</span>' : `<div class="user-access-actions"><span data-user-menu-count>${countMenus(editing)} de ${menus.length} menus</span><button class="secondary-btn compact" data-user-toggle-menus="${index}" type="button"><span data-user-toggle-label>${countMenus(editing) === menus.length ? "Limpar" : "Selecionar todos"}</span></button></div>`}</div>
+    ${admin ? '<p class="microcopy">O administrador tem acesso a todos os menus e pode supervisionar todos os ramais.</p>' : `<div class="user-permission-groups">${groups}</div>`}</section>
+    ${admin ? "" : `<section class="user-access-block"><h3>Supervisão no Monitor de Filas</h3><p class="microcopy" data-monitor-hint></p>
+    <fieldset data-monitor-grants><div class="user-monitor-options"><label class="user-setting-option"><input type="checkbox" data-user-permission="managePauses" ${(perms.managePauses ?? perms.interveneCalls) === true ? "checked" : ""}><span>Pausar e retomar atendentes</span></label>
+    <label class="user-setting-option"><input type="checkbox" data-user-permission="interveneCalls" ${perms.interveneCalls === true ? "checked" : ""}><span>Intervir nas chamadas</span></label></div>
+    <div class="user-monitor-options"><details data-user-field="allowedExtensions"><summary>Ramais autorizados · ${numbers.length}</summary><div class="user-scope-list">${userScopeChoices("allowedExtensions", numbers, ext.map(e=>[String(e.number), [e.number,e.name].filter(Boolean).join(" · ")]))}</div></details>
+    <details data-user-field="departments"><summary>Setores autorizados · ${departments.length}</summary><div class="user-scope-list">${userScopeChoices("departments", departments, ext.filter(e=>e.department).map(e=>[e.department,e.department]))}</div></details></div></fieldset></section>`}
+    </article>`;
+  const card = pages.users.querySelector("[data-user-index]");
+  card.querySelector('[data-user-field="password"]').value = editing.password || "";
+  syncUserMonitorControls(card);
+}
 
 function collectConfig() {
   const cfg = state.config;
@@ -6526,13 +6574,7 @@ function collectConfig() {
         for (const key of ["start","end","weekdays"]) condition[key] = windows[0][key];
         if (condition.windows?.length || windows.length > 1) condition.windows = windows;
       }
-      for (const branch of ["in", "out"]) {
-        const row = $(`[data-time-destination='${branch}']`, node);
-        if (!row) continue;
-        condition[branch+"DestinationType"] = $("[data-ivr-destination-type]", row).value;
-        condition[branch+"Destination"] = $("[data-ivr-destination-value]", row).value;
-        condition[branch+"DestinationCardKey"] = $("[data-ivr-destination-card-key]", row)?.value || "";
-      }
+
     });
 
   }
@@ -6808,7 +6850,7 @@ function collectUsersFromDom() {
       permissions.menus[input.dataset.userMenu] = input.checked;
     });
     $all("[data-user-permission]", card).forEach((input) => {
-      permissions[input.dataset.userPermission] = input.checked;
+      permissions[input.dataset.userPermission] = !input.disabled && !input.closest("fieldset:disabled") && input.checked;
     });
     const field = (name) => $(`[data-user-field='${name}']`, card);
     users[index] = {
@@ -6816,9 +6858,8 @@ function collectUsersFromDom() {
       username: field("username")?.value || "",
       password: field("password")?.value || "",
       role: field("role")?.value || "user",
-      extension: field("extension")?.value || "",
-      allowedExtensions: readArray(field("allowedExtensions")?.value || ""),
-      departments: readArray(field("departments")?.value || ""),
+      allowedExtensions: field("allowedExtensions") ? $all('[data-user-scope="allowedExtensions"]:checked', card).map(input => input.value) : current.allowedExtensions || [],
+      departments: field("departments") ? $all('[data-user-scope="departments"]:checked', card).map(input => input.value) : current.departments || [],
       mustChangePassword: Boolean(field("mustChangePassword")?.checked),
       permissions
     };
@@ -7847,7 +7888,7 @@ document.addEventListener("click", async (event) => {
 
     const pauseAgentButton = event.target.closest("[data-pause-agent]");
     if (pauseAgentButton) {
-      openAgentPause(pauseAgentButton.dataset.pauseAgent);
+      openAgentPause(pauseAgentButton.dataset.pauseAgent, pauseAgentButton.dataset.pauseId || "");
       return;
     }
 
@@ -7942,8 +7983,9 @@ document.addEventListener("click", async (event) => {
         input.checked = shouldEnable;
       });
       const summary = $("[data-user-menu-count]", card);
+      syncUserMonitorControls(card);
       const label = $("[data-user-toggle-label]", card);
-      if (summary) summary.textContent = `${inputs.filter((input) => input.checked).length} de ${inputs.length} modulos`;
+      if (summary) summary.textContent = `${inputs.filter((input) => input.checked).length} de ${inputs.length} menus`;
       if (label) label.textContent = shouldEnable ? "Limpar" : "Selecionar todos";
       return;
     }
@@ -8445,6 +8487,8 @@ document.addEventListener("click", async (event) => {
     }
 
     if (removeTargetLinksButton) {
+      if (!removeTargetLinksButton.dataset.targetCardKey) return;
+      state.ivrLinkSource = null;
       rememberIvrViewport();
       collectConfig();
       const removed = clearIvrDestinationLinks(removeTargetLinksButton.dataset.removeTargetLinks, removeTargetLinksButton.dataset.targetValue, currentIvrWorkspaceMenu(), removeTargetLinksButton.dataset.targetCardKey);
@@ -9108,14 +9152,28 @@ document.addEventListener("change", async (event) => {
     }
     return;
   }
+  if (event.target.matches('[data-user-field="role"]')) {
+    state.users = collectUsersFromDom();
+    renderUsers();
+    iconRefresh();
+    return;
+  }
+  if (event.target.matches("[data-user-scope]")) {
+    syncUserMonitorControls(event.target.closest("[data-user-index]"));
+    const field = event.target.closest("details");
+    const summary = field.querySelector("summary");
+    summary.textContent = summary.textContent.split(" · ")[0] + " · " + field.querySelectorAll("input:checked").length;
+    return;
+  }
   const userMenuInput = event.target.closest("[data-user-menu]");
   if (userMenuInput) {
     const card = userMenuInput.closest("[data-user-index]");
     const inputs = $all("[data-user-menu]", card);
+    syncUserMonitorControls(card);
     const enabled = inputs.filter((input) => input.checked).length;
     const summary = $("[data-user-menu-count]", card);
     const label = $("[data-user-toggle-label]", card);
-    if (summary) summary.textContent = `${enabled} de ${inputs.length} modulos`;
+    if (summary) summary.textContent = `${enabled} de ${inputs.length} menus`;
     if (label) label.textContent = enabled === inputs.length ? "Limpar" : "Selecionar todos";
     return;
   }
@@ -9171,13 +9229,13 @@ document.addEventListener("change", async (event) => {
   const timeDestination = event.target.closest("[data-time-destination]");
   if (timeDestination && event.target.matches("select")) {
     rememberIvrViewport();
-    if (event.target.matches("[data-ivr-destination-type]")) {
-      const conditionId = timeDestination.closest("[data-time-condition-id]").dataset.timeConditionId;
-      timeDestination.innerHTML = ivrTargetChoices(event.target.value, "", "", conditionId);
-    } else {
-      const key = $("[data-ivr-destination-card-key]", timeDestination);
-      if (key) key.value = "";
-    }
+    const id = timeDestination.closest("[data-time-condition-id]").dataset.timeConditionId;
+    const condition = ensureIvrTimeConditions().find(item => item.id === id);
+    if (!condition) return;
+    const branch = timeDestination.dataset.timeDestination;
+    condition[branch + "DestinationType"] = $("[data-ivr-destination-type]", timeDestination).value;
+    condition[branch + "Destination"] = event.target.matches("[data-ivr-destination-type]") ? "" : event.target.value;
+    condition[branch + "DestinationCardKey"] = "";
     collectConfig();
     renderIvr();
     iconRefresh();
