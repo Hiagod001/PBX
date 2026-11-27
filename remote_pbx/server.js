@@ -308,7 +308,7 @@ function normalizePauseReason(reason) {
 
 let pauseMutation = Promise.resolve();
 let monitorSpyOwner = null;
-function updateExtensionPause(number, paused, reason = "") {
+function updateExtensionPause(number, paused, reason = "", { requireAvailable = false } = {}) {
   const operation = pauseMutation.catch(() => {}).then(async () => {
     if (paused) {
       const config = await getConfig();
@@ -317,6 +317,9 @@ function updateExtensionPause(number, paused, reason = "") {
         const error = new Error("Encerre a ligação antes de colocar o ramal em pausa.");
         error.status = 409;
         throw error;
+      }
+      if (requireAvailable && !status.extensions.some(ext => String(ext.number) === number && ext.captureReady)) {
+        throw Object.assign(new Error("O ramal já está em pausa ou deixou de estar disponível."), { status: 409 });
       }
     }
     const output = await runAsteriskControl(paused ? "queue-pause" : "queue-unpause", number, { reason });
@@ -4528,6 +4531,28 @@ app.post("/api/pbx/monitor/action", requireAuth, requireSupervisor, async (req, 
     return res.status(400).json({ error: "Modo de monitoramento invalido" });
   }
 
+  if (action === "pause-agent") {
+    if (!userCanInterveneLiveCalls(req) || !userCanMonitorExtension(req, config, target)) {
+      return res.status(403).json({ error: "Você não tem permissão para pausar este ramal." });
+    }
+    if (!config.extensions.some(ext => String(ext.number) === target)) {
+      return res.status(404).json({ error: "Ramal não encontrado." });
+    }
+    const reason = req.body.reason;
+    if (!pauseReasons.has(reason)) return res.status(400).json({ error: "Escolha um motivo de pausa." });
+    try {
+      await updateExtensionPause(target, true, reason, { requireAvailable: true });
+    } catch (error) {
+      if (error.status === 409) return res.status(409).json({ error: error.message });
+      console.error("Falha na pausa pelo monitor:", error.message);
+      return res.status(503).json({ error: "Não foi possível confirmar a pausa. Confira o estado do ramal." });
+    }
+    await writeSystemAuditEvent(req, "monitor-pause-agent", {
+      label: "Pausou atendente pelo monitor", summary: `Ramal ${target} · ${reason}`, target, after: { reason }
+    });
+    return res.json({ ok: true });
+  }
+
   try {
     if (action === "transfer-waiting") {
       if (!userCanInterveneLiveCalls(req)) return res.status(403).json({ error: "Sem permissao para intervir em chamadas" });
@@ -4767,10 +4792,12 @@ app.get("/api/pbx-status", requireAuth, async (req, res) => {
   const status = await readPbxStatus(config);
   const scoped = pbxStatusForScope(status, config, userReportScope(req, config));
   const intervene = userCanInterveneLiveCalls(req);
+  const availableTargets = intervene ? scoped.extensions.filter(e => e.captureReady && userCanMonitorExtension(req, config, e.number))
+    .map(({ number, name }) => ({ number, name })) : [];
   res.json({ ...scoped,
+    pauseTargets: availableTargets.map(e => String(e.number)),
     captureQueues: intervene ? config.queues.filter((q) => captureQueueAllowed(req, config, q)).map((q) => q.id) : [],
-    captureTargets: intervene ? scoped.extensions.filter((e) => e.captureReady && userCanMonitorExtension(req, config, e.number))
-      .map(({ number, name }) => ({ number, name })) : []
+    captureTargets: availableTargets
   });
 });
 

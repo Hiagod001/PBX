@@ -3595,6 +3595,55 @@ function renderWaitingCalls(calls) {
   }).join("");
 }
 
+function monitorPauseButton(agent) {
+  const number = String(agent.number || "");
+  if (!state.pbxStatus?.pauseTargets?.includes(number)) return "";
+  return `<button type="button" class="icon-btn compact" data-pause-agent="${escapeHtml(number)}"
+    aria-label="Pausar atendente do ramal ${escapeHtml(number)}" title="Pausar atendente"><i data-lucide="pause"></i></button>`;
+}
+
+const agentPauseDialog = $("#agentPauseDialog");
+const agentPauseReason = $("#agentPauseReason");
+const agentPauseSubmit = $("#agentPauseSubmit");
+const agentPauseFeedback = $("#agentPauseFeedback");
+let submittingAgentPause = false;
+
+function openAgentPause(number) {
+  const agent = state.pbxStatus?.extensions?.find(ext => String(ext.number) === number);
+  if (!agent || !state.pbxStatus.pauseTargets?.includes(number)) return;
+  agentPauseDialog.dataset.target = number;
+  $("#agentPauseIdentity").textContent = [agent.name, "Ramal " + number].filter(Boolean).join(" · ");
+  agentPauseReason.replaceChildren(new Option("Selecione o motivo", ""), ...PAUSE_REASONS.map(reason => new Option(reason, reason)));
+  agentPauseFeedback.textContent = "";
+  agentPauseSubmit.disabled = false;
+  agentPauseDialog.showModal();
+  agentPauseReason.focus();
+}
+
+$("#agentPauseCancel").addEventListener("click", () => { if (!submittingAgentPause) agentPauseDialog.close(); });
+agentPauseDialog.addEventListener("cancel", event => { if (submittingAgentPause) event.preventDefault(); });
+$("#agentPauseForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (submittingAgentPause || !agentPauseReason.value) return;
+  submittingAgentPause = true;
+  agentPauseSubmit.disabled = true;
+  agentPauseFeedback.textContent = "";
+  const target = agentPauseDialog.dataset.target;
+  try {
+    await api("/api/pbx/monitor/action", {
+      method: "POST", body: JSON.stringify({ action: "pause-agent", target, reason: agentPauseReason.value })
+    });
+    agentPauseDialog.close();
+    setMessage(`Pausa registrada para o ramal ${target}.`, "ok");
+  } catch (error) {
+    agentPauseFeedback.textContent = error.message;
+  } finally {
+    submittingAgentPause = false;
+    agentPauseSubmit.disabled = false;
+    await loadPbxStatus({ background: true }).catch(() => {});
+  }
+});
+
 const captureDialog = $("#captureDialog");
 const captureSearch = $("#captureSearch");
 const captureTargets = $("#captureTargets");
@@ -3911,6 +3960,7 @@ function renderStatus() {
                 ${pauseSummary ? `<small class="monitor-pause-detail">${escapeHtml(pauseSummary)}</small>` : ""}
               </td>
               <td class="agent-action-cell" data-label="Acao">
+                ${monitorPauseButton(agent)}
                 <button class="icon-btn compact" data-monitor-spy="${escapeHtml(agent.number || "")}" ${canControlCall ? "" : "disabled"} title="Monitorar chamada"><i data-lucide="headphones"></i></button>
                 <button class="icon-btn compact danger" data-monitor-hangup="${escapeHtml(agent.channel || "")}" data-monitor-extension="${escapeHtml(agent.number || "")}" ${canControlCall ? "" : "disabled"} title="Desconectar chamada"><i data-lucide="phone-off"></i></button>
               </td>
@@ -4083,7 +4133,7 @@ function commandCenterQueueCards(queues = [], extensionFilter = "", searchValue 
         <td class="queue-person"><div><i class="queue-presence ${tone}" aria-hidden="true"></i>
           <span class="queue-agent-label">${escapeHtml(agent.name || agent.number || "Ramal")}<small>${label}</small></span><b>${escapeHtml(agent.number || "")}</b></div>
           ${pause ? `<small class="queue-pause-note">${escapeHtml(pause)}</small>` : ""}</td>
-        ${cells}<td class="queue-listen"><button class="icon-btn compact" data-monitor-spy="${escapeHtml(agent.number || "")}"
+        ${cells}<td class="queue-listen">${monitorPauseButton(agent)}<button class="icon-btn compact" data-monitor-spy="${escapeHtml(agent.number || "")}"
           ${canMonitor ? "" : "disabled"} type="button" aria-label="Monitorar chamada do ramal ${escapeHtml(agent.number || "")}" title="Monitorar chamada"><i data-lucide="headphones"></i></button></td>
       </tr>`;
     }).join("");
@@ -4093,7 +4143,7 @@ function commandCenterQueueCards(queues = [], extensionFilter = "", searchValue 
         <div class="queue-totals">${Number(queue.callsWaiting) > 0 ? `<span class="queue-wait-count"><b>${monitorNumber(queue.callsWaiting)}</b> em espera</span>` : ""}<span><b>${monitorNumber(queue.completed)}</b> Atendidas</span><span><b>${monitorNumber(queue.abandoned)}</b> Perdidas</span></div>
       </header>
       ${rows ? `<div class="queue-table-scroll"><table aria-label="Ramais da fila ${escapeHtml(name)}"><thead><tr>
-        <th scope="col">Atendente / ramal</th>${headings}<th scope="col" aria-label="Monitorar chamada"></th></tr></thead>
+        <th scope="col">Atendente / ramal</th>${headings}<th scope="col" aria-label="Ações do atendente"></th></tr></thead>
         <tbody>${rows}</tbody></table></div>` : '<p class="queue-empty">Nenhum ramal nesta visualização.</p>'}
     </section>`;
   }).join("");
@@ -6303,7 +6353,7 @@ function renderUsers() {
       <div class="panel-header entity-editor-header"><div class="user-card-title"><span class="user-avatar"><i data-lucide="user-round"></i></span><div><p class="eyebrow">Editar usuario</p><h3>${escapeHtml(editing.username || "novo")}</h3><span>${isAdmin ? "Administrador com acesso total" : "Acesso personalizado"}</span></div></div><div class="compact-card-actions"><button class="secondary-btn" data-cancel-user-edit type="button"><i data-lucide="arrow-left"></i>Voltar para lista</button><button id="saveUsersBtn" class="primary-btn compact" type="button"><i data-lucide="save"></i>Salvar usuario</button><button class="icon-btn danger" data-remove-user="${editingIndex}" ${editing.username === "admin" ? "disabled" : ""} title="Remover usuario"><i data-lucide="trash-2"></i></button></div></div>
       <div class="field-grid compact-grid"><label>Usuario<input data-user-field="username" value="${escapeHtml(editing.username || "")}" ${editing.username === "admin" ? "readonly" : ""} /></label><label>Nova senha<input data-user-field="password" type="password" placeholder="Manter senha atual" /></label><label>Perfil<select data-user-field="role">${["admin", "supervisor", "user"].map((role) => option(role, editing.role || "user", role)).join("")}</select></label></div>
       <section class="user-access-block"><div class="user-access-heading"><div><strong>Acesso aos modulos</strong><span>Defina quais areas ficam disponiveis para este usuario.</span></div><div class="user-access-actions"><span class="user-permission-summary" data-user-menu-count>${enabledMenuCount} de ${Object.keys(menuPermissions).length} modulos</span>${isAdmin ? `<span class="badge ok">Acesso total</span>` : `<button class="secondary-btn compact" type="button" data-user-toggle-menus="${editingIndex}"><i data-lucide="check-check"></i><span data-user-toggle-label>${enabledMenuCount === Object.keys(menuPermissions).length ? "Limpar" : "Selecionar todos"}</span></button>`}</div></div><div class="user-permission-groups">${menuGroups}</div></section>
-      <section class="user-access-block"><strong>Supervisao de chamadas</strong><p class="microcopy">Para usuarios nao administradores, autorize os ramais ou departamentos que podem ser escutados. Sem selecao, nenhuma escuta e permitida. O acesso ao modulo Monitor continua necessario.</p><div class="form-grid"><label>Ramais autorizados (separados por virgula)<input data-user-field="allowedExtensions" value="${escapeHtml((editing.allowedExtensions || []).join(', '))}" ${isAdmin ? 'disabled' : ''}/></label><label>Departamentos autorizados (separados por virgula)<input data-user-field="departments" value="${escapeHtml((editing.departments || []).join(', '))}" ${isAdmin ? 'disabled' : ''}/></label></div><label class="user-setting-option"><input type="checkbox" data-user-permission="interveneCalls" ${(isAdmin || editing.permissions?.interveneCalls === true) ? 'checked' : ''} ${isAdmin ? 'disabled' : ''}/><span>Permitir intervencao nas chamadas autorizadas (falar, participar, transferir e desligar)</span></label></section>
+      <section class="user-access-block"><strong>Supervisao de chamadas</strong><p class="microcopy">Para usuarios nao administradores, autorize os ramais ou departamentos que podem ser escutados. Sem selecao, nenhuma escuta e permitida. O acesso ao modulo Monitor continua necessario.</p><div class="form-grid"><label>Ramais autorizados (separados por virgula)<input data-user-field="allowedExtensions" value="${escapeHtml((editing.allowedExtensions || []).join(', '))}" ${isAdmin ? 'disabled' : ''}/></label><label>Departamentos autorizados (separados por virgula)<input data-user-field="departments" value="${escapeHtml((editing.departments || []).join(', '))}" ${isAdmin ? 'disabled' : ''}/></label></div><label class="user-setting-option"><input type="checkbox" data-user-permission="interveneCalls" ${(isAdmin || editing.permissions?.interveneCalls === true) ? 'checked' : ''} ${isAdmin ? 'disabled' : ''}/><span>Permitir pausar atendentes e intervir nas chamadas dos ramais autorizados</span></label></section>
       <section class="user-access-block"><label class="user-setting-option"><input type="checkbox" data-user-field="mustChangePassword" ${editing.mustChangePassword ? "checked" : ""}/><span>Trocar senha no proximo login</span></label></section>
     </article>` : `
     <section class="panel"><div class="panel-header"><div><p class="eyebrow">Administracao</p><h3>Usuarios</h3><p class="microcopy">Consulte os usuarios cadastrados e abra somente a conta que deseja editar.</p></div><div class="report-header-actions"><button id="addUserBtn" class="primary-btn" type="button"><i data-lucide="plus"></i>Novo usuario</button><button id="saveUsersBtn" class="secondary-btn" type="button"><i data-lucide="save"></i>Salvar usuarios</button></div></div><div class="entity-list-grid">${rows || `<div class="governance-empty"><i data-lucide="users"></i><strong>Nenhum usuario cadastrado</strong><span>Cadastre um usuario para liberar acessos.</span></div>`}</div></section>`;
@@ -7792,6 +7842,12 @@ document.addEventListener("click", async (event) => {
       const mode = monitorSpyMode(state.monitorSpy.mode);
       await startMonitorBrowserSpy(target, mode);
       setMessage(`${MONITOR_SPY_MODES[mode].label} iniciado.`, "ok");
+      return;
+    }
+
+    const pauseAgentButton = event.target.closest("[data-pause-agent]");
+    if (pauseAgentButton) {
+      openAgentPause(pauseAgentButton.dataset.pauseAgent);
       return;
     }
 

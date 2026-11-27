@@ -8,10 +8,11 @@ test('pause guard rejects active calls before running Asterisk or changing histo
   const source = fs.readFileSync(path.join(__dirname, '../server.js'), 'utf8');
   const code = source.slice(source.indexOf('function updateExtensionPause('), source.indexOf('async function setExtensionPause('));
   let active = true;
+  let captureReady = false;
   const commands = [];
   const context = vm.createContext({
     pauseMutation: Promise.resolve(), pbxStatusCache: {},
-    getConfig: async () => ({}), readPbxStatus: async () => ({}),
+    getConfig: async () => ({}), readPbxStatus: async () => ({ extensions: [{ number: '777', captureReady }] }),
     channelsOwnedByExtension: () => active ? [{}] : [],
     runAsteriskControl: async action => { commands.push(action); return 'OK'; },
     setExtensionPause: async () => ({})
@@ -21,7 +22,10 @@ test('pause guard rejects active calls before running Asterisk or changing histo
   assert.deepEqual(commands, []);
   await context.updateExtensionPause('777', false);
   active = false;
-  await context.updateExtensionPause('777', true, 'Almoco');
+  await assert.rejects(context.updateExtensionPause('777', true, 'Treinamento', { requireAvailable: true }), error => error.status === 409);
+  assert.deepEqual(commands, ['queue-unpause']);
+  captureReady = true;
+  await context.updateExtensionPause('777', true, 'Treinamento', { requireAvailable: true });
   assert.deepEqual(commands, ['queue-unpause', 'queue-pause']);
 });
 
