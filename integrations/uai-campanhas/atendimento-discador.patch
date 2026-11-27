@@ -1,0 +1,353 @@
+diff --git a/server/pbx.mjs b/server/pbx.mjs
+--- a/server/pbx.mjs
++++ b/server/pbx.mjs
+@@ -94,11 +94,15 @@
+     res.sendStatus(204);
+   });
+   router.get('/desk',async(req,res)=>{
+-    const {session,tenant}=await identity(req);
++    const {session,tenant,user}=await identity(req);
+     const [binding]=await sql`select id,extension from pbx_private.bindings where session_id=${session} and ended_at is null`;
+-    const [call]=binding ? await sql`select coalesce(nullif(l.full_name,''),l.razao_social,l.nome_fantasia) as name,l.document_number as document,a.phone,a.campaign_name as campaign,l.cidade,l.uf,l.custom_data as extra
+-      from pbx_private.calls pc join public.attendances a on a.id=pc.attendance_id join public.leads l on l.id=a.lead_id and l.tenant_id=pc.tenant_id
+-      where pc.binding_id=${binding.id} and pc.tenant_id=${tenant} and a.finished_at is null and a.started_at>now()-interval '12 hours' and l.deleted_at is null order by a.started_at desc limit 1` : [];
++    const [call]=await sql`select a.id,a.started_at,a.phone,a.campaign_id,a.campaign_name as campaign,
++      pc.ended_at,cl.id as campaign_lead_id,to_jsonb(l) as lead
++      from pbx_private.calls pc join public.attendances a on a.id=pc.attendance_id
++      join public.leads l on l.id=a.lead_id and l.tenant_id=pc.tenant_id
++      join public.campaign_leads cl on cl.campaign_id=a.campaign_id and cl.lead_id=l.id and cl.tenant_id=pc.tenant_id
++      where pc.wrapup and pc.tenant_id=${tenant} and a.user_id=${user} and a.finished_at is null
++      order by a.started_at,a.id limit 1`;
+     res.json({extension:binding?.extension || '',call:call || null});
+   });
+   router.post('/events',async(req,res)=>{
+@@ -114,11 +118,16 @@
+         const [agent]=await tx`select b.id,b.user_id,p.full_name from pbx_private.bindings b join public.profiles p on p.id=b.user_id left join auth.sessions s on s.id=b.session_id where b.tenant_id=${tenant} and b.extension=${extension} and b.started_at < to_timestamp(${start}+1) and coalesce(b.ended_at,s.expires_at)>to_timestamp(${start}) order by b.started_at desc limit 1`;
+         const [a]=await tx`insert into public.attendances(tenant_id,lead_id,campaign_id,campaign_name,user_id,user_name,service_status_name,counts_as_contact,started_at,phone,notes)
+           values(${tenant},${lead},${mailing},${list.name},${agent?.user_id||null},${agent?.full_name||'Ramal '+extension},'Atendida pelo Discador',true,to_timestamp(${start}),${phone},${'Discador · Ramal '+extension}) returning id`;
+-        await tx`insert into pbx_private.calls(tenant_id,attempt,extension,binding_id,attendance_id) values(${tenant},${attempt},${extension},${agent?.id||null},${a.id})`;
++        await tx`insert into pbx_private.calls(tenant_id,attempt,extension,binding_id,attendance_id,wrapup) values(${tenant},${attempt},${extension},${agent?.id||null},${a.id},${!!agent})`;
+         await tx`update public.campaign_leads set status='worked',worked_at=to_timestamp(${start}),last_attendance_id=${a.id} where tenant_id=${tenant} and campaign_id=${mailing} and lead_id=${lead} and status='pending' and (locked_by is null or locked_by=${agent?.user_id||null} or lock_expires_at<now())`;
+         call={attendance_id:a.id};
+       }
+-      if(end!=null) await tx`update public.attendances set finished_at=to_timestamp(${end}),duration_seconds=${end-start} where id=${call.attendance_id} and finished_at is null`;
++      if(end!=null) {
++        const [closed]=await tx`update pbx_private.calls set ended_at=to_timestamp(${end})
++          where attendance_id=${call.attendance_id} and ended_at is null returning wrapup`;
++        if(closed) await tx`update public.attendances set finished_at=case when ${closed.wrapup} then null else to_timestamp(${end}) end,
++          duration_seconds=${end-start} where id=${call.attendance_id} and finished_at is null`;
++      }
+     });
+     res.json({ok:true});
+   });
+diff --git a/src/components/pbx-desk.tsx b/src/components/pbx-desk.tsx
+--- a/src/components/pbx-desk.tsx
++++ b/src/components/pbx-desk.tsx
+@@ -1,9 +1,13 @@
+ import { useEffect, useState } from "react";
++import { useQuery, useQueryClient } from "@tanstack/react-query";
++import { useLocation, useNavigate } from "@tanstack/react-router";
++import type { Lead } from "@/components/lead-blocks";
++import { useAuth } from "@/lib/auth";
+ import { supabase } from "@/integrations/supabase/client";
+ import { Button } from "@/components/ui/button";
+ import { Input } from "@/components/ui/input";
+ 
+-type Call = {name:string; document:string; phone:string; campaign:string; cidade:string; uf:string; extra:Record<string,unknown>};
++type Call = {id:string; lead:Lead; phone:string; campaign:string; campaign_id:string; campaign_lead_id:string; started_at:string; ended_at:string|null};
+ type Desk = {extension:string; call:Call|null};
+ 
+ async function request(path:string, options?:RequestInit) {
+@@ -16,44 +20,40 @@
+   return result;
+ }
+ 
++export function usePbxDesk() {
++  const {userId}=useAuth();
++  return useQuery<Desk>({queryKey:["pbx-desk",userId],enabled:!!userId,queryFn:()=>request("desk"),
++    refetchInterval:query=>query.state.data?.extension || query.state.data?.call ? 2000 : 10000,refetchIntervalInBackground:true});
++}
++
+ export function PbxDesk() {
+-  const [desk,setDesk]=useState<Desk|null>(null);
++  const {data:desk,refetch}=usePbxDesk();
++  const navigate=useNavigate();
++  const path=useLocation({select:location=>location.pathname});
++  const queryClient=useQueryClient();
+   const [editing,setEditing]=useState(false);
+   const [message,setMessage]=useState("");
+   const [busy,setBusy]=useState(false);
++  const call=desk?.call;
+   useEffect(()=>{
+-    let active=true;
+-    let timer:ReturnType<typeof setTimeout>;
+-    async function refresh(){
+-      let delay=3000;
+-      try { const next=await request("desk"); if(active) setDesk(next); if(!next.extension) delay=15000; }
+-      catch { delay=15000; if(active) setDesk(null); }
+-      if(active) timer=setTimeout(refresh,delay);
+-    }
+-    void refresh();
+-    return ()=>{active=false;clearTimeout(timer);};
+-  },[]);
+-  const call=desk?.call;
++    if(call && path!=="/app/atender") void navigate({to:"/app/atender"});
++  },[call?.id,path,navigate]);
+   return <section aria-label="Ramal do Discador" className="border-b bg-card px-4 py-2 text-sm lg:px-8">
+     <div className="flex flex-wrap items-center gap-3"><strong>{desk?.extension ? "Ramal "+desk.extension : "Discador"}</strong>
+       <Button size="sm" variant="outline" onClick={()=>setEditing(!editing)}>{editing?"Fechar":desk?.extension?"Alterar ramal":"Vincular meu ramal"}</Button></div>
+     {editing && <form className="mt-2 flex flex-wrap items-end gap-2" onSubmit={async e=>{
+       e.preventDefault(); const data=new FormData(e.currentTarget); setBusy(true); setMessage("");
+-      try {const result=await request("binding",{method:"POST",body:JSON.stringify(Object.fromEntries(data))});setDesk({extension:result.extension,call:null});setEditing(false);}
++      try {await request("binding",{method:"POST",body:JSON.stringify(Object.fromEntries(data))});await refetch();setEditing(false);}
+       catch(err){setMessage((err as Error).message);} finally{setBusy(false);}
+     }}>
+       <label>Ramal<Input name="extension" inputMode="numeric" pattern="[0-9]{2,8}" maxLength={8} required defaultValue={desk?.extension}/></label>
+       <label>Senha do ramal<Input name="password" type="password" maxLength={128} required /></label>
+       <Button size="sm" disabled={busy}>Vincular</Button>
+       {desk?.extension && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={async()=>{
+-        setBusy(true);try{await request("binding",{method:"DELETE"});setDesk({extension:"",call:null});setEditing(false);setMessage("");}catch(err){setMessage((err as Error).message);}finally{setBusy(false);}
++        setBusy(true);try{await request("binding",{method:"DELETE"});await queryClient.invalidateQueries({queryKey:["pbx-desk"]});setEditing(false);setMessage("");}catch(err){setMessage((err as Error).message);}finally{setBusy(false);}
+       }}>Desvincular</Button>}
+     </form>}
+     {message && <p role="alert">{message}</p>}
+-    {call && <div aria-live="polite" className="my-2 rounded-md border-l-4 border-primary bg-muted p-3">
+-      <p className="text-xs">{call.campaign} · Em atendimento</p><strong>{call.name}</strong>
+-      <p>{[call.phone,call.document && "CPF/CNPJ "+call.document,call.cidade,call.uf].filter(Boolean).join(" · ")}</p>
+-      {Object.entries(call.extra||{}).filter(([,v])=>typeof v==="string"||typeof v==="number").map(([key,value])=><p key={key}>{key}: {String(value)}</p>)}
+-    </div>}
++    {call && <p role="status" className="mt-2">{call.ended_at ? "Ligação encerrada. Registre o resultado para finalizar o atendimento." : "Ligação do Discador em andamento."}</p>}
+   </section>;
+ }
+diff --git a/src/routes/_authenticated/app/atender.tsx b/src/routes/_authenticated/app/atender.tsx
+--- a/src/routes/_authenticated/app/atender.tsx
++++ b/src/routes/_authenticated/app/atender.tsx
+@@ -23,6 +23,7 @@
+ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+ import { useAttendanceExitGuard } from "@/components/attendance-exit-guard";
++import { usePbxDesk } from "@/components/pbx-desk";
+ 
+ export const Route = createFileRoute("/_authenticated/app/atender")({
+   validateSearch: (search: Record<string, unknown>): { campanha?: string; agendamento?: string } => ({
+@@ -42,7 +43,7 @@
+   component: AtenderPage,
+ });
+ 
+-type ActiveLead = { campaignLeadId: string; lead: Lead; startedAt: Date };
++type ActiveLead = { campaignLeadId: string; lead: Lead; startedAt: Date; pbxAttendanceId?: string };
+ 
+ function AtenderPage() {
+   const { profile, userId, isAdmin } = useAuth();
+@@ -79,6 +80,19 @@
+ 
+   const { data: statuses = [] } = useServiceStatuses(true);
+   const selectedStatus = statuses.find((s) => s.id === statusId);
++  const {data:desk}=usePbxDesk();
++  const incoming=desk?.call;
++  const completedPbx=useRef<string|null>(null);
++  const waitingForHangup=!!active?.pbxAttendanceId && active.pbxAttendanceId===incoming?.id && !incoming.ended_at;
++  useEffect(()=>{
++    if (!incoming || active || loading || completedPbx.current===incoming.id) return;
++    resetForm();
++    setCampaignId(incoming.campaign_id);
++    setCreatedCampaignName(incoming.campaign);
++    setPhoneUsed(incoming.phone);
++    setActive({campaignLeadId:incoming.campaign_lead_id,lead:incoming.lead,
++      startedAt:new Date(incoming.started_at),pbxAttendanceId:incoming.id});
++  },[incoming,active,loading]);
+   const campaign = useMemo(() => campaigns.find((c) => c.id === campaignId), [campaigns, campaignId]);
+ 
+   useEffect(() => {
+@@ -133,7 +147,7 @@
+   const claimedAppointment = useRef<string | null>(null);
+   useEffect(() => {
+     const apptId = search.agendamento;
+-    if (!apptId || active || claimedAppointment.current === apptId) return;
++    if (!apptId || active || incoming || claimedAppointment.current === apptId) return;
+     claimedAppointment.current = apptId;
+     void (async () => {
+       setLoading(true);
+@@ -169,6 +183,7 @@
+ 
+   async function finish() {
+     if (!active || !profile) return;
++    if (waitingForHangup) { toast.info("Encerre a ligação antes de finalizar o atendimento"); return; }
+     if (!statusId || !selectedStatus) {
+       toast.error("Selecione a tabulação do atendimento");
+       return;
+@@ -191,6 +206,7 @@
+       try {
+         const sale = await saveSale({ data: {
+           campaignLeadId: active.campaignLeadId,
++          pbxAttendanceId: active.pbxAttendanceId,
+           statusId,
+           startedAt: active.startedAt.toISOString(),
+           notes,
+@@ -202,6 +218,7 @@
+           } : null,
+         } });
+         setCompletedSaleId(sale.id);
++        completedPbx.current=active.pbxAttendanceId ?? null;
+         setActive(null);
+         resetForm();
+         queryClient.invalidateQueries();
+@@ -211,6 +228,23 @@
+       } finally {
+         setLoading(false);
+       }
++      return;
++    }
++    if (active.pbxAttendanceId) {
++      try {
++        const {error}=await supabase.rpc("finish_pbx_attendance",{p_input:{
++          pbxAttendanceId:active.pbxAttendanceId,campaignLeadId:active.campaignLeadId,statusId,notes,
++          appointment: selectedStatus.requires_appointment || wantsAppointment
++            ? {scheduledAt:new Date(`${apptDate}T${apptTime}`).toISOString(),priority:apptPriority} : null,
++        }});
++        if(error) throw new Error(error.message);
++        completedPbx.current=active.pbxAttendanceId;
++        setActive(null);
++        resetForm();
++        await queryClient.invalidateQueries();
++        toast.success("Atendimento finalizado");
++      } catch(error) { toast.error(error instanceof Error ? error.message : "Não foi possível finalizar o atendimento"); }
++      finally { setLoading(false); }
+       return;
+     }
+     const finishedAt = new Date();
+@@ -384,7 +418,7 @@
+             <aside className="min-w-0 border-t lg:border-l lg:border-t-0">
+               <div className="studio-contact-content py-6 lg:pl-7">
+                 <PhonesBlock leadId={active.lead.id} tenantId={profile.tenant_id} userId={userId} onSelect={setPhoneUsed} selectedPhone={phoneUsed} />
+-                <div className="mt-8 border-t pt-5"><div className="mb-4 flex items-start gap-2.5"><CheckCheck className="mt-0.5 size-4 shrink-0 text-primary" /><div className="min-w-0"><p className="text-[11px] text-muted-foreground">Resultado selecionado</p><p className="mt-1 break-words text-sm font-medium">{selectedStatus?.name || "—"}</p></div></div><Button onClick={finish} disabled={loading} className="h-12 w-full rounded-lg text-sm font-semibold">{loading ? <Loader2 className="size-4 animate-spin" /> : <CheckCheck className="size-4" />}Finalizar Atendimento<ArrowRight className="ml-auto size-4" /></Button></div>
++                <div className="mt-8 border-t pt-5"><div className="mb-4 flex items-start gap-2.5"><CheckCheck className="mt-0.5 size-4 shrink-0 text-primary" /><div className="min-w-0"><p className="text-[11px] text-muted-foreground">Resultado selecionado</p><p className="mt-1 break-words text-sm font-medium">{selectedStatus?.name || "—"}</p></div></div><Button onClick={finish} disabled={loading || waitingForHangup} className="h-12 w-full rounded-lg text-sm font-semibold">{loading ? <Loader2 className="size-4 animate-spin" /> : <CheckCheck className="size-4" />}Finalizar Atendimento<ArrowRight className="ml-auto size-4" /></Button></div>
+               </div>
+             </aside>
+           </div>
+diff --git a/src/lib/sale-form.ts b/src/lib/sale-form.ts
+--- a/src/lib/sale-form.ts
++++ b/src/lib/sale-form.ts
+@@ -41,5 +41,5 @@
+   }
+   return { errors, values: clean, valid: !Object.keys(errors).length };
+ }
+-export const saleInputSchema = z.object({ campaignLeadId: z.string().uuid(), statusId: z.string().uuid(), startedAt: z.string().datetime(), notes: z.string().max(10000), phone: z.string().max(30).nullable(), productId: z.string().max(100), amount: z.number().min(0).max(1000000000), values: z.record(z.string(), z.unknown()), appointment: z.object({ scheduledAt: z.string().datetime(), priority: z.enum(['baixa','normal','alta']) }).nullable() });
++export const saleInputSchema = z.object({ pbxAttendanceId: z.string().uuid().optional(), campaignLeadId: z.string().uuid(), statusId: z.string().uuid(), startedAt: z.string().datetime(), notes: z.string().max(10000), phone: z.string().max(30).nullable(), productId: z.string().max(100), amount: z.number().min(0).max(1000000000), values: z.record(z.string(), z.unknown()), appointment: z.object({ scheduledAt: z.string().datetime(), priority: z.enum(['baixa','normal','alta']) }).nullable() });
+ export type SaleInput = z.infer<typeof saleInputSchema>;
+diff --git a/src/integrations/supabase/types.ts b/src/integrations/supabase/types.ts
+--- a/src/integrations/supabase/types.ts
++++ b/src/integrations/supabase/types.ts
+@@ -1281,6 +1281,7 @@
+         Args: { p_ids: string[] }
+         Returns: undefined
+       }
++      finish_pbx_attendance: { Args: { p_input: Json }; Returns: string }
+       finalize_sale_attendance: { Args: { p_input: Json }; Returns: string }
+       has_role: {
+         Args: {
+diff --git a/drizzle/migrations/0026_pbx_wrapup.sql b/drizzle/migrations/0026_pbx_wrapup.sql
+new file mode 100644
+--- /dev/null
++++ b/drizzle/migrations/0026_pbx_wrapup.sql
+@@ -0,0 +1,100 @@
++alter table pbx_private.calls add column wrapup boolean not null default false,
++  add column ended_at timestamptz;
++
++create function public.pbx_wrapup_ready(p_id uuid, p_campaign_lead uuid)
++returns boolean language sql stable security definer set search_path = '' as $$
++  select exists (
++    select 1 from pbx_private.calls pc join public.attendances a on a.id=pc.attendance_id
++    join public.campaign_leads cl on cl.lead_id=a.lead_id and cl.campaign_id=a.campaign_id and cl.tenant_id=a.tenant_id
++    where pc.attendance_id=p_id and cl.id=p_campaign_lead and pc.wrapup and pc.ended_at is not null
++      and a.user_id=auth.uid() and pc.tenant_id=public.current_tenant_id() and a.finished_at is null
++  )
++$$;
++revoke all on function public.pbx_wrapup_ready(uuid,uuid) from public,anon;
++grant execute on function public.pbx_wrapup_ready(uuid,uuid) to authenticated;
++
++create function public.finish_pbx_attendance(p_input jsonb)
++returns uuid language plpgsql security invoker set search_path=public as $$
++declare
++  a public.attendances;
++  cl public.campaign_leads;
++  st public.service_statuses;
++  memo text := nullif(trim(p_input->>'notes'),'');
++  appointment jsonb := nullif(p_input->'appointment','null'::jsonb);
++begin
++  select * into cl from public.campaign_leads where id=(p_input->>'campaignLeadId')::uuid
++    and tenant_id=public.current_tenant_id() for update;
++  select * into a from public.attendances where id=(p_input->>'pbxAttendanceId')::uuid
++    and tenant_id=cl.tenant_id and user_id=auth.uid() and lead_id=cl.lead_id and campaign_id=cl.campaign_id for update;
++  if a.id is null then raise exception 'Atendimento indisponível'; end if;
++  if a.finished_at is not null then return a.id; end if;
++  if not public.pbx_wrapup_ready(a.id,cl.id) then raise exception 'Aguarde o encerramento da ligação'; end if;
++  select * into st from public.service_statuses where id=(p_input->>'statusId')::uuid
++    and tenant_id=a.tenant_id and active and deleted_at is null;
++  if st.id is null or st.counts_as_sale then raise exception 'Selecione uma tabulação válida'; end if;
++  if length(memo)>10000 or (st.requires_note and memo is null) then raise exception 'Informe uma observação válida'; end if;
++  if st.requires_appointment and appointment is null then raise exception 'Informe a data e a hora do retorno'; end if;
++  if appointment is not null then
++    if coalesce(appointment->>'priority','') not in ('baixa','normal','alta') or appointment->>'scheduledAt' is null then raise exception 'Confira o agendamento'; end if;
++    insert into public.appointments(tenant_id,lead_id,campaign_id,attendance_id,user_id,scheduled_at,notes,priority)
++      values(a.tenant_id,a.lead_id,a.campaign_id,a.id,a.user_id,(appointment->>'scheduledAt')::timestamptz,memo,appointment->>'priority');
++  end if;
++  update public.attendances set finished_at=now(),service_status_id=st.id,service_status_name=st.name,
++    counts_as_contact=st.counts_as_contact,counts_as_sale=false,notes=memo where id=a.id;
++  update public.campaign_leads set status='worked',worked_at=now(),last_attendance_id=a.id,last_service_status_id=st.id
++    where id=cl.id and (last_attendance_id=a.id or last_attendance_id is null);
++  return a.id;
++end $$;
++revoke all on function public.finish_pbx_attendance(jsonb) from public,anon;
++grant execute on function public.finish_pbx_attendance(jsonb) to authenticated;
++
++CREATE OR REPLACE FUNCTION public.finalize_sale_attendance(p_input jsonb) RETURNS uuid LANGUAGE plpgsql SECURITY INVOKER SET search_path = public AS $$
++DECLARE cl public.campaign_leads; st public.service_statuses; cfg public.sale_form_configs; pr jsonb; fld jsonb; val jsonb; att_id uuid; sale_id uuid; uid uuid := auth.uid(); tid uuid := public.current_tenant_id(); start_time timestamptz; end_time timestamptz := now();
++BEGIN
++ IF uid IS NULL OR tid IS NULL THEN RAISE EXCEPTION 'Acesso não autorizado'; END IF;
++ SELECT * INTO cl FROM public.campaign_leads WHERE id = (p_input->>'campaignLeadId')::uuid AND tenant_id = tid FOR UPDATE;
++ IF p_input ? 'pbxAttendanceId' THEN
++   IF NOT public.pbx_wrapup_ready((p_input->>'pbxAttendanceId')::uuid,cl.id) THEN
++     SELECT s.id INTO sale_id FROM public.sales s JOIN public.attendances a ON a.id=s.attendance_id WHERE a.id=(p_input->>'pbxAttendanceId')::uuid AND a.user_id=uid AND a.tenant_id=tid AND a.lead_id=cl.lead_id AND a.campaign_id=cl.campaign_id AND a.finished_at IS NOT NULL;
++     IF sale_id IS NOT NULL THEN RETURN sale_id; END IF;
++     RAISE EXCEPTION 'Aguarde o encerramento da ligação ou confira o atendimento';
++   END IF;
++ ELSIF cl.id IS NULL OR cl.status <> 'pending' OR cl.locked_by IS DISTINCT FROM uid THEN RAISE EXCEPTION 'Este atendimento não está aberto para você'; END IF;
++ SELECT * INTO st FROM public.service_statuses WHERE id = (p_input->>'statusId')::uuid AND tenant_id = tid AND active AND deleted_at IS NULL;
++ IF st.id IS NULL OR NOT st.counts_as_sale THEN RAISE EXCEPTION 'Selecione uma tabulação de venda'; END IF;
++ IF length(coalesce(p_input->>'notes','')) > 10000 OR (st.requires_note AND btrim(coalesce(p_input->>'notes','')) = '') THEN RAISE EXCEPTION 'Informe uma observação válida'; END IF;
++ SELECT * INTO cfg FROM public.sale_form_configs WHERE tenant_id = tid;
++ IF jsonb_typeof(p_input->'values') IS DISTINCT FROM 'object' THEN RAISE EXCEPTION 'Formulário inválido'; END IF;
++ IF cfg.id IS NOT NULL AND jsonb_array_length(cfg.products) > 0 THEN
++ SELECT x INTO pr FROM jsonb_array_elements(cfg.products) x WHERE x->>'id' = p_input->>'productId';
++ IF pr IS NULL THEN RAISE EXCEPTION 'Selecione o produto vendido'; END IF;
++ END IF;
++ FOR fld IN SELECT x FROM jsonb_array_elements(coalesce(cfg.fields,'[]')) x LOOP
++ IF jsonb_array_length(fld->'productIds') > 0 AND NOT (fld->'productIds' ? coalesce(p_input->>'productId','')) THEN CONTINUE; END IF;
++ val := p_input->'values'->(fld->>'id');
++ IF (fld->>'required')::boolean AND (val IS NULL OR val = 'null'::jsonb OR val = '""'::jsonb OR val = 'false'::jsonb) THEN RAISE EXCEPTION 'Preencha o campo %', fld->>'label'; END IF;
++ IF val IS NULL OR val = '""'::jsonb OR val = 'null'::jsonb THEN CONTINUE; END IF;
++ IF fld->>'type' IN ('number','currency') AND (jsonb_typeof(val) <> 'number' OR (val::text)::numeric < 0 OR (val::text)::numeric > 1000000000) THEN RAISE EXCEPTION 'Número inválido'; END IF;
++ IF fld->>'type' = 'select' AND NOT (fld->'options' ? (val #>> '{}')) THEN RAISE EXCEPTION 'Opção inválida'; END IF;
++ IF fld->>'type' = 'file' AND (jsonb_typeof(val) <> 'object' OR coalesce(val->>'path','') NOT LIKE tid::text || '/' || uid::text || '/%' OR NOT EXISTS (SELECT 1 FROM storage.objects o WHERE o.bucket_id = 'sale-documents' AND o.name = val->>'path')) THEN RAISE EXCEPTION 'Anexo inválido'; END IF;
++ IF fld->>'type' = 'address' AND (jsonb_typeof(val) <> 'object' OR coalesce(val->>'cep','') !~ '^[0-9]{8}$' OR btrim(coalesce(val->>'street','')) = '' OR btrim(coalesce(val->>'number','')) = '' OR btrim(coalesce(val->>'city','')) = '' OR coalesce(val->>'state','') !~ '^[A-Z]{2}$') THEN RAISE EXCEPTION 'Endereço incompleto'; END IF;
++ IF length(val::text) > 6000 THEN RAISE EXCEPTION 'Campo muito longo'; END IF;
++ END LOOP;
++ IF st.requires_appointment AND p_input->'appointment' IS NULL THEN RAISE EXCEPTION 'Agendamento obrigatório'; END IF;
++ start_time := (p_input->>'startedAt')::timestamptz;
++ IF start_time > end_time OR start_time < end_time - interval '7 days' THEN RAISE EXCEPTION 'Horário de atendimento inválido'; END IF;
++ IF p_input ? 'pbxAttendanceId' THEN
++   UPDATE public.attendances SET finished_at=end_time,service_status_id=st.id,service_status_name=st.name,counts_as_contact=st.counts_as_contact,counts_as_sale=true,notes=nullif(p_input->>'notes','') WHERE id=(p_input->>'pbxAttendanceId')::uuid AND finished_at IS NULL AND tenant_id=tid AND user_id=uid RETURNING id INTO att_id;
++ ELSE
++ INSERT INTO public.attendances(tenant_id,lead_id,campaign_id,campaign_name,user_id,user_name,service_status_id,service_status_name,counts_as_contact,counts_as_sale,started_at,finished_at,duration_seconds,notes,phone)
++ SELECT tid,cl.lead_id,cl.campaign_id,c.name,uid,p.full_name,st.id,st.name,st.counts_as_contact,true,start_time,end_time,greatest(0,extract(epoch FROM end_time-start_time)::integer),nullif(p_input->>'notes',''),p_input->>'phone' FROM public.profiles p JOIN public.campaigns c ON c.id=cl.campaign_id WHERE p.id=uid RETURNING id INTO att_id;
++ END IF;
++ IF att_id IS NULL THEN RAISE EXCEPTION 'Perfil inválido'; END IF;
++ INSERT INTO public.sales(tenant_id,lead_id,campaign_id,attendance_id,user_id,amount,product_id,product_name,form_snapshot,form_data)
++ VALUES(tid,cl.lead_id,cl.campaign_id,att_id,uid,(p_input->>'amount')::numeric,pr->>'id',pr->>'name',jsonb_build_object('name',coalesce(cfg.name,'Cadastro de venda'),'fields',coalesce(cfg.fields,'[]'),'product',pr),p_input->'values') RETURNING id INTO sale_id;
++ IF p_input->'appointment' IS NOT NULL AND p_input->'appointment' <> 'null'::jsonb THEN
++ INSERT INTO public.appointments(tenant_id,lead_id,campaign_id,attendance_id,user_id,scheduled_at,notes,priority) VALUES(tid,cl.lead_id,cl.campaign_id,att_id,uid,(p_input->'appointment'->>'scheduledAt')::timestamptz,nullif(p_input->>'notes',''),p_input->'appointment'->>'priority');
++ END IF;
++ UPDATE public.campaign_leads SET status='worked',worked_at=end_time,last_attendance_id=att_id,last_service_status_id=st.id,locked_by=NULL,locked_at=NULL,lock_expires_at=NULL WHERE id=cl.id;
++ RETURN sale_id;
++END $$;
