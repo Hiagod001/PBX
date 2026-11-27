@@ -183,7 +183,6 @@ const state = {
   recordingLibrary: {
     view: "calls",
     calls: [],
-    dashboard: {},
     meta: { page: 1, pageSize: 20, total: 0, pages: 1, permissions: {} },
     filters: {},
     filtersOpen: false,
@@ -1859,7 +1858,6 @@ function clearRestrictedAudioViews() {
   if (!state.user || !canAccessTab("audios")) {
     state.recordingLibrary.requestId = (state.recordingLibrary.requestId || 0) + 1;
     state.recordingLibrary.calls = [];
-    state.recordingLibrary.dashboard = null;
     state.recordingLibrary.meta = {};
     if (pages.audios) pages.audios.innerHTML = "";
   }
@@ -5293,13 +5291,6 @@ function recordingPartyNumber(call = {}) {
   return call.destination || call.source || call.callerId || "";
 }
 
-function recordingDisplayTitle(call = {}) {
-  const typeLabel = call.typeLabel || { inbound: "Entrada", outbound: "Saida", internal: "Interna" }[call.type] || "Chamada";
-  const extension = call.extension ? `Ramal ${call.extension}` : "Sem ramal identificado";
-  const party = recordingPartyNumber(call);
-  return [typeLabel, extension, party].filter(Boolean).join(" - ");
-}
-
 function renderIvrAudioLibrary() {
   const rows = (state.ivrAudios || [])
     .map(
@@ -5344,7 +5335,6 @@ function renderAudios() {
   const library = state.recordingLibrary;
   const filters = library.filters || {};
   const meta = library.meta || {};
-  const dashboard = library.dashboard || {};
   const permissions = meta.permissions || {};
   const activeFilterCount = Object.values(filters).filter((value) => String(value || "") !== "").length;
   const extensionOptions = `<option value="">Todos os ramais</option>${(state.config.extensions || [])
@@ -5355,55 +5345,43 @@ function renderAudios() {
     .join("")}`;
   const recordingRows = (library.calls || [])
     .map((call) => {
-      const tone = reportStatusTone(call.status);
-      const downloadButton = permissions.canDownloadRecordings
-        ? `<a class="icon-btn" href="/api/pbx/recordings/${encodeURIComponent(call.uniqueId)}/download" title="Baixar gravacao"><i data-lucide="download"></i></a>`
-        : "";
+      const direction = { inbound: "Entrada", outbound: "Saída", internal: "Interna" }[call.type] || "Chamada";
+      const agent = [call.extension && `Ramal ${call.extension}`, call.extensionName].filter(Boolean).join(" · ");
       return `
-        <article class="recording-row">
-          <div class="recording-type-icon ${escapeHtml(call.type || "")}"><i data-lucide="${reportTypeIcon(call.type)}"></i></div>
-          <div class="recording-identity">
-            <strong>${escapeHtml(recordingDisplayTitle(call))}</strong>
-            <span>${escapeHtml(formatDateTime(call.startedAt))} | ${escapeHtml(call.extensionName || call.department || "Operador nao identificado")} | ${escapeHtml(call.durationLabel || "0s")}</span>
-            <code title="Nome usado ao baixar">${escapeHtml(call.recordingDownloadName || call.recordingFile || call.uniqueId || "gravacao")}</code>
+        <article class="recording-entry">
+          <div class="recording-party">
+            <div class="recording-type-icon ${escapeHtml(call.type || "")}" aria-hidden="true"><i data-lucide="${reportTypeIcon(call.type)}"></i></div>
+            <div><strong>${escapeHtml(recordingPartyNumber(call) || "Número não identificado")}</strong>
+              <small>${escapeHtml([direction, agent].filter(Boolean).join(" · "))}</small></div>
           </div>
-          <div class="recording-tags">
-            <span class="badge ${tone}">${escapeHtml(call.statusLabel || "Gravada")}</span>
-            <span class="badge">${escapeHtml(call.typeLabel || "Chamada")}</span>
-          </div>
+          <div class="recording-protocol"><small>Protocolo</small>
+            ${call.protocol ? `<strong>${escapeHtml(call.protocol)}</strong>` : '<span>Não registrado</span>'}</div>
+          <div class="recording-time"><span>${escapeHtml(formatDateTime(call.startedAt))}</span>
+            <small>${escapeHtml(call.durationLabel || "0s")}</small></div>
           <div class="recording-actions">
-            <button class="primary-btn compact" data-listen-recording="${escapeHtml(call.uniqueId)}"><i data-lucide="play"></i>Escutar</button>
-            ${downloadButton}
-            <button class="icon-btn" data-call-details="${escapeHtml(call.id)}" title="Detalhes da chamada"><i data-lucide="eye"></i></button>
+            ${permissions.canListenRecordings ? `<button class="primary-btn compact" data-listen-recording="${escapeHtml(call.uniqueId)}"><i data-lucide="play"></i>Escutar</button>` : ""}
+            ${permissions.canDownloadRecordings ? `<a class="icon-btn" href="/api/pbx/recordings/${encodeURIComponent(call.uniqueId)}/download" aria-label="Baixar gravação" title="Baixar gravação"><i data-lucide="download"></i></a>` : ""}
+            <button class="icon-btn" data-call-details="${escapeHtml(call.id)}" aria-label="Detalhes da chamada" title="Detalhes da chamada"><i data-lucide="eye"></i></button>
           </div>
         </article>`;
     })
     .join("");
 
   const callLibrary = `
-    <section class="recording-summary-grid">
-      ${[
-        ["Gravacoes encontradas", meta.total || dashboard.total || 0, "library"],
-        ["Entradas", dashboard.inbound || 0, "phone-incoming"],
-        ["Saidas", dashboard.outbound || 0, "phone-outgoing"],
-        ["Duracao media", formatSeconds(dashboard.averageCallTime || 0), "clock-3"]
-      ]
-        .map(([label, value, icon]) => `<div class="recording-summary"><i data-lucide="${icon}"></i><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
-        .join("")}
-    </section>
     <section class="panel recording-filters-panel">
       <div class="panel-header">
-        <div><h3>Localizar gravacoes</h3><p class="table-meta">${activeFilterCount ? `${activeFilterCount} filtro(s) ativo(s)` : "Pesquise pelo cliente, operador ou periodo."}</p></div>
-        <button id="toggleRecordingFiltersBtn" class="secondary-btn" type="button"><i data-lucide="${library.filtersOpen ? "chevron-up" : "sliders-horizontal"}"></i>${library.filtersOpen ? "Menos filtros" : "Mais filtros"}</button>
+        <div><h3>Localizar gravações</h3><p class="table-meta">${activeFilterCount ? `${activeFilterCount} filtro(s) ativo(s)` : "Busque por número, protocolo ou período."}</p></div>
+        <button id="toggleRecordingFiltersBtn" aria-expanded="${library.filtersOpen}" class="secondary-btn" type="button"><i data-lucide="${library.filtersOpen ? "chevron-up" : "sliders-horizontal"}"></i>${library.filtersOpen ? "Menos filtros" : "Mais filtros"}</button>
       </div>
       <div class="recording-filter-grid primary">
         <label>Data inicial<input data-recording-filter="dateStart" type="date" value="${escapeHtml(filters.dateStart || "")}" /></label>
         <label>Data final<input data-recording-filter="dateEnd" type="date" value="${escapeHtml(filters.dateEnd || "")}" /></label>
-        <label class="recording-number-filter">Numero<input data-recording-filter="number" value="${escapeHtml(filters.number || "")}" placeholder="Cliente, origem ou destino" inputmode="tel" /></label>
+        <label class="recording-number-filter">Número<input data-recording-filter="number" value="${escapeHtml(filters.number || "")}" placeholder="Cliente, origem ou destino" inputmode="tel" /></label>
         <label>Ramal<select data-recording-filter="extension">${extensionOptions}</select></label>
-        <label>Direcao<select data-recording-filter="type">${option("", filters.type || "", "Todas")}${option("inbound", filters.type || "", "Entrada")}${option("outbound", filters.type || "", "Saida")}${option("internal", filters.type || "", "Interna")}</select></label>
+        <label>Protocolo<input data-recording-filter="protocol" value="${escapeHtml(filters.protocol || "")}" placeholder="Número do protocolo" inputmode="numeric" /></label>
       </div>
       <div class="recording-filter-grid advanced ${library.filtersOpen ? "" : "hidden"}">
+        <label>Direção<select data-recording-filter="type">${option("", filters.type || "", "Todas")}${option("inbound", filters.type || "", "Entrada")}${option("outbound", filters.type || "", "Saída")}${option("internal", filters.type || "", "Interna")}</select></label>
         <label>Status<select data-recording-filter="status">${option("", filters.status || "", "Todos")}${option("answered", filters.status || "", "Atendida")}${option("no_answer", filters.status || "", "Nao atendida")}${option("busy", filters.status || "", "Ocupado")}${option("failed", filters.status || "", "Falhou")}</select></label>
         <label>Fila<select data-recording-filter="queue">${queueOptions}</select></label>
         <label>Duracao minima<input data-recording-filter="minDuration" type="number" min="0" value="${escapeHtml(filters.minDuration || "")}" placeholder="Segundos" /></label>
@@ -5413,17 +5391,17 @@ function renderAudios() {
         <label class="wide">Busca geral<input data-recording-filter="q" value="${escapeHtml(filters.q || "")}" placeholder="Nome, protocolo, Caller ID ou identificador" /></label>
       </div>
       <div class="filter-actions">
-        <button id="applyRecordingFiltersBtn" class="primary-btn" type="button"><i data-lucide="search"></i>Filtrar gravacoes</button>
+        <button id="applyRecordingFiltersBtn" class="primary-btn" type="button"><i data-lucide="search"></i>Buscar gravações</button>
         <button id="clearRecordingFiltersBtn" class="secondary-btn" type="button"><i data-lucide="x"></i>Limpar</button>
       </div>
     </section>
     <section class="panel recording-results-panel">
       <div class="panel-header">
-        <div><h3>Gravacoes de chamadas</h3><p class="table-meta">${library.loading ? "Carregando..." : `${monitorNumber(meta.total || 0)} resultado(s)`}</p></div>
+        <div><h3>Gravações de chamadas</h3><p class="table-meta">${library.loading ? "Carregando..." : `${monitorNumber(meta.total || 0)} resultado(s)`}</p></div>
         <button id="reloadRecordingsBtn" class="icon-btn" type="button" title="Atualizar gravacoes"><i data-lucide="rotate-cw"></i></button>
       </div>
-      <div class="recording-list">${recordingRows || `<div class="governance-empty"><i data-lucide="file-audio"></i><strong>Nenhuma gravacao encontrada</strong><span>Revise os filtros ou o periodo selecionado.</span></div>`}</div>
-      <div class="pagination recording-pagination">
+      <div class="recording-list">${recordingRows || (library.loading ? "" : `<div class="governance-empty"><i data-lucide="file-audio"></i><strong>Nenhuma gravação encontrada</strong><span>Revise os filtros ou o período selecionado.</span></div>`)}</div>
+      <div class="pagination recording-pagination" ${Number(meta.pages || 1) <= 1 ? "hidden" : ""}>
         <button class="secondary-btn" data-recording-page="${Math.max(1, Number(meta.page || 1) - 1)}" ${Number(meta.page || 1) <= 1 ? "disabled" : ""}><i data-lucide="chevron-left"></i>Anterior</button>
         <span>Pagina ${monitorNumber(meta.page || 1)} de ${monitorNumber(meta.pages || 1)}</span>
         <button class="secondary-btn" data-recording-page="${Math.min(Number(meta.pages || 1), Number(meta.page || 1) + 1)}" ${Number(meta.page || 1) >= Number(meta.pages || 1) ? "disabled" : ""}>Proxima<i data-lucide="chevron-right"></i></button>
@@ -6639,16 +6617,11 @@ async function loadRecordingLibrary(extra = {}) {
     sortBy: "startedAt",
     sortDir: "desc"
   });
-  const dashboardParams = recordingFilterParams();
   try {
-    const [callsResponse, dashboardResponse] = await Promise.all([
-      api(`/api/pbx/reports/calls?${params.toString()}`),
-      api(`/api/pbx/reports/dashboard?${dashboardParams.toString()}`)
-    ]);
+    const callsResponse = await api(`/api/pbx/reports/calls?${params.toString()}`);
     if (library.requestId !== requestId) return;
     library.calls = callsResponse.data || [];
     library.meta = callsResponse.meta || library.meta;
-    library.dashboard = dashboardResponse.dashboard || {};
   } catch (error) {
     if (library.requestId === requestId) throw error;
   } finally {
@@ -8587,9 +8560,13 @@ document.addEventListener("click", async (event) => {
       return;
     }
 
-    if (event.target.closest("#toggleRecordingFiltersBtn")) {
-      state.recordingLibrary.filtersOpen = !state.recordingLibrary.filtersOpen;
-      renderAudios();
+    const recordingFilterToggle = event.target.closest("#toggleRecordingFiltersBtn");
+    if (recordingFilterToggle) {
+      const open = !state.recordingLibrary.filtersOpen;
+      state.recordingLibrary.filtersOpen = open;
+      $(".recording-filter-grid.advanced", pages.audios).classList.toggle("hidden", !open);
+      recordingFilterToggle.setAttribute("aria-expanded", String(open));
+      recordingFilterToggle.innerHTML = `<i data-lucide="${open ? "chevron-up" : "sliders-horizontal"}"></i>${open ? "Menos filtros" : "Mais filtros"}`;
       iconRefresh();
       return;
     }
