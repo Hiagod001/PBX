@@ -1,0 +1,10 @@
+[Unit]
+Description=Acompanhar alterações nas redes SIP permitidas do UAI PBX
+RequiresMountsFor=/etc/dokploy/pbx-validation/data/app
+
+[Path]
+PathChanged=/etc/dokploy/pbx-validation/data/app/config.json
+Unit=pbx-sip-wss.service
+
+[Install]
+WantedBy=multi-user.target

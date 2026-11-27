@@ -37,7 +37,7 @@ services:
       timeout: 5s
       retries: 4
   web:
-    image: uai-pbx-web:20261127-ramal-preview
+    image: uai-pbx-web:20261127-sip-networks
     pull_policy: never
     restart: unless-stopped
     init: true
@@ -83,9 +83,8 @@ services:
       - traefik.http.routers.pbx-sip-ws.entrypoints=websecure
       - traefik.http.routers.pbx-sip-ws.tls.certresolver=letsencrypt
       - traefik.http.routers.pbx-sip-ws.priority=200
-      - traefik.http.routers.pbx-sip-ws.service=pbx-validation
-      - traefik.http.routers.pbx-sip-ws.middlewares=pbx-sip-office
-      - traefik.http.middlewares.pbx-sip-office.ipallowlist.sourcerange=131.0.115.234/32
+      # The file-provider router takes priority when its SIP network list is available.
+      - traefik.http.routers.pbx-sip-ws.service=noop@internal
       - traefik.docker.network=dokploy-network
       - traefik.http.routers.pbx-validation.rule=Host(`pbx-teste.131.0.112.27.sslip.io`)
       - traefik.http.routers.pbx-validation.entrypoints=websecure

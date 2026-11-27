@@ -5593,7 +5593,7 @@ function renderSecurity() {
             .join("")}
         </div>
         <div class="field-grid" data-scope="security">
-          ${fieldBlock("Redes SIP permitidas", "IPs ou redes que podem registrar ramais e acessar o PBX.", `<input data-key="allowedSipNetworks" value="${escapeHtml((sec.allowedSipNetworks || []).join(", "))}" />`, "wide")}
+          ${fieldBlock("Redes SIP permitidas", "Informe os IPs ou redes de onde os ramais podem conectar pelo aplicativo ou navegador, separados por vírgula. Uma lista vazia bloqueia novas conexões de voz.", `<input data-key="allowedSipNetworks" value="${escapeHtml((sec.allowedSipNetworks || []).join(", "))}" />`, "wide")}
           ${fieldBlock("Endereco publico", "IP publico do seu servidor PBX. Importante quando ha NAT.", `<input data-key="publicAddress" value="${escapeHtml(sec.publicAddress || "")}" placeholder="Ex: ${escapeHtml(location.hostname)}" />`, "wide")}
           ${fieldBlock("Redes locais/NAT", "Redes internas usadas para o Asterisk distinguir trafego local do externo.", `<input data-key="localNetworks" value="${escapeHtml((sec.localNetworks || []).join(", "))}" />`, "wide")}
           ${fieldBlock("RTP inicio", "Primeira porta da faixa de audio RTP.", `<input data-key="rtpPortStart" type="number" value="${escapeHtml(sec.rtpPortStart)}" />`)}

@@ -1,9 +1,18 @@
+const { isIP } = require("node:net");
 const safeIdPattern = /^[a-zA-Z0-9_.-]+$/;
 const extensionPattern = /^\d{2,8}$/;
 const trunkPolicy = require("../public/trunk-policy");
 
 function invalidCharacters(value) {
   return /[;\r\n\0]/.test(String(value || ""));
+}
+
+function validSipNetwork(value) {
+  if (typeof value !== "string" || value.includes("%")) return false;
+  const parts = value.split("/");
+  const family = isIP(parts[0]);
+  if (!family || parts.length > 2) return false;
+  return parts.length === 1 || (/^(0|[1-9]\d{0,2})$/.test(parts[1]) && Number(parts[1]) <= (family === 4 ? 32 : 128));
 }
 
 function validRecordingPath(value) {
@@ -25,6 +34,11 @@ function validateConfig(config) {
   };
 
   if (!config || typeof config !== "object" || Array.isArray(config)) add("Configuracao invalida");
+
+  const networks = config?.security?.allowedSipNetworks;
+  if (networks !== undefined && (!Array.isArray(networks) || !networks.every(validSipNetwork))) {
+    add("Em Redes SIP permitidas, informe IPs ou redes válidos, separados por vírgula. Exemplo: 192.168.1.10, 10.0.0.0/24.");
+  }
 
   const extensions = Array.isArray(config?.extensions) ? config.extensions : [];
   const extensionNumbers = extensions.map((extension) => String(extension.number || "").trim());

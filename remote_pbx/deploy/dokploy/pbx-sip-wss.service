@@ -1,0 +1,16 @@
+[Unit]
+Description=Aplicar redes SIP permitidas ao WebSocket do UAI PBX
+After=local-fs.target
+RequiresMountsFor=/etc/dokploy/pbx-validation/data/app /etc/dokploy/traefik/dynamic
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/local/lib/uai-pbx/sync-sip-wss.py
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/dokploy/traefik/dynamic
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

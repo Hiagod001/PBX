@@ -217,3 +217,17 @@ Para as próximas correções:
 Esse fluxo de publicação não recarrega o Asterisk nem altera configurações,
 usuários ou chamadas. Backups desta implantação ficam em
 `data/backups/auto-update-20261127`.
+### Redes SIP permitidas no aplicativo e no navegador
+
+O roteador WebSocket do Traefik lê a lista de redes salva em **Segurança → Redes SIP permitidas**. O serviço do host `pbx-sip-wss.service` normaliza IPs e redes IPv4/IPv6 e publica a configuração de `/ws` por substituição atômica no provedor de arquivos do Traefik. Uma lista vazia bloqueia novas conexões. Alterações valem para novas conexões e reconexões. As portas SIP nativas continuam sob as regras de firewall do host.
+
+Na instalação do host Dokploy, a partir deste diretório, execute:
+
+```sh
+install -D -m 644 sync-sip-wss.py /usr/local/lib/uai-pbx/sync-sip-wss.py
+install -m 644 pbx-sip-wss.{path,service} /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now pbx-sip-wss.path pbx-sip-wss.service
+```
+
+O arquivo `/etc/dokploy/traefik/dynamic/pbx-sip-networks.yml` contém apenas as redes e a definição do roteador. O contêiner web não precisa de acesso de escrita às configurações do Traefik.

@@ -1,0 +1,4 @@
+FROM uai-pbx-web:20261127-ramal-preview
+COPY src/validation.js /opt/pbx-sip-admin/src/validation.js
+COPY public/app.js /opt/pbx-sip-admin/public/app.js
+COPY public/index.html /opt/pbx-sip-admin/public/index.html
