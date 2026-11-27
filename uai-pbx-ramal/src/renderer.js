@@ -9,6 +9,7 @@ const state = {
   softphoneStarting: null,
   sipGeneration: 0,
   stoppingSoftphone: false,
+  updateInstalling: false,
   session: null,
   incoming: false,
   autoAnswerNext: false,
@@ -704,7 +705,7 @@ async function disposeSipStack(unregister = false) {
   state.sipGeneration += 1;
   state.registerer = null;
   state.ua = null;
-  if (unregister && registerer) await finishSipOperation("unregister", registerer.unregister());
+  if (unregister && registerer && registerer.state !== "Terminated") await finishSipOperation("unregister", registerer.unregister());
   if (userAgent) await finishSipOperation("userAgent.stop", userAgent.stop());
 }
 
@@ -1124,6 +1125,7 @@ numberInput.addEventListener("keydown", (event) => {
 });
 
 callBtn.addEventListener("click", async () => {
+  if (state.updateInstalling) return;
   if (state.callPending) {
     setBusy(callBtn, true, "Encerrando...");
     await hangupCurrentCall("Chamada cancelada.");
@@ -1322,11 +1324,62 @@ window.addEventListener("DOMContentLoaded", async () => {
     state.serverUrl = info.serverUrl;
     document.querySelector("#appVersion").textContent = info.version ? `Versão ${info.version}` : "";
     await loadAudioDevices();
-    showLogin();
+    if (info.extension) await showPhone(info.extension);
+    else showLogin();
   } catch (error) {
     showLogin(friendlyError(error, "Não foi possível preparar o telefone. Feche o aplicativo e tente novamente."));
   }
 });
+
+function updateIsBusy() {
+  return PhoneState.callInProgress(state) || assistedTransfer.phase !== "idle";
+}
+
+function showUpdateStatus(update = {}) {
+  const messages = {
+    idle: "Atualizações automáticas ativadas.", checking: "Procurando atualizações…",
+    current: "O aplicativo está atualizado.", downloading: `Baixando atualização: ${update.percent || 0}%. Você pode continuar atendendo.`,
+    ready: "Atualização pronta. Será instalada automaticamente quando o ramal estiver livre.",
+    installing: "Instalando atualização. O aplicativo abrirá novamente…",
+    error: "Não foi possível verificar agora. O aplicativo tentará novamente.",
+    development: "Atualização automática disponível no aplicativo instalado."
+  };
+  const text = messages[update.phase] || messages.idle;
+  document.querySelector("#updateStatus").textContent = text;
+  document.querySelector("#updateNoticeText").textContent = text;
+  document.querySelector("#updateNotice").classList.toggle("hidden", !["downloading", "ready", "installing"].includes(update.phase));
+  const install = document.querySelector("#installUpdateBtn");
+  install.classList.toggle("hidden", update.phase !== "ready");
+  install.disabled = updateIsBusy();
+}
+
+window.pbxAPI.onUpdateStatus?.(showUpdateStatus);
+window.pbxAPI.onPrepareUpdate?.(async () => {
+  if (updateIsBusy() || state.updateInstalling) return false;
+  state.updateInstalling = true;
+  state.stoppingSoftphone = true;
+  callBtn.disabled = true;
+  await stopSoftphone();
+  return true;
+});
+window.pbxAPI.onCancelUpdate?.(() => {
+  if (!state.updateInstalling) return;
+  state.updateInstalling = false;
+  state.stoppingSoftphone = false;
+  if (state.extension) void startSoftphone().catch(() => {});
+});
+document.querySelector("#checkUpdateBtn").addEventListener("click", async () => {
+  showUpdateStatus({ phase: "checking" });
+  const update = await window.pbxAPI.checkUpdate().catch(() => ({ phase: "error" }));
+  showUpdateStatus(update);
+});
+document.querySelector("#installUpdateBtn").addEventListener("click", () => window.pbxAPI.installUpdate().catch(() => {}));
+window.pbxAPI.updateStatus?.().then(showUpdateStatus).catch(() => {});
+setInterval(() => {
+  const busy = updateIsBusy() || state.updateInstalling;
+  window.pbxAPI.activity?.(busy);
+  document.querySelector("#installUpdateBtn").disabled = busy;
+}, 1000);
 
 function applyAppTheme(theme) {
   document.documentElement.dataset.theme = theme === "light" ? "light" : "dark";

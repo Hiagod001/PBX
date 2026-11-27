@@ -4,6 +4,9 @@ const { pathToFileURL } = require("node:url");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const PhoneState = require("./phone-state");
+const { createUpdateManager } = require("./update-manager");
+const { updateSession } = require("./update-session");
+const { randomUUID } = require("node:crypto");
 
 const PBX_URL = process.env.UAI_PBX_URL || "https://uaipbx.uaitelecom.com.br";
 const APP_PARTITION = "persist:uai-pbx-ramal";
@@ -18,6 +21,8 @@ if (!singleInstanceLock) {
 
 let mainWindow = null;
 let currentExtension = null;
+let updateManager = null;
+let updatePreparation = null;
 const toneProcesses = new Map();
 
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
@@ -200,6 +205,7 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, "renderer.html"));
   mainWindow.webContents.setAudioMuted(QA_HEADLESS);
+  mainWindow.on("session-end", () => updateManager?.stop());
   mainWindow.on("closed", () => {
     stopTone("ringtone");
     stopTone("ringing");
@@ -220,6 +226,56 @@ ipcMain.handle("app:server", () => ({
   version: app.getVersion(),
   extension: currentExtension
 }));
+
+function prepareUpdate() {
+  if (!mainWindow || mainWindow.isDestroyed()) return Promise.resolve(false);
+  return new Promise(resolve => {
+    const nonce = randomUUID();
+    const timer = setTimeout(() => {
+      updatePreparation = null;
+      mainWindow?.webContents.send("app:update-cancel");
+      resolve(false);
+    }, 12000);
+    updatePreparation = { nonce, finish(ready) { clearTimeout(timer); updatePreparation = null; resolve(ready); } };
+    mainWindow.webContents.send("app:update-prepare", nonce);
+  });
+}
+
+ipcMain.on("app:activity", (event, activity) => {
+  if (event.sender === mainWindow?.webContents) updateManager?.activity(activity);
+});
+ipcMain.on("app:update-prepared", (event, result) => {
+  if (event.sender === mainWindow?.webContents && result?.nonce === updatePreparation?.nonce) updatePreparation.finish(result.ready === true);
+});
+ipcMain.handle("app:update-status", () => updateManager?.getState() || { phase: "development" });
+ipcMain.handle("app:update-check", async () => { await updateManager?.check(); return updateManager?.getState() || { phase: "development" }; });
+ipcMain.handle("app:update-install", async () => ({ ok: await updateManager?.install() || false }));
+
+function startUpdates(marker) {
+  if (!app.isPackaged || (QA_HEADLESS && process.env.UAI_PBX_TEST_UPDATES !== "1")) return;
+  const { autoUpdater } = require("electron-updater");
+  if (QA_HEADLESS && process.env.UAI_PBX_TEST_UPDATE_URL) {
+    const url = new URL(process.env.UAI_PBX_TEST_UPDATE_URL);
+    if (url.hostname !== "127.0.0.1") throw new Error("Feed de teste precisa ser local.");
+    autoUpdater.setFeedURL({ provider: "generic", url: url.toString() });
+  }
+  autoUpdater.logger = { info: message => sipLog(message), warn: message => sipLog(message), error: message => sipLog(message), debug: () => {} };
+  updateManager = createUpdateManager({
+    updater: autoUpdater,
+    publish: value => mainWindow?.webContents.send("app:update-status", value),
+    prepare: prepareUpdate,
+    cancelPrepare: async () => { await marker.clear(); mainWindow?.webContents.send("app:update-cancel"); },
+    beforeInstall: () => marker.mark(Boolean(currentExtension)),
+    serverIdle: async () => {
+      if (!currentExtension) return true;
+      const status = await pbxFetch("/api/extensions/status?history=0");
+      return Array.isArray(status.active) && status.active.length === 0;
+    },
+    log: sipLog,
+    ...(QA_HEADLESS ? { initialMs: 1000 } : {})
+  });
+  updateManager.start();
+}
 
 ipcMain.handle("app:sip-log", (_event, message) => {
   sipLog(message);
@@ -365,12 +421,21 @@ ipcMain.handle("extension:transfer", async (_event, payload) => {
 
 app.whenReady().then(async () => {
   app.setAppUserModelId("br.com.uaitelecom.uaipbxramal");
-  await resetRamalSession();
+  const marker = updateSession(app.getPath("userData"), app.getVersion());
+  if (await marker.consume()) {
+    currentExtension = (await pbxFetch("/api/extensions/me", { signal: AbortSignal.timeout(8000) }).catch(() => ({}))).extension || null;
+  }
+  if (!currentExtension) await resetRamalSession();
   createWindow();
+  startUpdates(marker);
   powerMonitor.on("resume", () => mainWindow?.webContents.send("app:resume"));
+  powerMonitor.on("resume", () => updateManager?.check());
+  powerMonitor.on("shutdown", () => updateManager?.stop());
   powerMonitor.on("unlock-screen", () => mainWindow?.webContents.send("app:resume"));
   if (requestedToneTest()) runToneTest();
 });
+
+app.on("before-quit", () => updateManager?.stop());
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

@@ -124,6 +124,11 @@
 
           <section id="settingsPanel" class="settings-panel hidden" aria-label="Configuracoes">
             <p id="appVersion" class="message"></p>
+            <div class="update-settings">
+              <strong>Atualizações</strong>
+              <p id="updateStatus" class="message" role="status">Atualizações automáticas ativadas.</p>
+              <button id="checkUpdateBtn" class="secondary-btn" type="button">Verificar atualização</button>
+            </div>
             <div class="settings-head">
               <strong>Audio</strong>
               <button id="closeSettingsBtn" class="mini-btn" type="button">Fechar</button>
@@ -160,6 +165,10 @@
         <p id="callMessage" class="message ok" role="status" aria-live="polite">Ramal autenticado.</p>
       </section>
 
+      <section id="updateNotice" class="update-notice hidden" aria-live="polite">
+        <p id="updateNoticeText"></p>
+        <button id="installUpdateBtn" class="secondary-btn hidden" type="button">Atualizar agora</button>
+      </section>
       <section id="pauseOverlay" class="pause-overlay hidden" aria-label="Ramal em pausa">
         <div class="pause-card">
           <span>Ramal em pausa</span>

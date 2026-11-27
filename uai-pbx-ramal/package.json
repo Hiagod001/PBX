@@ -1,6 +1,6 @@
 {
   "name": "uai-pbx-ramal",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "App simples do ramal UAI PBX",
   "main": "src/main.js",
   "private": true,
@@ -11,6 +11,7 @@
     "dist": "electron-builder --win nsis --x64 --config.win.signAndEditExecutable=false"
   },
   "build": {
+    "publish": [{ "provider": "generic", "url": "https://uaipbx.uaitelecom.com.br/updates/", "useMultipleRangeRequest": false }],
     "appId": "br.com.uaitelecom.uaipbxramal",
     "productName": "UAI PBX Ramal",
     "directories": {
@@ -55,5 +56,9 @@
     "electron": "45.5.0",
     "electron-builder": "26.18.0",
     "rcedit": "^4.0.1"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.11",
+    "semver": "7.7.4"
   }
 }

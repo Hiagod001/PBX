@@ -1,0 +1,6 @@
+FROM uai-pbx-web:20261126-reconnect
+WORKDIR /opt/pbx-sip-admin
+COPY server.js ./server.js
+COPY src/desktop-updates.js ./src/desktop-updates.js
+COPY scripts/publish-desktop-release.js ./scripts/publish-desktop-release.js
+COPY tests ./tests

@@ -439,3 +439,6 @@ input {
   font-size: 0.92rem;
   font-weight: 900;
 }
+.update-settings { display: grid; gap: 8px; padding-block: 12px; border-bottom: 1px solid var(--border, #3f3f46); margin-bottom: 12px; }
+.update-notice { margin-top: 12px; padding: 12px; border: 1px solid var(--border, #3f3f46); border-radius: 12px; background: var(--panel, #18181b); font-size: 12px; line-height: 1.5; }
+.update-notice p { margin: 0 0 8px; }

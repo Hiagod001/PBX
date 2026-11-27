@@ -106,3 +106,36 @@ estava saudável, sem reinício ou falta de memória registrada nos contêineres
 Isso confirma a interrupção da conexão, mas não identifica por si só sua origem
 na rede ou na estação. A correção trata as falhas encontradas na recuperação e
 acrescenta o motivo da desconexão ao `sip.log` local para diagnóstico futuro.
+
+## Atualização 1.0.13, em 27/11/2026
+
+O launcher passa a baixar as próximas versões automaticamente por HTTPS.
+Depois de um minuto livre, confirma a ausência de chamadas no cliente e no
+servidor, instala em silêncio e abre novamente. Uma chamada em andamento ou
+transferência assistida impede a instalação. Um ramal ocioso que está tentando
+se reconectar também pode receber uma correção. Há uma opção de verificação
+manual nas configurações e mensagens simples de progresso.
+
+É necessária uma instalação inicial da 1.0.13; versões anteriores não têm
+o código do atualizador. A publicação seguinte usa `npm run dist` e o script
+`remote_pbx/scripts/publish-desktop-release.js`, conforme o README do Dokploy.
+O build produz feed, instalador por versão e blockmap. O cliente valida
+SHA-512, e o publicador valida SHA-256 e impede substituir uma versão publicada.
+
+O reinício da atualização pode retomar o ramal com a sessão já autenticada,
+sem gravar senhas. O cookie continua sujeito à expiração e à validação das
+credenciais no servidor. O fechamento normal do aplicativo mantém a política
+anterior de solicitar login na próxima abertura.
+
+Validação: 37 testes do launcher passaram, além dos testes das rotas públicas
+e do publicador no Windows e na imagem Linux. O ensaio em uma instalação NSIS
+isolada confirmou rejeição de checksum inválido, bloqueio automático e manual
+durante sinalização de chamada simulada, instalação automática após o período
+livre, reabertura de 0.0.1 como 0.0.2 e retomada da sessão com cookie persistente.
+Nenhuma chamada foi feita pelo PBX nesse ensaio.
+
+Para repetir, execute `scripts/verify-auto-update.cjs` no Windows com
+`PBX_PLAYWRIGHT_MODULE` apontando para Playwright. O script cria um aplicativo,
+registro de instalação, perfil e servidor local próprios de QA. Remove os
+recursos ao passar; preserva os artefatos se o teste falhar. Não utiliza
+credenciais do PBX. As versões 0.0.1 e 0.0.2 pertencem somente ao laboratório.

@@ -36,7 +36,7 @@ Atualize essas definições juntas para uma publicação posterior não restaura
 volumes antigos. Valide com `docker compose config --quiet`; a saída completa de
 `docker compose config` pode conter segredos expandidos dos arquivos de ambiente.
 
-As imagens `uai-pbx-web:20261126-reconnect` e
+As imagens `uai-pbx-web:20261127-auto-update` e
 `uai-pbx-asterisk:20261113-fixes2` estão no Docker deste servidor, com
 `pull_policy: never`. Preserve/exporte essas imagens ao recuperar em outro host.
 O código utilizado na publicação está em `/home/dokploy/pbx-validation/source`.
@@ -177,3 +177,43 @@ validam a recuperação; não provam a causa de toda interrupção de rede.
 Instale a versão 1.0.12 nas estações para receber a correção no aplicativo.
 O instalador não substitui aplicativos que já estão abertos. Backups e logs
 da publicação: `data/backups/ramal-reconnect-20261126`.
+
+## Atualização automática do aplicativo
+
+A versão 1.0.13 acrescenta o atualizador do launcher. É necessário instalar
+essa versão uma vez nas estações que usam 1.0.12 ou anteriores. Depois, o
+aplicativo verifica novas versões cerca de 30 segundos após abrir e a cada
+duas horas. Baixa em segundo plano e aguarda um minuto sem chamada antes de
+instalar e abrir novamente. Uma falha de rede mantém o telefone disponível
+e agenda outra verificação em 15 minutos. Também há uma opção de verificação
+manual nas configurações.
+
+A instalação exige atividade recente da janela, ausência de chamadas no
+servidor e uma última confirmação do telefone. A janela então bloqueia novas
+chamadas e desregistra SIP antes da instalação. Não usa instalação automática
+ao fechar o Windows. Uma sessão válida pode ser retomada após a atualização,
+usando o cookie existente: o marcador local contém apenas versão, horário
+e uma indicação de sessão, sem senha. Fechar e abrir normalmente mantém o
+comportamento anterior de pedir login.
+
+O feed público é `/updates/latest.yml`. Instaladores e blockmaps ficam em
+`/updates/<versao>/UAI-PBX-Ramal-Setup.exe` e `.exe.blockmap`, com cache por
+versão. O feed não é armazenado em cache. Downloads aceitam Range; o cliente
+confere SHA-512 e não permite downgrade. A publicação também verifica
+SHA-256, tamanho e imutabilidade de uma versão já existente.
+
+Para as próximas correções:
+
+1. Incremente a versão do launcher e execute `npm run dist`.
+2. Transfira o conteúdo de `dist-installer/updates` para um diretório privado
+   de staging no volume de backups do PBX, legível pelo usuário 1001.
+3. No contêiner web, como `1001:1001`, execute
+   `node scripts/publish-desktop-release.js <diretorio-de-staging>`.
+4. Confira `/api/desktop-release`, `/updates/latest.yml` e o download da
+   versão. Os arquivos são preparados antes de o feed mudar. Não reutilize
+   uma versão para um executável diferente e preserve as versões anteriores
+   para os downloads diferenciais.
+
+Esse fluxo de publicação não recarrega o Asterisk nem altera configurações,
+usuários ou chamadas. Backups desta implantação ficam em
+`data/backups/auto-update-20261127`.

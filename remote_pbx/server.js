@@ -3863,6 +3863,7 @@ app.use(express.json({ limit: "1mb" }));
 // Public assets do not need a session lookup or a rolling session cookie.
 app.use(express.static(path.join(__dirname, "public"), { setHeaders: staticCacheHeaders }));
 const desktopReleaseDir = path.join(__dirname, "data", "desktop-releases");
+app.use("/updates", require("./src/desktop-updates").desktopUpdateRouter(desktopReleaseDir));
 app.get("/downloads/UAI-PBX-Ramal-Setup.exe", async (_req, res) => {
   const file = path.join(desktopReleaseDir, "UAI-PBX-Ramal-Setup.exe");
   if (!(await fs.pathExists(file))) return res.status(404).json({ error: "O instalador ainda não está disponível." });

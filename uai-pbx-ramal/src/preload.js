@@ -1,6 +1,16 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("pbxAPI", {
+  updateStatus: () => ipcRenderer.invoke("app:update-status"),
+  checkUpdate: () => ipcRenderer.invoke("app:update-check"),
+  installUpdate: () => ipcRenderer.invoke("app:update-install"),
+  activity: (busy) => ipcRenderer.send("app:activity", { busy: Boolean(busy) }),
+  onUpdateStatus: callback => ipcRenderer.on("app:update-status", (_event, value) => callback(value)),
+  onPrepareUpdate: callback => ipcRenderer.on("app:update-prepare", async (_event, nonce) => {
+    const ready = await Promise.resolve().then(callback).catch(() => false);
+    ipcRenderer.send("app:update-prepared", { nonce, ready });
+  }),
+  onCancelUpdate: callback => ipcRenderer.on("app:update-cancel", () => callback()),
   onResume: (callback) => ipcRenderer.on("app:resume", () => callback()),
   onSessionExpired: (callback) => ipcRenderer.on("app:session-expired", () => callback()),
   server: () => ipcRenderer.invoke("app:server"),
