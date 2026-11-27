@@ -1,0 +1,2 @@
+FROM uai-pbx-web:20261127-queue-board
+COPY public/index.html public/workspace.css /opt/pbx-sip-admin/public/
