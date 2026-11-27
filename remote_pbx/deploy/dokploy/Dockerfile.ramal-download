@@ -1,0 +1,2 @@
+FROM uai-pbx-web:20261127-auto-update
+COPY public/baixar-ramal /opt/pbx-sip-admin/public/baixar-ramal

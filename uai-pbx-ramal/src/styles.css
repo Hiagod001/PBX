@@ -440,7 +440,11 @@ input {
   font-weight: 900;
 }
 .update-settings { display: grid; gap: 8px; padding-block: 12px; border-bottom: 1px solid var(--border, #3f3f46); margin-bottom: 12px; }
-.update-notice { margin-top: 12px; padding: 12px; border: 1px solid var(--border, #3f3f46); border-radius: 12px; background: var(--panel, #18181b); font-size: 12px; line-height: 1.5; }
-.update-notice p { margin: 0 0 8px; }
+.update-notice { inset: 55px 12px auto auto; margin: 0; width: min(280px, 90vw); padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); box-shadow: 0 8px 24px #0003; font-size: 13px; line-height: 1.5; }
+.update-notice p { margin: 0; }
+.update-notice button { margin-top: 12px; }
 .app-header-actions { display: flex; align-items: center; gap: 8px; }
-.release-test-badge { padding: 4px 7px; border-radius: 6px; background: var(--status-bg); color: var(--status-ink); font-size: 10px; font-weight: 700; white-space: nowrap; }
+.header-update { min-height: 32px; padding: 4px 8px; border: 1px solid var(--status-ink); border-radius: 7px; background: var(--status-bg); color: var(--status-ink); font-size: 12px; white-space: nowrap; }
+@media (max-width: 389px) {
+  .app-header:has(.header-update:not(.hidden)) .app-brand span { display: none; }
+}

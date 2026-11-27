@@ -1323,7 +1323,6 @@ window.addEventListener("DOMContentLoaded", async () => {
     const info = await window.pbxAPI.server();
     state.serverUrl = info.serverUrl;
     document.querySelector("#appVersion").textContent = info.version ? `Versão ${info.version}` : "";
-    document.querySelector("#releaseTestBadge").classList.toggle("hidden", info.version !== "1.0.14");
     await loadAudioDevices();
     if (info.extension) await showPhone(info.extension);
     else showLogin();
@@ -1348,7 +1347,9 @@ function showUpdateStatus(update = {}) {
   const text = messages[update.phase] || messages.idle;
   document.querySelector("#updateStatus").textContent = text;
   document.querySelector("#updateNoticeText").textContent = text;
-  document.querySelector("#updateNotice").classList.toggle("hidden", !["downloading", "ready", "installing"].includes(update.phase));
+  const available = update.phase === "downloading" || update.phase === "ready";
+  document.querySelector("#headerUpdateBtn").classList.toggle("hidden", !available);
+  if (!available && update.phase !== "installing") document.querySelector("#updateNotice").hidePopover();
   const install = document.querySelector("#installUpdateBtn");
   install.classList.toggle("hidden", update.phase !== "ready");
   install.disabled = updateIsBusy();

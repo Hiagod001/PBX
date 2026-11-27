@@ -8,7 +8,13 @@
     <link rel="stylesheet" href="workspace.css" />
   </head>
   <body>
-    <header class="app-header"><div class="app-brand"><img src="../assets/icon.png" alt="" /><strong>UAI PBX</strong><span>Ramal</span></div><div class="app-header-actions"><span id="releaseTestBadge" class="release-test-badge hidden" title="Esta versão confirma o teste da atualização automática">Teste 1.0.14</span><button id="themeBtn" class="mini-btn" type="button" title="Alternar tema"><i data-lucide="sun"></i></button></div></header>
+    <header class="app-header">
+      <div class="app-brand"><img src="../assets/icon.png" alt="" /><strong>UAI PBX</strong><span>Ramal</span></div>
+      <div class="app-header-actions">
+        <button id="headerUpdateBtn" class="header-update hidden" type="button" popovertarget="updateNotice">Atualização disponível</button>
+        <button id="themeBtn" class="mini-btn" type="button" title="Alternar tema"><i data-lucide="sun"></i></button>
+      </div>
+    </header>
     <main class="app">
       <section id="loginView" class="panel">
         <div class="login-content">
@@ -165,8 +171,8 @@
         <p id="callMessage" class="message ok" role="status" aria-live="polite">Ramal autenticado.</p>
       </section>
 
-      <section id="updateNotice" class="update-notice hidden" aria-live="polite">
-        <p id="updateNoticeText"></p>
+      <section id="updateNotice" class="update-notice" popover aria-label="Atualização do aplicativo">
+        <p id="updateNoticeText" role="status"></p>
         <button id="installUpdateBtn" class="secondary-btn hidden" type="button">Atualizar agora</button>
       </section>
       <section id="pauseOverlay" class="pause-overlay hidden" aria-label="Ramal em pausa">
