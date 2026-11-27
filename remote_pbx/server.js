@@ -3864,10 +3864,14 @@ app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.join(__dirname, "public"), { setHeaders: staticCacheHeaders }));
 const desktopReleaseDir = path.join(__dirname, "data", "desktop-releases");
 app.use("/updates", require("./src/desktop-updates").desktopUpdateRouter(desktopReleaseDir));
-app.get("/downloads/UAI-PBX-Ramal-Setup.exe", async (_req, res) => {
+app.get("/downloads/UAI-PBX-Ramal-Setup.exe", async (req, res) => {
+  res.vary("User-Agent");
+  res.setHeader("Cache-Control", "no-cache");
+  if (/^(?:WhatsApp|facebookexternalhit|meta-externalfetcher)(?:\/|\s|$)/i.test(req.get("User-Agent") || "")) {
+    return res.sendFile(path.join(__dirname, "public", "baixar-ramal", "index.html"));
+  }
   const file = path.join(desktopReleaseDir, "UAI-PBX-Ramal-Setup.exe");
   if (!(await fs.pathExists(file))) return res.status(404).json({ error: "O instalador ainda não está disponível." });
-  res.setHeader("Cache-Control", "no-cache");
   res.download(file, "UAI-PBX-Ramal-Setup.exe");
 });
 app.get("/api/desktop-release", async (_req, res) => {
