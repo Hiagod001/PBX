@@ -1377,7 +1377,8 @@ async function dialerCapacity(config, campaign, campaigns) {
   const queue = (status.queues || []).find((item) => item.id === campaign.destination);
   const members = campaign.destinationType === "extension" ? [campaign.destination] :
     (queue?.agents || []).filter((a) => a.registered && a.status === "available").map((a) => a.number);
-  const held = crmDialer.busyExtensions();
+  let held;
+  try { held = crmDialer.busyExtensions(); } catch { return 0; }
   const free = (status.extensions || []).filter((ext) => ext.captureReady && !held.has(ext.number) && members.includes(ext.number)).length;
   if (!free) return 0;
   const reserved = campaigns.reduce((sum, c) => {
@@ -1956,7 +1957,7 @@ async function readPbxStatusFresh(config) {
   }, new Map());
 
   let deskBusy;
-  try { deskBusy = crmDialer.busyExtensions(); } catch { deskBusy = new Set(); }
+  try { deskBusy = crmDialer.busyExtensions(); } catch { deskBusy = crmDialer.lastBusyExtensions(); }
   const extensions = config.extensions.map((extension) => {
     const endpoint = mergedEndpointStatus(byId, extension.number);
     const pause = pauseRecordFor(manualPauses, extension.number, readAt);
@@ -4193,7 +4194,11 @@ app.post("/api/extensions/protocol", requireExtensionAuth, async (req, res) => {
 });
 
 app.post("/api/extensions/call", requireExtensionAuth, async (req, res) => {
-  if (crmDialer.busyExtensions().has(req.session.extension.number)) return res.status(409).json({ error: "Finalize o atendimento no Campanhas antes de ligar." });
+  try {
+    if (crmDialer.busyExtensions().has(req.session.extension.number)) return res.status(409).json({ error: "Finalize o atendimento no Campanhas antes de ligar." });
+  } catch {
+    return res.status(503).json({ error: "Aguarde um instante enquanto conferimos a disponibilidade do ramal." });
+  }
   const requestedNumber = String(req.body?.number || "").trim();
   if (!/^\d{1,20}$/.test(requestedNumber)) return res.status(400).json({ error: requestedNumber ? "Use somente números, com no máximo 20 dígitos." : "Informe o número para ligar." });
   const config = await getConfig();

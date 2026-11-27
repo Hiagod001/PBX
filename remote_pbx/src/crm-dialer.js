@@ -67,13 +67,17 @@ function startWorker({acknowledge,markConnected}) {
 // AstDB is also read by Asterisk before it rings a device. Keep the last
 // confirmed holds across a CRM outage or a restart of the web process.
 let ast;
+let lastBusy = new Set();
 function holds() {
   const { DatabaseSync } = require("node:sqlite");
-  ast ||= new DatabaseSync("/var/lib/asterisk/astdb.sqlite3", { readOnly: true });
+  if (!ast) {
+    ast = new DatabaseSync("/var/lib/asterisk/astdb.sqlite3", { readOnly: true, timeout: 120 });
+  }
   return ast.prepare("select key,value from astdb where key glob '/UAI_DESK/*' or key glob '/UAI_WRAP/*'").all();
 }
 function busyExtensions() {
-  return new Set(holds().map(row => row.key.split("/")[2]));
+  lastBusy = new Set(holds().map(row => row.key.split("/")[2]));
+  return lastBusy;
 }
 let syncedAt = 0;
 function startAvailability(control, invalidate) {
@@ -81,6 +85,7 @@ function startAvailability(control, invalidate) {
   async function sync() {
     try {
       const rows = holds();
+      lastBusy = new Set(rows.map(row => row.key.split("/")[2]));
       const pending = rows.filter(r => r.key.startsWith("/UAI_WRAP/")).slice(0,128);
       const desk = new Set(rows.filter(r => r.key.startsWith("/UAI_DESK/")).map(r => r.key.split("/")[2]));
       const {busy, delivered} = await request("availability", {attempts: pending.map(r => r.value)});
@@ -97,4 +102,4 @@ function startAvailability(control, invalidate) {
   }
   void sync();
 }
-module.exports={request,callVars,startWorker,uuid,busyExtensions,startAvailability,availabilityFresh:()=>Date.now()-syncedAt<15000};
+module.exports={request,callVars,startWorker,uuid,busyExtensions,lastBusyExtensions:()=>lastBusy,startAvailability,availabilityFresh:()=>Date.now()-syncedAt<15000};
