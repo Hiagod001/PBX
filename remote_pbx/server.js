@@ -17,6 +17,7 @@ const crypto = require("crypto");
 const { staticCacheHeaders, privateApiHeaders } = require("./src/http-cache");
 const { buildReportPdf } = require("./src/report-pdf");
 const { historyStart, historyFilters, keepHistoryTime } = require("./src/call-history");
+const crmDialer = require("./src/crm-dialer");
 const { WhatsAppDialer, whatsappCallFile, whatsappNumber } = require("./src/whatsapp-dialer");
 const trunkPolicy = require("./public/trunk-policy");
 
@@ -805,6 +806,7 @@ async function runAsteriskControl(action, extensionNumber, payload = {}) {
 
   const helper = process.env.ASTERISK_CONTROL_HELPER || "/opt/pbx-sip-admin/scripts/asterisk-control-root.sh";
   const args = [helper, action, extension];
+  if (action === "crm-ack") args.push(payload.family,payload.attempt);
   if (action === "queue-pause") args.push(String(payload.reason || "Pausa"));
   if (action === "hangup") args.push(String(payload.channel || ""));
   if (action === "originate") args.push(String(payload.number || ""));
@@ -916,6 +918,8 @@ function normalizeDialerCampaign(input = {}, previous = null, config = {}) {
 
   return {
     transport,
+    crmMailingId: previous?.crmMailingId || "",
+    crmMailingName: previous?.crmMailingName || "",
     id: previous?.id || safeDialerText(input.id, 50) || dialerId(),
     name: safeDialerText(input.name || previous?.name || "Nova campanha", 80) || "Nova campanha",
     description: safeDialerText(input.description || previous?.description || "", 160),
@@ -941,6 +945,8 @@ function normalizeDialerCampaign(input = {}, previous = null, config = {}) {
       const old = previousByNumber.get(number) || {};
       return {
         number,
+        crmLeadId: old.crmLeadId || "",
+        agentExtension: old.agentExtension || "",
         status: old.status || "pending",
         attempts: Number(old.attempts || 0),
         lastAttemptAt: old.lastAttemptAt || "",
@@ -965,6 +971,7 @@ function dialerStats(campaign) {
     pending: count("pending"),
     inProgress: count("queued"),
     accepted: count("accepted"),
+    agentConnected: rows.filter(l=>l.agentExtension || (campaign.transport==="whatsapp" && l.status==="accepted")).length,
     answered: count("answered"),
     noAnswer: count("no_answer"),
     busy: count("busy"),
@@ -1000,6 +1007,7 @@ function dialerLeadStatusLabel(status, transport = "sip") {
 }
 
 function dialerLeadReasonLabel(lead, transport = "sip") {
+  if (lead.agentExtension) return "Conectada ao ramal "+lead.agentExtension+".";
   if (transport === "whatsapp") return lead.lastResult || ({ pending: "Este número ainda não foi chamado.", queued: "Ligação pelo WhatsApp em andamento." }[lead.status]) || "Confira o resultado desta ligação.";
   const reason = String(lead.lastResult || "").toLowerCase();
   if (lead.status === "accepted") return "A pessoa atendeu, apertou a tecla e foi encaminhada para o atendimento.";
@@ -1038,7 +1046,7 @@ function dialerCampaignReport(campaign) {
     numbers: (campaign.numbers || []).map((lead) => ({
       number: lead.number,
       status: lead.status,
-      statusLabel: dialerLeadStatusLabel(lead.status, campaign.transport),
+      statusLabel: lead.agentExtension ? "Atendida pelo ramal "+lead.agentExtension : dialerLeadStatusLabel(lead.status, campaign.transport),
       attempts: lead.attempts,
       resultLabel: dialerLeadReasonLabel(lead, campaign.transport),
       trunkId: lead.trunkId,
@@ -1116,6 +1124,7 @@ function dialerCallFileContent(config, campaign, lead) {
     "Extension: s",
     "Priority: 1",
     `Setvar: DIALER_CAMPAIGN_ID=${asteriskCallFileValue(campaign.id)}`,
+    ...crmDialer.callVars(campaign,lead),
     `Setvar: DIALER_TARGET=${asteriskCallFileValue(lead.number)}`,
     `Setvar: DIALER_ATTEMPT_ID=${asteriskCallFileValue(lead.attemptId)}`,
     `Setvar: DIALER_TRUNK=${asteriskCallFileValue(trunk)}`,
@@ -1367,6 +1376,19 @@ async function tickDialerCampaigns() {
       campaign.updatedAt = new Date().toISOString();
     }
     return campaigns;
+  });
+}
+
+function startCrmDelivery() {
+  crmDialer.startWorker({
+    acknowledge: (family,attempt)=>runAsteriskControl("crm-ack","00",{family,attempt}),
+    markConnected: event=>updateDialerCampaigns(async campaigns=>{
+      for(const campaign of campaigns) {
+        const lead=campaign.numbers.find(l=>l.attemptId===event.attempt);
+        if(lead) {lead.agentExtension=event.extension; break;}
+      }
+      return campaigns;
+    })
   });
 }
 
@@ -4008,6 +4030,7 @@ app.post("/api/extensions/login", async (req, res) => {
     return res.status(401).json({ error: "Ramal ou senha invalidos" });
   }
 
+  if (req.body.intent === "verify") return res.json({verified:true});
   await regenerateSession(req);
   req.session.extension = publicExtension(matched);
   req.session.extensionAuthFingerprint = extensionFingerprint(matched);
@@ -4847,6 +4870,10 @@ app.get("/api/trunks/registrations", requireAuth, requireAdmin, async (_req, res
   res.json({ states: trunkRegistrationStates(config, registrations), checkedAt: new Date().toISOString() });
 });
 
+app.get("/api/dialer/mailings",requireAuth,requireAdmin,async (_req,res)=>{
+  res.json({mailings:await crmDialer.request("mailings")});
+});
+
 app.get("/api/dialer/campaigns", requireAuth, requireAdmin, async (req, res) => {
   const [config, campaigns, audios] = await Promise.all([getConfig(), readDialerCampaigns(), listIvrAudios()]);
   // Registration health must not hold up the campaign list.
@@ -4885,6 +4912,10 @@ app.post("/api/dialer/campaigns", requireAuth, requireAdmin, async (req, res) =>
   const id = safeDialerText(req.body?.id || "", 50);
   let savedCampaign = null;
   let previousCampaign = null;
+  const mailingId=String(req.body?.crmMailingId || "");
+  if(mailingId && !crmDialer.uuid.test(mailingId)) throw new Error("Lista de contatos inválida.");
+  const mailing=mailingId && !id ? await crmDialer.request("mailings/"+mailingId) : null;
+  if(mailing && !mailing.contacts.length) throw new Error("Esta lista não tem contatos pendentes com telefone disponível.");
 
   await updateDialerCampaigns(async (campaigns) => {
     const previous = id ? campaigns.find((item) => item.id === id) : null;
@@ -4894,7 +4925,16 @@ app.post("/api/dialer/campaigns", requireAuth, requireAdmin, async (req, res) =>
       error.status = 409;
       throw error;
     }
-    const campaign = normalizeDialerCampaign(req.body || {}, previous, config);
+    if(id && !previous) throw new Error("Campanha não encontrada.");
+    if(previous && mailingId && previous.crmMailingId!==mailingId) throw new Error("Crie uma nova campanha para escolher outra lista.");
+    const numbers=mailing ? mailing.contacts.map(l=>l.phone) : previous?.crmMailingId ? previous.numbers.map(l=>l.number) : req.body.numbers;
+    const campaign = normalizeDialerCampaign({...req.body,numbers}, previous, config);
+    if(mailing) {
+      campaign.crmMailingId=mailingId;
+      campaign.crmMailingName=mailing.name;
+      const leadIds=new Map(mailing.contacts.map(l=>[l.phone,l.lead_id]));
+      for(const lead of campaign.numbers) lead.crmLeadId=leadIds.get(lead.number);
+    }
     if (campaign.transport !== "whatsapp" && (!campaign.audio || !audios.some((audio) => audio.playback === campaign.audio))) throw new Error("Selecione um audio valido para a campanha.");
     if (!dialerDestinationExists(config, campaign.destinationType, campaign.destination)) throw new Error("Selecione uma fila ou ramal valido para receber os atendimentos.");
     if (campaign.transport !== "whatsapp" && !campaign.trunkIds.length) throw new Error("Selecione pelo menos um tronco ativo para a campanha.");
@@ -4972,6 +5012,10 @@ app.post("/api/dialer/campaigns/:id/retry", requireAuth, requireAdmin, async (re
     const key = source.id + ":" + crypto.createHash("sha256").update(JSON.stringify(retry.map((l) => [l.number,l.attemptId,l.lastAttemptAt]))).digest("hex");
     if (all.some((c) => c.retrySource === key)) return all;
     const draft = normalizeDialerCampaign({ ...source, id: dialerId(), name: "Nova tentativa · " + source.name, numbers: retry.map((l) => l.number) }, null, config);
+    draft.crmMailingId=source.crmMailingId || "";
+    draft.crmMailingName=source.crmMailingName || "";
+    const leadIds=new Map(retry.map(l=>[l.number,l.crmLeadId]));
+    for(const lead of draft.numbers) lead.crmLeadId=leadIds.get(lead.number) || "";
     return [...all, { ...draft, retrySource: key }];
   });
   res.json({ campaigns: campaigns.map(publicDialerCampaign) });
@@ -4992,7 +5036,7 @@ app.post("/api/dialer/campaigns/:id/reset", requireAuth, requireAdmin, async (re
         status: "draft",
         nextDialAt: "",
         updatedAt: new Date().toISOString(),
-        numbers: (item.numbers || []).map((lead) => ({ ...lead, status: "pending", attempts: 0, lastAttemptAt: "", lastResult: "", trunkId: "", attemptId: "", callFile: "", nextAttemptAt: "", completedAt: "" }))
+        numbers: (item.numbers || []).map((lead) => ({ ...lead, agentExtension:"", status: "pending", attempts: 0, lastAttemptAt: "", lastResult: "", trunkId: "", attemptId: "", callFile: "", nextAttemptAt: "", completedAt: "" }))
       };
       return campaign;
     })
@@ -5055,7 +5099,7 @@ async function startServer() {
   const config = await getConfig();
   await generateAsteriskConfigs(config);
   await syncStoredQueuePauses();
-  if (process.env.PBX_MIGRATION_TEST !== "true") startDialerEngine();
+  if (process.env.PBX_MIGRATION_TEST !== "true") { startDialerEngine(); startCrmDelivery(); }
   if (process.env.PBX_MIGRATION_TEST !== "true") startMaintenanceJobs();
   return app.listen(port, host, () => {
     console.log(`PBX SIP Admin rodando em http://${host}:${port}`);

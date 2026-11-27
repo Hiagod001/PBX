@@ -1,0 +1,5 @@
+FROM uai-pbx-web:20261127-ixc-contatos
+COPY public/app.js public/index.html /opt/pbx-sip-admin/public/
+COPY server.js /opt/pbx-sip-admin/
+COPY src/asterisk.js src/whatsapp-dialer.js src/crm-dialer.js /opt/pbx-sip-admin/src/
+COPY --chmod=0755 scripts/asterisk-control-root.sh /opt/pbx-sip-admin/scripts/

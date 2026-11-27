@@ -5310,7 +5310,10 @@ function renderDialer() {
         ${fieldBlock("Espera da tecla", "Segundos para aguardar a escolha depois do audio.", `<input name="responseTimeout" type="number" min="3" max="60" value="${Number(editing?.responseTimeout || 8)}" />`, "dialer-field-metric")}
         <div class="dialer-form-section-title"><span>Lista de contatos</span></div>
         ${fieldBlock("Descricao", "Observacao interna opcional.", `<input name="description" value="${escapeHtml(editing?.description || "")}" />`, "dialer-field-description")}
-        ${fieldBlock("Numeros", "Cole um numero por linha, ou separados por virgula.", `<textarea name="numbers" rows="5" spellcheck="false" placeholder="31999999999&#10;31988888888" required>${escapeHtml(editing?.numberText || "")}</textarea>`, "dialer-field-numbers")}
+        ${fieldBlock("Lista de contatos", "Vincule uma lista do Uai Campanhas para registrar o atendimento no histórico do cliente.", editing
+          ? `<input readonly value="${escapeHtml(editing.crmMailingName || "Números informados manualmente")}" />`
+          : `<select name="crmMailingId" data-crm-mailing><option value="">Informar números manualmente</option></select>`, "dialer-field-numbers")}
+        ${fieldBlock("Números", "Para discar manualmente, cole um número por linha. Uma lista vinculada usa um telefone por contato.", `<textarea name="numbers" rows="5" spellcheck="false" ${editing?.crmMailingId ? "readonly" : "required"}>${escapeHtml(editing?.numberText || "")}</textarea>`, "dialer-field-numbers")}
         <div class="form-actions dialer-form-actions"><button class="primary-btn" type="submit"><i data-lucide="save"></i>${editing ? "Atualizar campanha" : "Salvar campanha"}</button></div>
       </form>
     </section>` : "";
@@ -6974,7 +6977,7 @@ async function openDialerCampaignReport(id) {
     <section class="modal-card dialer-report-modal" role="dialog" aria-modal="true" aria-label="Relatório da campanha">
       <header><div><p class="eyebrow">Relatório da campanha</p><h3>${escapeHtml(campaign.name)}</h3></div><button class="icon-btn" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header>
       <div class="dialer-report-content">
-        <p class="dialer-report-progress">Contato efetivo entre os resultados concluídos: ${stats.completed ? Math.round(100 * (stats.accepted + stats.answered) / stats.completed) + "%" : "aguardando resultados"} · Inclui quem atendeu e quem pediu atendimento.</p>
+        <p class="dialer-report-progress">Clientes que atenderam: ${stats.completed ? Math.round(100 * (stats.accepted + stats.answered) / stats.completed) + "%" : "aguardando resultados"} · Conexões confirmadas com atendente: ${Number(stats.agentConnected || 0)}.</p>
         <p class="dialer-report-progress">${Number(stats.total || 0)} números · ${Number(stats.pending || 0)} aguardando ligação · ${Number(stats.inProgress || 0)} ligando agora</p>
         <div class="dialer-report-summary">
           <span class="success"><strong>${Number(stats.accepted || 0)}</strong><b>${campaign.transport === "whatsapp" ? "Conversou com um atendente" : "Atendeu e pediu atendimento"}</b><small>${campaign.transport === "whatsapp" ? "O cliente e o atendente foram conectados." : "Apertou a tecla e foi encaminhado."}</small></span>
@@ -7547,6 +7550,10 @@ document.addEventListener("click", async (event) => {
       state.dialerEditorOpen = true;
       state.dialerEditingNew = true;
       renderDialer();
+      const picker=pages.dialer.querySelector("[data-crm-mailing]");
+      if(picker) api("/api/dialer/mailings").then(data=>{
+        for(const mailing of data.mailings || []) picker.add(new Option(mailing.name,mailing.id));
+      }).catch(()=>setMessage("Listas do Uai Campanhas indisponíveis. Você ainda pode informar números manualmente.","error"));
       iconRefresh();
       return;
     }
@@ -9013,6 +9020,12 @@ document.addEventListener("input", (event) => {
 });
 
 document.addEventListener("change", async (event) => {
+  if(event.target.matches("[data-crm-mailing]")){
+    const field=event.target.form.elements.namedItem("numbers");
+    field.disabled=Boolean(event.target.value);
+    field.required=!field.disabled;
+    field.closest("label")?.classList.toggle("muted",field.disabled);
+  }
   if (event.target.id === "dialerAudioFile") {
     const input = event.target;
     const file = input.files?.[0];

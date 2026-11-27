@@ -1,0 +1,259 @@
+diff --git a/server/api.mjs b/server/api.mjs
+--- a/server/api.mjs
++++ b/server/api.mjs
+@@ -3,6 +3,7 @@
+ import http from 'node:http';
+ import { hashPassword, checkPassword, sign, verify, digest, randomToken } from './security.mjs';
+
++import { installPbx } from './pbx.mjs';
+ const sql=postgres(process.env.DATABASE_URL,{max:10});
+ const app=express();
+ app.use((req,res,next)=>{
+@@ -45,6 +46,7 @@
+  if(!u)throw fail(401,'Sessão encerrada ou usuário desativado');
+  return {u,claims};
+ }
++installPbx(app,{sql,sessionUser,fail});
+ async function issueSession(u,existing){
+  const refresh=randomToken();
+  const [s]=existing ? await sql`update auth.sessions set refresh_hash=${digest(refresh)},expires_at=now()+interval '7 days' where id=${existing} returning id` : await sql`insert into auth.sessions(user_id,refresh_hash) values(${u.id},${digest(refresh)}) returning id`;
+diff --git a/server/pbx.mjs b/server/pbx.mjs
+new file mode 100644
+--- /dev/null
++++ b/server/pbx.mjs
+@@ -0,0 +1,125 @@
++import express from 'express';
++import https from 'node:https';
++
++// Reach the public HTTPS router inside Dokploy, keeping host and certificate validation.
++function verifyExtension(extension,password) {
++  const host="uaipbx.uaitelecom.com.br";
++  return new Promise((resolve,reject)=>{
++    const req=https.request({hostname:"dokploy-traefik",servername:host,path:"/api/extensions/login",method:"POST",
++      signal:AbortSignal.timeout(5000),headers:{host,"Content-Type":"application/json"}},res=>{
++      let text="";
++      res.setEncoding("utf8");
++      res.on("data",s=>{text+=s;});
++      res.on("end",()=>{try {resolve(res.statusCode===200 && JSON.parse(text).verified===true);}catch{resolve(false);}});
++      res.on("error",reject);
++    });
++    req.on("error",reject);
++    req.end(JSON.stringify({extension,password,intent:"verify"}));
++  });
++}
++import { createHash } from 'node:crypto';
++
++const uuid = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i;
++
++export function installPbx(app, { sql, sessionUser, fail }) {
++  const router = express.Router();
++  app.use('/pbx', router);
++  router.use(express.json({limit:'8kb'}));
++  async function integration(req) {
++    const token = req.headers.authorization?.match(/^Bearer ([a-f0-9]{64})$/)?.[1];
++    if (!token) throw fail(401,'Integração não autorizada');
++    const hash = createHash('sha256').update(token).digest('hex');
++    const [row] = await sql`select tenant_id from pbx_private.integrations where token_hash=${hash}`;
++    if (!row) throw fail(401,'Integração não autorizada');
++    return row.tenant_id;
++  }
++  router.get('/mailings', async (req,res) => {
++    const tenant = await integration(req);
++    res.json(await sql`select id,name from public.campaigns where tenant_id=${tenant} and status='active' and deleted_at is null order by name,id`);
++  });
++  router.get('/mailings/:id', async (req,res) => {
++    const tenant = await integration(req);
++    const id = req.params.id;
++    if (!uuid.test(id)) throw fail(400,'Lista inválida');
++    const [campaign] = await sql`select name from public.campaigns where tenant_id=${tenant} and id=${id} and status='active' and deleted_at is null`;
++    if (!campaign) throw fail(404,'Lista indisponível');
++    const contacts = await sql`
++      with raw as (
++        select cl.lead_id,cl.queue_position,cl.status,cl.locked_by,cl.lock_expires_at,lp.created_at,
++               regexp_replace(lp.phone,'[^0-9]','','g') as digits
++        from public.campaign_leads cl join public.leads l on l.id=cl.lead_id and l.tenant_id=cl.tenant_id
++        join public.lead_phones lp on lp.lead_id=l.id and lp.tenant_id=l.tenant_id
++        where cl.tenant_id=${tenant} and cl.campaign_id=${id} and l.deleted_at is null
++      ), phones as (
++        select *, case when digits ~ '^55[0-9]{10,11}$' then substring(digits from 3) else digits end as phone from raw
++      ), owned as (
++        select phone from phones where phone ~ '^[1-9][0-9]{9,10}$' group by phone having count(distinct lead_id)=1
++      ), picked as (
++        select distinct on (p.lead_id) p.lead_id,p.phone,p.queue_position from phones p join owned using(phone)
++        where status='pending' and (locked_by is null or lock_expires_at < now())
++        order by p.lead_id,p.created_at,p.phone
++      ) select lead_id,phone from picked order by queue_position,lead_id`;
++    res.json({name:campaign.name,contacts});
++  });
++  async function identity(req) {
++    const {u,claims} = await sessionUser(req);
++    const [profile] = await sql`select tenant_id from public.profiles where id=${u.id} and active`;
++    return {user:u.id, session:claims.session_id, tenant:profile.tenant_id};
++  }
++  const throttle = new Map();
++  router.post('/binding',async (req,res) => {
++    const {user,session,tenant} = await identity(req);
++    const {extension,password} = req.body || {};
++    if (!/^\d{2,8}$/.test(extension) || typeof password !== 'string' || !password || password.length>128) throw fail(400,'Informe o ramal e a senha');
++    const now=Date.now();
++    for(const [key,v] of throttle) if(v.until<=now) throttle.delete(key);
++    const budget=throttle.get(user) || {count:0,until:now+60000};
++    if (budget.count>=5) throw fail(429,'Aguarde um minuto para tentar novamente');
++    budget.count++; throttle.set(user,budget);
++    if(!await verifyExtension(extension,password)) throw fail(403,'Confira o ramal e a senha do PBX');
++    await sql.begin(async tx=>{
++      await tx`select pg_advisory_xact_lock(hashtext(${tenant}))`;
++      await tx`update pbx_private.bindings b set ended_at=s.expires_at from auth.sessions s where b.session_id=s.id and b.tenant_id=${tenant} and b.ended_at is null and s.expires_at<=now()`;
++      const [other]=await tx`select user_id from pbx_private.bindings where tenant_id=${tenant} and extension=${extension} and ended_at is null`;
++      if(other && other.user_id!==user) throw fail(409,'Este ramal já está vinculado a outro atendente');
++      await tx`update pbx_private.bindings set ended_at=now() where tenant_id=${tenant} and ended_at is null and (session_id=${session} or extension=${extension})`;
++      await tx`insert into pbx_private.bindings(tenant_id,extension,session_id,user_id) values(${tenant},${extension},${session},${user})`;
++    });
++    throttle.delete(user);
++    res.json({extension});
++  });
++  router.delete('/binding',async(req,res)=>{
++    const {session}=await identity(req);
++    await sql`update pbx_private.bindings set ended_at=now() where session_id=${session} and ended_at is null`;
++    res.sendStatus(204);
++  });
++  router.get('/desk',async(req,res)=>{
++    const {session,tenant}=await identity(req);
++    const [binding]=await sql`select id,extension from pbx_private.bindings where session_id=${session} and ended_at is null`;
++    const [call]=binding ? await sql`select coalesce(nullif(l.full_name,''),l.razao_social,l.nome_fantasia) as name,l.document_number as document,a.phone,a.campaign_name as campaign,l.cidade,l.uf,l.custom_data as extra
++      from pbx_private.calls pc join public.attendances a on a.id=pc.attendance_id join public.leads l on l.id=a.lead_id and l.tenant_id=pc.tenant_id
++      where pc.binding_id=${binding.id} and pc.tenant_id=${tenant} and a.finished_at is null and a.started_at>now()-interval '12 hours' and l.deleted_at is null order by a.started_at desc limit 1` : [];
++    res.json({extension:binding?.extension || '',call:call || null});
++  });
++  router.post('/events',async(req,res)=>{
++    const tenant=await integration(req);
++    const {attempt,mailing,lead,extension,phone,start,end}=req.body || {};
++    if(!/^(?:wa|dlr)-[0-9a-f-]{12,50}$/.test(attempt) || !uuid.test(mailing) || !uuid.test(lead) || !/^\d{2,8}$/.test(extension) || !/^\d{8,15}$/.test(phone) || !Number.isSafeInteger(start) || start<1 || start>Date.now()/1000+60 || (end!=null && (!Number.isSafeInteger(end)||end<start||end>Date.now()/1000+60))) throw fail(400,'Dados da chamada inválidos');
++    await sql.begin(async tx=>{
++      await tx`select pg_advisory_xact_lock(hashtext(${tenant+attempt}))`;
++      let [call]=await tx`select attendance_id from pbx_private.calls where tenant_id=${tenant} and attempt=${attempt}`;
++      if(!call){
++        const [list]=await tx`select c.name from public.campaign_leads cl join public.campaigns c on c.id=cl.campaign_id and c.tenant_id=cl.tenant_id where cl.campaign_id=${mailing} and cl.lead_id=${lead} and cl.tenant_id=${tenant}`;
++        if(!list) throw fail(404,'Contato fora da campanha');
++        const [agent]=await tx`select b.id,b.user_id,p.full_name from pbx_private.bindings b join public.profiles p on p.id=b.user_id left join auth.sessions s on s.id=b.session_id where b.tenant_id=${tenant} and b.extension=${extension} and b.started_at < to_timestamp(${start}+1) and coalesce(b.ended_at,s.expires_at)>to_timestamp(${start}) order by b.started_at desc limit 1`;
++        const [a]=await tx`insert into public.attendances(tenant_id,lead_id,campaign_id,campaign_name,user_id,user_name,service_status_name,counts_as_contact,started_at,phone,notes)
++          values(${tenant},${lead},${mailing},${list.name},${agent?.user_id||null},${agent?.full_name||'Ramal '+extension},'Atendida pelo Discador',true,to_timestamp(${start}),${phone},${'Discador · Ramal '+extension}) returning id`;
++        await tx`insert into pbx_private.calls(tenant_id,attempt,extension,binding_id,attendance_id) values(${tenant},${attempt},${extension},${agent?.id||null},${a.id})`;
++        await tx`update public.campaign_leads set status='worked',worked_at=to_timestamp(${start}),last_attendance_id=${a.id} where tenant_id=${tenant} and campaign_id=${mailing} and lead_id=${lead} and status='pending' and (locked_by is null or locked_by=${agent?.user_id||null} or lock_expires_at<now())`;
++        call={attendance_id:a.id};
++      }
++      if(end!=null) await tx`update public.attendances set finished_at=to_timestamp(${end}),duration_seconds=${end-start} where id=${call.attendance_id} and finished_at is null`;
++    });
++    res.json({ok:true});
++  });
++}
+diff --git a/src/components/pbx-desk.tsx b/src/components/pbx-desk.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/components/pbx-desk.tsx
+@@ -0,0 +1,59 @@
++import { useEffect, useState } from "react";
++import { supabase } from "@/integrations/supabase/client";
++import { Button } from "@/components/ui/button";
++import { Input } from "@/components/ui/input";
++
++type Call = {name:string; document:string; phone:string; campaign:string; cidade:string; uf:string; extra:Record<string,unknown>};
++type Desk = {extension:string; call:Call|null};
++
++async function request(path:string, options?:RequestInit) {
++  const {data} = await supabase.auth.getSession();
++  if (!data.session) throw new Error("Entre novamente para vincular seu ramal.");
++  const res=await fetch("/backend/pbx/"+path,{...options,headers:{Authorization:"Bearer "+data.session.access_token,"Content-Type":"application/json"},cache:"no-store"});
++  if(res.status===204) return null;
++  const result=await res.json();
++  if(!res.ok) throw new Error(result.message || "Não foi possível consultar o Discador.");
++  return result;
++}
++
++export function PbxDesk() {
++  const [desk,setDesk]=useState<Desk|null>(null);
++  const [editing,setEditing]=useState(false);
++  const [message,setMessage]=useState("");
++  const [busy,setBusy]=useState(false);
++  useEffect(()=>{
++    let active=true;
++    let timer:ReturnType<typeof setTimeout>;
++    async function refresh(){
++      let delay=3000;
++      try { const next=await request("desk"); if(active) setDesk(next); if(!next.extension) delay=15000; }
++      catch { delay=15000; if(active) setDesk(null); }
++      if(active) timer=setTimeout(refresh,delay);
++    }
++    void refresh();
++    return ()=>{active=false;clearTimeout(timer);};
++  },[]);
++  const call=desk?.call;
++  return <section aria-label="Ramal do Discador" className="border-b bg-card px-4 py-2 text-sm lg:px-8">
++    <div className="flex flex-wrap items-center gap-3"><strong>{desk?.extension ? "Ramal "+desk.extension : "Discador"}</strong>
++      <Button size="sm" variant="outline" onClick={()=>setEditing(!editing)}>{editing?"Fechar":desk?.extension?"Alterar ramal":"Vincular meu ramal"}</Button></div>
++    {editing && <form className="mt-2 flex flex-wrap items-end gap-2" onSubmit={async e=>{
++      e.preventDefault(); const data=new FormData(e.currentTarget); setBusy(true); setMessage("");
++      try {const result=await request("binding",{method:"POST",body:JSON.stringify(Object.fromEntries(data))});setDesk({extension:result.extension,call:null});setEditing(false);}
++      catch(err){setMessage((err as Error).message);} finally{setBusy(false);}
++    }}>
++      <label>Ramal<Input name="extension" inputMode="numeric" pattern="[0-9]{2,8}" maxLength={8} required defaultValue={desk?.extension}/></label>
++      <label>Senha do ramal<Input name="password" type="password" maxLength={128} required /></label>
++      <Button size="sm" disabled={busy}>Vincular</Button>
++      {desk?.extension && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={async()=>{
++        setBusy(true);try{await request("binding",{method:"DELETE"});setDesk({extension:"",call:null});setEditing(false);setMessage("");}catch(err){setMessage((err as Error).message);}finally{setBusy(false);}
++      }}>Desvincular</Button>}
++    </form>}
++    {message && <p role="alert">{message}</p>}
++    {call && <div aria-live="polite" className="my-2 rounded-md border-l-4 border-primary bg-muted p-3">
++      <p className="text-xs">{call.campaign} · Em atendimento</p><strong>{call.name}</strong>
++      <p>{[call.phone,call.document && "CPF/CNPJ "+call.document,call.cidade,call.uf].filter(Boolean).join(" · ")}</p>
++      {Object.entries(call.extra||{}).filter(([,v])=>typeof v==="string"||typeof v==="number").map(([key,value])=><p key={key}>{key}: {String(value)}</p>)}
++    </div>}
++  </section>;
++}
+diff --git a/src/routes/_authenticated/app/route.tsx b/src/routes/_authenticated/app/route.tsx
+--- a/src/routes/_authenticated/app/route.tsx
++++ b/src/routes/_authenticated/app/route.tsx
+@@ -17,6 +17,7 @@
+ import { AppTopbar } from "@/components/app-topbar";
+ import { AttendanceExitProvider } from "@/components/attendance-exit-guard";
+ import { UaiBrand } from "@/components/uai-brand";
++import { PbxDesk } from "@/components/pbx-desk";
+ import { LeadSearch } from "@/components/lead-search";
+ import { Button } from "@/components/ui/button";
+ import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+@@ -171,6 +172,7 @@
+           </Sheet>
+         } />
+
++        {ready && profile && area === "atend" && !blocked && <PbxDesk />}
+         <main className="min-w-0 flex-1 p-4 lg:p-8">
+           {(!ready && !profile) || blocked ? (
+             <div className="flex items-center gap-2 text-sm text-muted-foreground">
+diff --git a/drizzle/migrations/0025_pbx_dialer.sql b/drizzle/migrations/0025_pbx_dialer.sql
+new file mode 100644
+--- /dev/null
++++ b/drizzle/migrations/0025_pbx_dialer.sql
+@@ -0,0 +1,22 @@
++create schema if not exists pbx_private;
++revoke all on schema pbx_private from public, anon, authenticated;
++create table pbx_private.integrations (
++  tenant_id uuid primary key references public.tenants(id), token_hash text unique not null
++);
++create table pbx_private.bindings (
++  id bigint generated always as identity primary key, tenant_id uuid not null, extension text not null,
++  session_id uuid not null, user_id uuid not null, started_at timestamptz not null default now(), ended_at timestamptz
++);
++create unique index pbx_active_extension on pbx_private.bindings(tenant_id,extension) where ended_at is null;
++create unique index pbx_active_session on pbx_private.bindings(session_id) where ended_at is null;
++create function pbx_private.end_binding() returns trigger language plpgsql as $$
++begin
++  update pbx_private.bindings set ended_at=least(now(),old.expires_at) where session_id=old.id and ended_at is null;
++  return old;
++end $$;
++create trigger pbx_end_binding before delete on auth.sessions for each row execute function pbx_private.end_binding();
++create table pbx_private.calls (
++  tenant_id uuid not null, attempt text not null, extension text not null, binding_id bigint references pbx_private.bindings,
++  attendance_id uuid not null unique references public.attendances(id) on delete cascade, primary key(tenant_id,attempt)
++);
++create index pbx_calls_binding on pbx_private.calls(binding_id);

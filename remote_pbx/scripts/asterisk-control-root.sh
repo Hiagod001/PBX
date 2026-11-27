@@ -32,6 +32,10 @@ channel_belongs_to_extension() {
 }
 
 case "$ACTION" in
+  crm-ack)
+    [[ "$VALUE" =~ ^UAI_(CONNECT|END)$ && "$EXTRA" =~ ^(dlr|wa)-[0-9a-f-]{12,50}$ ]] || exit 2
+    /usr/sbin/asterisk -rx "database del ${VALUE} ${EXTRA}"
+    ;;
   queue-pause)
     /usr/sbin/asterisk -rx "database put UAI_PAUSED ${EXTENSION} 1"
     /usr/sbin/asterisk -rx "queue pause member Local/${EXTENSION}@queue-member/n"

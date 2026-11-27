@@ -1,3 +1,4 @@
+const {callVars} = require("./crm-dialer");
 const fs = require("fs/promises");
 const crypto = require("crypto");
 
@@ -18,6 +19,7 @@ function whatsappCallFile(campaign, lead, address = "127.0.0.1:3099") {
     `Channel: AudioSocket/${address}/${lead.waCallId}/c(slin)`,
     `CallerID: WhatsApp <${phone}>`, `Account: ${lead.attemptId}`,
     "MaxRetries: 0", "WaitTime: 15", "Context: dialer-whatsapp", "Extension: s", "Priority: 1",
+    ...callVars(campaign,lead),
     `Setvar: __WA_ATTEMPT_ID=${lead.attemptId}`, `Setvar: __WA_TARGET=${phone}`,
     `Setvar: __WA_CAMPAIGN_ID=${campaign.id}`, `Setvar: WA_DEST_TYPE=${campaign.destinationType}`,
     `Setvar: WA_DESTINATION=${campaign.destination}`, "Archive: yes", ""

@@ -268,6 +268,8 @@ function renderDialerContext(lines, config) {
   lines.push(" same => n,Hangup()");
   lines.push("exten => accepted,1,NoOp(Discador aceito ${DIALER_CAMPAIGN_ID} ${DIALER_TARGET})");
   lines.push(" same => n,Set(CDR(userfield)=dialer:${DIALER_ATTEMPT_ID}:accepted:${DIALER_TARGET})");
+  lines.push(" same => n,Set(CALLERID(num)=${DIALER_TARGET})");
+  lines.push(" same => n,Set(CALLERID(name)=${DIALER_TARGET})");
   lines.push(" same => n,Gosub(record-call,s,1(${DIALER_TARGET},${DIALER_DESTINATION}))");
   lines.push(" same => n,UserEvent(DialerAccept,Campaign:${DIALER_CAMPAIGN_ID},Number:${DIALER_TARGET},Digit:${DIALER_DIGIT})");
   lines.push(" same => n,GotoIf($[\"${DIALER_DEST_TYPE}\"=\"queue\"]?queue)");
@@ -275,7 +277,7 @@ function renderDialerContext(lines, config) {
   lines.push(" same => n,Hangup()");
   lines.push(" same => n(queue),Gosub(queue-${DIALER_DESTINATION},s,1)");
   lines.push(" same => n,Hangup()");
-  lines.push(" same => n(extension),Dial(${PJSIP_DIAL_CONTACTS(${DIALER_DESTINATION})}&${PJSIP_DIAL_CONTACTS(web-${DIALER_DESTINATION})},60,tT)");
+  lines.push(" same => n(extension),Dial(${PJSIP_DIAL_CONTACTS(${DIALER_DESTINATION})}&${PJSIP_DIAL_CONTACTS(web-${DIALER_DESTINATION})},60,tTU(pbx-agent-connected))");
   lines.push(" same => n,Hangup()");
   lines.push("exten => i,1,Hangup()");
   lines.push("exten => t,1,Hangup()");
@@ -301,12 +303,26 @@ function renderDialerContext(lines, config) {
     appendCapturableQueue(lines, queue, `waWait${index}`, true);
     lines.push(" same => n,Hangup()");
   });
+  lines.push("", "[pbx-agent-connected]");
+  lines.push("exten => s,1,NoOp(Atendimento do Discador)");
+  lines.push(' same => n,GotoIf($["${UAI_ATTEMPT}"=""]?done)');
+  lines.push(" same => n,Set(AGENT_DEVICE=${CHANNEL(endpoint)})");
+  lines.push(" same => n,Set(AGENT_EXT=${FILTER(0-9,${AGENT_DEVICE})})");
+  lines.push(' same => n,GotoIf($["${AGENT_EXT}"=""]?done)');
+  lines.push(" same => n,Set(AGENT_RECORD=${EPOCH}|${AGENT_EXT}|${UAI_MAILING}|${UAI_LEAD}|${UAI_PHONE})");
+  lines.push(" same => n,Set(DB(UAI_CONNECT/${UAI_ATTEMPT})=${AGENT_RECORD})");
+  lines.push(" same => n,Set(CHANNEL(hangup_handler_push)=pbx-agent-ended,s,1(${UAI_ATTEMPT},${AGENT_RECORD}))");
+  lines.push(" same => n(done),Return()");
+  lines.push("", "[pbx-agent-ended]");
+  lines.push("exten => s,1,Set(DB(UAI_END/${ARG1})=${ARG2}|${EPOCH})");
+  lines.push(" same => n,Return()");
   lines.push("", "[wa-agent-connected]");
   lines.push("exten => s,1,NoOp(Atendente conectado ao WhatsApp ${WA_ATTEMPT_ID})");
   lines.push(" same => n,Set(CDR(accountcode)=${WA_ATTEMPT_ID})");
   lines.push(" same => n,Set(CDR(trunk)=WhatsApp)");
   lines.push(" same => n,Set(CDR(direction)=outbound)");
   lines.push(" same => n,Set(CDR(userfield)=dialer:${WA_ATTEMPT_ID}:accepted:${WA_TARGET}:whatsapp)");
+  lines.push(' same => n,ExecIf($["${CHANNEL(channeltype)}"="PJSIP"]?Gosub(pbx-agent-connected,s,1))');
   lines.push(" same => n,Return()");
 }
 
@@ -778,7 +794,8 @@ function renderExtensions(config) {
   lines.push("exten => _X!,1,NoOp(Membro de fila ${EXTEN} chamado por ${CALLERID(num)})");
   lines.push(' same => n,GotoIf($["${DB(UAI_PAUSED/${EXTEN})}"="1"]?paused)');
   lines.push(' same => n,GotoIf($["${CALLERID(num)}"="${EXTEN}"]?self)');
-  lines.push(" same => n,Dial(${PJSIP_DIAL_CONTACTS(${EXTEN})}&${PJSIP_DIAL_CONTACTS(web-${EXTEN})},30,tT)");
+  lines.push(' same => n,Set(AGENT_HOOK=${IF($["${UAI_ATTEMPT}"!=""]?U(pbx-agent-connected):)})');
+  lines.push(" same => n,Dial(${PJSIP_DIAL_CONTACTS(${EXTEN})}&${PJSIP_DIAL_CONTACTS(web-${EXTEN})},30,tT${AGENT_HOOK})");
   lines.push(" same => n,Hangup()");
   lines.push(" same => n(self),NoOp(Ignorando chamada da fila para o proprio ramal ${EXTEN})");
   lines.push(" same => n,Hangup(21)");
@@ -816,7 +833,9 @@ function renderExtensions(config) {
     lines.push(` same => n,Set(CAPTURE_WEB=\${PJSIP_DIAL_CONTACTS(${browserEndpoint(target)})})`);
     lines.push(' same => n,Set(CAPTURE_CONTACTS=${CAPTURE_PRIMARY}${IF($["${CAPTURE_PRIMARY}"!="" & "${CAPTURE_WEB}"!=""]?&:)}${CAPTURE_WEB})');
     lines.push(' same => n,GotoIf($["${CAPTURE_CONTACTS}"=""]?done)');
-    lines.push(" same => n,Dial(${CAPTURE_CONTACTS},20,tT${ARG1})");
+    lines.push(' same => n,Set(CAPTURE_HOOK=${ARG1})');
+    lines.push(' same => n,ExecIf($["${UAI_ATTEMPT}"!="" & "${ARG1}"=""]?Set(CAPTURE_HOOK=U(pbx-agent-connected)))');
+    lines.push(" same => n,Dial(${CAPTURE_CONTACTS},20,tT${CAPTURE_HOOK})");
     lines.push(' same => n,ExecIf($["${DIALSTATUS}"="ANSWER"]?Hangup())');
     lines.push(" same => n(done),Set(GROUP(pbx-capture)=)");
     lines.push(" same => n,Return()");
@@ -1045,6 +1064,7 @@ function renderModules() {
     "load = format_wav_gsm.so",
     "load = format_wav.so",
     "load = func_callerid.so",
+    "load = func_channel.so",
     "load = func_cdr.so",
     "load = func_cut.so",
     "load = func_db.so",
