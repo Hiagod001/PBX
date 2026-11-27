@@ -939,7 +939,7 @@ function ivrMenuRecords({ includeInactive = true } = {}) {
 
 function ivrMenuRecordById(id = "main") {
   const key = id === "main" ? "main" : String(id || "");
-  return ivrMenuRecords().find((record) => record.id === key || record.key === key) || ivrMenuRecords()[0];
+  return ivrMenuRecords().find((record) => record.id === key);
 }
 
 function ivrEditingRecord() {
@@ -986,6 +986,10 @@ function closeIvrBuilder({ replace = true } = {}) {
 function syncIvrBuilderFromRoute() {
   if (state.activeTab !== "ivr") return;
   const editId = new URLSearchParams(window.location.search).get("edit");
+  if (editId && !ivrMenuRecordById(editId)) {
+    closeIvrBuilder();
+    return;
+  }
   if (editId) {
     state.ivrBuilderOpen = true;
     state.ivrEditingMenuId = editId;
@@ -1022,17 +1026,19 @@ function ivrTargetChoices(selectedType = "extension", selectedValue = "", curren
     ["queue", "Fila", cfg.queues.map((queue, index) => [queue.id, queueLabel(queue, index)])],
     ["ivr", "Menu URA", menus],
     ["trunk", "Tronco", ensureConfigTrunks().map((trunk) => [trunk.id, trunkLabel(trunk)])],
-    ["timeCondition", "Horario", timeConditions]
+    ["timeCondition", "Horário", timeConditions]
   ];
+  if (selectedType && !groups.some(([type]) => type === selectedType)) groups.push([selectedType, selectedType, []]);
+  const values = groups.find(([type]) => type === selectedType)?.[2] || [];
+  if (selectedValue && !values.some(([value]) => value === selectedValue)) values.push([selectedValue, selectedValue]);
   return `
     <select data-ivr-destination-type>
+      ${option("", selectedType, "Sem destino")}
       ${groups.map(([type, label]) => option(type, selectedType, label)).join("")}
     </select>
     <select data-ivr-destination-value>
-      ${groups
-        .find(([type]) => type === selectedType)?.[2]
-        .map(([value, label]) => option(value, selectedValue, label))
-        .join("") || option(selectedValue, selectedValue)}
+      ${option("", selectedValue, "Selecionar destino")}
+      ${values.map(([value, label]) => option(value, selectedValue, label)).join("")}
     </select>
   `;
 }
@@ -1061,18 +1067,17 @@ function eachIvrTimeCondition(callback) {
 }
 
 function createIvrTimeCondition() {
-  const id = `horario-${Date.now().toString(36)}`;
-  const firstExtension = state.config.extensions?.[0]?.number || "201";
+  const id = `horario-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
   return {
     id,
     name: "Horario",
     start: "08:00",
     end: "18:00",
     weekdays: "mon-fri",
-    inDestinationType: "extension",
-    inDestination: firstExtension,
-    outDestinationType: "extension",
-    outDestination: firstExtension
+    inDestinationType: "",
+    inDestination: "",
+    outDestinationType: "",
+    outDestination: ""
   };
 }
 
@@ -1125,10 +1130,6 @@ function ensureIvrDuplicateTargetCards(menu = currentIvrWorkspaceMenu()) {
   const target = menu || state.config.ivr;
   target.duplicateTargetCards = Array.isArray(target.duplicateTargetCards) ? target.duplicateTargetCards : [];
   return target.duplicateTargetCards;
-}
-
-function ivrTargetKey(type, value) {
-  return `${type}:${value}`;
 }
 
 function ivrCardKey(menuKey) {
@@ -1454,19 +1455,14 @@ function ivrMenuIdByKey(menuKey) {
 
 function findIvrOptionByNodeId(nodeId) {
   if (!nodeId) return null;
-  const mainIndex = (state.config.ivr.options || []).findIndex((item) => item.nodeId === nodeId);
-  if (mainIndex >= 0) return { source: "menu", menu: state.config.ivr, menuKey: "main", index: mainIndex, item: state.config.ivr.options[mainIndex] };
-  const menus = ensureIvrMenus();
-  for (let menuIndex = 0; menuIndex < menus.length; menuIndex += 1) {
-    const optionIndex = (menus[menuIndex].options || []).findIndex((item) => item.nodeId === nodeId);
-    if (optionIndex >= 0) return { source: "menu", menu: menus[menuIndex], menuKey: String(menuIndex), index: optionIndex, item: menus[menuIndex].options[optionIndex] };
+  const workspace = ivrEditingRecord();
+  for (const record of ivrMenuRecords().filter((r) => r.id === workspace.id || r.menu.parentMenuId === workspace.id)) {
+    const index = (record.menu.options || []).findIndex((o) => o.nodeId === nodeId);
+    if (index >= 0) return { source: "menu", menu: record.menu, menuKey: record.menuKey, index, item: record.menu.options[index] };
   }
-  for (const record of ivrMenuRecords()) {
-    const looseOptions = ensureIvrLooseOptions(record.menu);
-    const looseIndex = looseOptions.findIndex((item) => item.nodeId === nodeId);
-    if (looseIndex >= 0) return { source: "loose", menu: record.menu, menuKey: record.menuKey, index: looseIndex, item: looseOptions[looseIndex] };
-  }
-  return null;
+  const loose = ensureIvrLooseOptions(workspace.menu);
+  const index = loose.findIndex((o) => o.nodeId === nodeId);
+  return index < 0 ? null : { source: "loose", menu: workspace.menu, menuKey: workspace.menuKey, index, item: loose[index] };
 }
 
 function removeIvrOptionFromCurrentSource(found) {
@@ -1482,34 +1478,52 @@ function eachIvrOption(callback) {
   });
 }
 
-function clearIvrDestinationLinks(type, value, workspace = null) {
+function clearIvrDestinationLinks(type, value, workspace = null, cardKey = "") {
   let removed = 0;
-  const visitOptions = workspace ? (callback) => [...(workspace.options || []), ...ensureIvrLooseOptions(workspace)].forEach(callback) : eachIvrOption;
-  const visitConditions = workspace ? (callback) => ensureIvrTimeConditions(workspace).forEach(callback) : eachIvrTimeCondition;
-  visitOptions((item) => {
-    if (item.destinationType === type && item.destination === value) {
-      item.destinationType = "";
-      item.destination = "";
-      removed += 1;
+  function clear(item, prefix = "") {
+    const typeField = prefix ? prefix + "DestinationType" : "destinationType";
+    const valueField = prefix ? prefix + "Destination" : "destination";
+    const keyField = prefix ? prefix + "DestinationCardKey" : "destinationCardKey";
+    if (item[typeField] !== type || String(item[valueField]) !== String(value)) return;
+    if (cardKey && (item[keyField] || ivrTargetCardByDestination(type, value)) !== cardKey) return;
+    item[typeField] = item[valueField] = item[keyField] = "";
+    removed++;
+  }
+  const menus = workspace ? [workspace, ...ensureIvrMenus().filter((menu) => menu.parentMenuId === ivrEditingRecord().id)] :
+    [state.config.ivr, ...ensureIvrMenus()];
+  for (const menu of menus) {
+    for (const item of menu.options || []) clear(item);
+    if (!workspace || menu === workspace) {
+      for (const item of ensureIvrLooseOptions(menu)) clear(item);
+      for (const c of ensureIvrTimeConditions(menu)) { clear(c, "in"); clear(c, "out"); }
     }
-  });
-  visitConditions((condition) => {
-    if (condition.inDestinationType === type && condition.inDestination === value) {
-      condition.inDestinationType = "";
-      condition.inDestination = "";
-      removed += 1;
-    }
-    if (condition.outDestinationType === type && condition.outDestination === value) {
-      condition.outDestinationType = "";
-      condition.outDestination = "";
-      removed += 1;
-    }
-  });
+  }
   return removed;
 }
 
 function replaceIvrMenuReferences(oldId, nextId = "") {
   if (!oldId) return;
+  for (const trunk of ensureConfigTrunks()) {
+    if (trunk.inboundDestinationType === "ivr" && trunk.inboundDestination === oldId) trunk.inboundDestination = nextId || "main";
+  }
+  if (state.config.trunk.inboundDestinationType === "ivr" && state.config.trunk.inboundDestination === oldId) state.config.trunk.inboundDestination = nextId || "main";
+  for (const route of state.config.inboundRoutes || []) {
+    if (route.destinationType === "ivr" && route.destination === oldId) route.destination = nextId || "main";
+  }
+  const hours = state.config.businessHours;
+  if (hours?.afterHoursDestinationType === "ivr" && hours.afterHoursDestination === oldId) hours.afterHoursDestination = nextId || "main";
+  eachIvrMenu((m) => {
+    const layout = ensureIvrFlowLayout(m);
+    const oldKey = "menu:" + oldId;
+    if (layout[oldKey]) {
+      if (nextId) layout["menu:" + nextId] = layout[oldKey];
+      delete layout[oldKey];
+    }
+  });
+  if (nextId && oldId === state.ivrEditingMenuId) {
+    state.ivrEditingMenuId = nextId;
+    setIvrBuilderRoute(nextId);
+  }
   ensureIvrMenus().forEach((menu) => {
     if (menu.parentMenuId === oldId) {
       if (nextId) menu.parentMenuId = nextId;
@@ -1519,6 +1533,7 @@ function replaceIvrMenuReferences(oldId, nextId = "") {
   eachIvrOption((item) => {
     if (item.destinationType === "ivr" && item.destination === oldId) {
       item.destination = nextId;
+      item.destinationCardKey = nextId ? "menu:" + nextId : "";
       if (!nextId) {
         item.destinationType = "";
         item.destinationCardKey = "";
@@ -1529,6 +1544,7 @@ function replaceIvrMenuReferences(oldId, nextId = "") {
     ["in", "out"].forEach((prefix) => {
       if (condition[`${prefix}DestinationType`] === "ivr" && condition[`${prefix}Destination`] === oldId) {
         condition[`${prefix}Destination`] = nextId;
+        condition[`${prefix}DestinationCardKey`] = nextId ? "menu:" + nextId : "";
         if (!nextId) {
           condition[`${prefix}DestinationType`] = "";
           condition[`${prefix}DestinationCardKey`] = "";
@@ -1566,12 +1582,12 @@ function clearRouteReferences(type, value, fallbackType = "extension", fallbackV
 }
 
 function removeIvrTargetCard(type, value) {
-  const allowedTypes = ["extension", "queue", "ringGroup", "timeCondition", "trunk"];
+  const allowedTypes = ["extension", "queue", "ringGroup", "timeCondition", "trunk", "ivr"];
   if (!allowedTypes.includes(type)) return { ok: false, message: "Tipo de card nao suportado para exclusao." };
   const hiddenCards = ensureHiddenTargetCards();
-  const key = ivrTargetKey(type, value);
+  const key = ivrTargetCardByDestination(type, value);
   if (!hiddenCards.includes(key)) hiddenCards.push(key);
-  clearIvrDestinationLinks(type, value, currentIvrWorkspaceMenu());
+  clearIvrDestinationLinks(type, value, currentIvrWorkspaceMenu(), key);
   return { ok: true, message: "Card removido da URA sem apagar o recurso do sistema." };
 }
 
@@ -1581,24 +1597,23 @@ function hideIvrEntryNode() {
   return { ok: true, message: "Entrada antiga removida. O tronco principal agora representa a entrada da URA." };
 }
 
-function revealIvrTargetCard(type, value, x, y) {
-  const hiddenCards = ensureHiddenTargetCards();
-  const key = ivrTargetKey(type, value);
-  const hiddenIndex = hiddenCards.indexOf(key);
-  if (hiddenIndex >= 0) hiddenCards.splice(hiddenIndex, 1);
-  setIvrCardPosition(key, x, y);
-
-  if (state.ivrLinkSource?.type === "option-target") {
-    const found = findIvrOptionByNodeId(state.ivrLinkSource.nodeId);
-    if (found?.item) {
-      found.item.destinationType = type;
-      found.item.destination = value;
-      state.ivrLinkSource = null;
-      return "connected";
-    }
-  }
-
-  return hiddenIndex >= 0 ? "restored" : "positioned";
+function connectIvrDestination(type, value, key = ivrTargetCardByDestination(type, value)) {
+  const source = state.ivrLinkSource;
+  if (source?.type === "option-target") {
+    const item = findIvrOptionByNodeId(source.nodeId)?.item;
+    if (!item) return false;
+    Object.assign(item, { destinationType: type, destination: value, destinationCardKey: key });
+  } else if (source?.type === "time-condition") {
+    const condition = ensureIvrTimeConditions().find((c) => c.id === source.conditionId);
+    if (!condition) return false;
+    if (type === "timeCondition" && value === condition.id) throw new Error("Escolha outro horário para evitar uma repetição.");
+    const branch = source.branch === "out" ? "out" : "in";
+    condition[branch + "DestinationType"] = type;
+    condition[branch + "Destination"] = value;
+    condition[branch + "DestinationCardKey"] = key;
+  } else return false;
+  state.ivrLinkSource = null;
+  return true;
 }
 
 function createDuplicateIvrTargetCard(type, value, x, y) {
@@ -1695,10 +1710,13 @@ function ivrTargetCards() {
     .filter(Boolean);
   const workspace = currentIvrWorkspaceMenu();
   const layout = ensureIvrFlowLayout(workspace);
-  const references = new Set((workspace.options || []).map((item) => ivrTargetCardByDestination(item.destinationType, item.destination)));
+  const childOptions = (cfg.ivr?.menus || []).filter((m) => m.parentMenuId === (workspace.id || "main")).flatMap((m) => m.options || []);
+  const references = new Set([...(workspace.options || []), ...(workspace.looseOptions || []), ...childOptions]
+    .map((o) => o.destinationCardKey || ivrTargetCardByDestination(o.destinationType, o.destination)));
   (workspace.timeConditions || []).forEach((condition) => {
     references.add(`timeCondition:${condition.id}`);
-    ["in", "out"].forEach((branch) => references.add(ivrTargetCardByDestination(condition[`${branch}DestinationType`], condition[`${branch}Destination`])));
+    for (const branch of ["in", "out"]) references.add(condition[branch + "DestinationCardKey"] ||
+      ivrTargetCardByDestination(condition[branch + "DestinationType"], condition[branch + "Destination"]));
   });
   return [...baseTargets, ...duplicateTargets].filter((target) =>
     !hiddenCards.has(target.key) && (workspace.targetVisibility !== "explicit" || Object.hasOwn(layout, target.key) || references.has(target.key))
@@ -4613,7 +4631,7 @@ function renderIvrMenuNode(menu, menuKey, isMain = false, fallbackIndex = 0, pre
   const cardKey = ivrCardKey(menuKey);
   const pos = ivrCardPosition(cardKey, 300 + fallbackIndex * 560, 90 + (fallbackIndex % 2) * 260);
   const waitingOptionLink = state.ivrLinkSource?.type === "menu-option" && state.ivrLinkSource?.menuKey === menuKey;
-  const waitingDestinationLink = state.ivrLinkSource?.type === "option-target";
+  const waitingDestinationLink = ["option-target", "time-condition"].includes(state.ivrLinkSource?.type);
   const waitingTrunkEntryLink = state.ivrLinkSource?.type === "trunk-entry";
 
   return `
@@ -4698,10 +4716,29 @@ function renderIvrOptionNode(card, preview = false) {
   `;
 }
 
+function ivrTimeWindows(condition) {
+  return condition.windows?.length ? condition.windows : [{
+    weekdays: condition.weekdays || "mon-fri", start: condition.start || "08:00", end: condition.end || "18:00"
+  }];
+}
+
+function renderIvrTimeWindows(condition) {
+  const days = [["mon-fri","Segunda a sexta"],["mon-sat","Segunda a sábado"],["sat-sun","Fim de semana"],
+    ["mon","Segunda"],["tue","Terça"],["wed","Quarta"],["thu","Quinta"],["fri","Sexta"],["sat","Sábado"],["sun","Domingo"],["*","Todos os dias"]];
+  const windows = ivrTimeWindows(condition);
+  return windows.map((w, i) => `<div class="ivr-time-window" data-time-window="${i}">
+    <label>Dias<select data-window-field="weekdays">${days.some(([key]) => key === w.weekdays) ? "" : option(w.weekdays, w.weekdays)}
+      ${days.map(([key, name]) => option(key, w.weekdays, name)).join("")}</select></label>
+    <label>Início<input data-window-field="start" type="time" value="${escapeHtml(w.start)}"></label>
+    <label>Fim<input data-window-field="end" type="time" value="${escapeHtml(w.end)}"></label>
+    ${windows.length > 1 ? `<button type="button" class="icon-btn" data-remove-time-window="${i}" title="Remover este período"><i data-lucide="trash-2"></i></button>` : ""}
+    </div>`).join("") + '<button class="secondary-btn compact" type="button" data-add-time-window>Adicionar período</button>';
+}
+
 function renderIvrTargetNode(target) {
   const pos = ivrCardPosition(target.key, target.x, target.y);
   const waitingDestinationLink = ["option-target", "time-condition"].includes(state.ivrLinkSource?.type);
-  const condition = target.type === "timeCondition" ? target.condition || {} : null;
+  const condition = target.type === "timeCondition" && !target.duplicateId ? target.condition || {} : null;
   const trunkInbound = target.type === "trunk" ? ensureConfigTrunks().find((trunk) => trunk.id === target.value) : null;
   return `
     <section class="ivr-target-node ${condition ? "time-condition-node" : ""}" ${condition ? `data-time-condition-id="${escapeHtml(condition.id || "")}"` : ""} data-ivr-card-key="${escapeHtml(target.key)}" style="left:${pos.x}px;top:${pos.y}px">
@@ -4714,7 +4751,7 @@ function renderIvrTargetNode(target) {
         <div class="ivr-target-actions">
           ${waitingDestinationLink ? `<button type="button" class="icon-btn" data-ivr-target-type="${escapeHtml(target.type)}" data-ivr-target-value="${escapeHtml(target.value)}" data-ivr-target-card-key="${escapeHtml(target.key)}" title="Conectar aqui"><i data-lucide="crosshair"></i></button>` : ""}
           ${target.type === "trunk" ? `<button type="button" class="icon-btn" data-start-trunk-inbound-link="${escapeHtml(target.value)}" data-trunk-card-key="${escapeHtml(target.key)}" title="Enviar chamadas recebidas deste tronco para um menu"><i data-lucide="route"></i></button>` : ""}
-          <button type="button" class="icon-btn" data-remove-target-links="${escapeHtml(target.type)}" data-target-value="${escapeHtml(target.value)}" title="Remover links deste card"><i data-lucide="unlink"></i></button>
+          <button type="button" class="icon-btn" data-remove-target-links="${escapeHtml(target.type)}" data-target-card-key="${escapeHtml(target.key)}" data-target-value="${escapeHtml(target.value)}" title="Remover links deste card"><i data-lucide="unlink"></i></button>
           <button type="button" class="icon-btn danger" data-remove-target-card="${escapeHtml(target.type)}" data-target-value="${escapeHtml(target.value)}" data-target-card-key="${escapeHtml(target.key)}" data-target-duplicate-id="${escapeHtml(target.duplicateId || "")}" title="Excluir card"><i data-lucide="trash-2"></i></button>
         </div>
       </header>
@@ -4722,18 +4759,9 @@ function renderIvrTargetNode(target) {
         condition
           ? `<div class="ivr-node-grid time-condition-grid">
               <label>Nome<input data-time-field="name" value="${escapeHtml(condition.name || "")}" /></label>
-              <label>Dias<select data-time-field="weekdays">
-                ${[
-                  ["mon-fri", "Segunda a sexta"],
-                  ["mon-sat", "Segunda a sabado"],
-                  ["sat-sun", "Fim de semana"],
-                  ["*", "Todos os dias"]
-                ].map(([value, label]) => option(value, condition.weekdays || "mon-fri", label)).join("")}
-              </select></label>
-              <label>Inicio<input data-time-field="start" type="time" value="${escapeHtml(condition.start || "08:00")}" /></label>
-              <label>Fim<input data-time-field="end" type="time" value="${escapeHtml(condition.end || "18:00")}" /></label>
-              <label class="wide">Dentro do horario<div data-time-destination="in">${ivrTargetChoices(condition.inDestinationType || "extension", condition.inDestination || "", "", condition.id)}<input type="hidden" data-ivr-destination-card-key value="${escapeHtml(condition.inDestinationCardKey || "")}" /></div><button type="button" class="secondary-btn compact" data-start-time-link="${escapeHtml(condition.id || "")}" data-time-branch="in"><i data-lucide="git-merge"></i>Linkar card</button></label>
-              <label class="wide">Fora do horario<div data-time-destination="out">${ivrTargetChoices(condition.outDestinationType || "extension", condition.outDestination || "", "", condition.id)}<input type="hidden" data-ivr-destination-card-key value="${escapeHtml(condition.outDestinationCardKey || "")}" /></div><button type="button" class="secondary-btn compact" data-start-time-link="${escapeHtml(condition.id || "")}" data-time-branch="out"><i data-lucide="git-merge"></i>Linkar card</button></label>
+              ${renderIvrTimeWindows(condition)}
+              <label class="wide">Dentro do horario<div data-time-destination="in">${ivrTargetChoices(condition.inDestinationType || (condition.inDestination ? "extension" : ""), condition.inDestination || "", "", condition.id)}<input type="hidden" data-ivr-destination-card-key value="${escapeHtml(condition.inDestinationCardKey || "")}" /></div><button type="button" class="secondary-btn compact" data-start-time-link="${escapeHtml(condition.id || "")}" data-time-branch="in"><i data-lucide="git-merge"></i>Linkar card</button></label>
+              <label class="wide">Fora do horario<div data-time-destination="out">${ivrTargetChoices(condition.outDestinationType || (condition.outDestination ? "extension" : ""), condition.outDestination || "", "", condition.id)}<input type="hidden" data-ivr-destination-card-key value="${escapeHtml(condition.outDestinationCardKey || "")}" /></div><button type="button" class="secondary-btn compact" data-start-time-link="${escapeHtml(condition.id || "")}" data-time-branch="out"><i data-lucide="git-merge"></i>Linkar card</button></label>
             </div>`
           : ""
       }
@@ -4783,6 +4811,9 @@ function renderIvrContextTargetButtons() {
     .join("");
 
   return `
+    ${group("Outras URAs", "workflow", ivrMenuRecords({ includeInactive: false })
+      .filter((r) => r.id !== ivrEditingRecord().id && r.menu.parentMenuId !== ivrEditingRecord().id)
+      .map((r) => `<button data-create-ivr-target-type="ivr" data-create-ivr-target-value="${escapeHtml(r.id)}">${escapeHtml(r.menu.name || r.id)}</button>`).join("") || "<small>Nenhuma outra URA.</small>")}
     ${group("Ramais", "phone", extensionButtons || `<small>Nenhum ramal cadastrado</small>`)}
     ${group("Filas", "headphones", queueButtons || `<small>Nenhuma fila cadastrada</small>`)}
     ${group("Troncos", "radio-tower", trunkButtons || `<small>Nenhum tronco cadastrado</small>`)}
@@ -4792,6 +4823,12 @@ function renderIvrContextTargetButtons() {
 
 function renderIvrLinks(cards) {
   const nodeMap = new Map(cards.map((card) => [card.key, card]));
+  function targetNode(type, value, key) {
+    if (!value) return null;
+    const base = ivrTargetCardByDestination(type, value);
+    const card = nodeMap.get(key);
+    return card && (key === base || (card.type === type && card.value === value)) ? card : nodeMap.get(base);
+  }
   const links = [];
   const cardSize = (card) => {
     if (card.key === "entry:main") return { width: 190, height: 72 };
@@ -4816,17 +4853,17 @@ function renderIvrLinks(cards) {
       if (source) drawLink(source, optionCard);
     }
     if (optionCard.item.destination) {
-      const target = nodeMap.get(optionCard.item.destinationCardKey || ivrTargetCardByDestination(optionCard.item.destinationType, optionCard.item.destination));
+      const target = targetNode(optionCard.item.destinationType, optionCard.item.destination, optionCard.item.destinationCardKey);
       if (target) {
         drawLink(optionCard, target);
       }
     }
   });
   cards.filter((card) => card.type === "timeCondition" && card.condition).forEach((timeCard) => {
-    const openTarget = nodeMap.get(timeCard.condition.inDestinationCardKey || ivrTargetCardByDestination(timeCard.condition.inDestinationType, timeCard.condition.inDestination));
-    const closedTarget = nodeMap.get(timeCard.condition.outDestinationCardKey || ivrTargetCardByDestination(timeCard.condition.outDestinationType, timeCard.condition.outDestination));
-    drawLink(timeCard, openTarget);
-    drawLink(timeCard, closedTarget);
+    const openTarget = targetNode(timeCard.condition.inDestinationType, timeCard.condition.inDestination, timeCard.condition.inDestinationCardKey);
+    const closedTarget = targetNode(timeCard.condition.outDestinationType, timeCard.condition.outDestination, timeCard.condition.outDestinationCardKey);
+    drawLink(timeCard, openTarget, "time-in-link");
+    drawLink(timeCard, closedTarget, "time-out-link");
   });
   ensureConfigTrunks().forEach((trunk) => {
     if (trunk.inboundDestinationType !== "ivr") return;
@@ -4837,10 +4874,16 @@ function renderIvrLinks(cards) {
   return links.join("");
 }
 
-function ivrNodeCenter(cardKey) {
+function ivrNodeCenter(cardKey, branch = "") {
   const escaped = window.CSS?.escape ? CSS.escape(cardKey) : String(cardKey).replace(/"/g, '\\"');
   const node = $(`.ivr-canvas-space [data-ivr-card-key="${escaped}"]`);
   if (!node) return null;
+  const socket = branch && $(`[data-time-branch="${branch}"]`, node);
+  if (socket) {
+    const box = socket.getBoundingClientRect();
+    const card = node.getBoundingClientRect();
+    return { x: node.offsetLeft + (box.right - card.left) / ivrZoom(), y: node.offsetTop + (box.top + box.height / 2 - card.top) / ivrZoom() };
+  }
   return {
     x: node.offsetLeft + node.offsetWidth / 2,
     y: node.offsetTop + node.offsetHeight / 2
@@ -4851,7 +4894,8 @@ function updateIvrLinkLayer() {
   const layer = $(".ivr-link-layer");
   if (!layer) return;
   $all("line[data-link-from][data-link-to]", layer).forEach((line) => {
-    const from = ivrNodeCenter(line.dataset.linkFrom);
+    const branch = line.classList.contains("time-in-link") ? "in" : line.classList.contains("time-out-link") ? "out" : "";
+    const from = ivrNodeCenter(line.dataset.linkFrom, branch);
     const to = ivrNodeCenter(line.dataset.linkTo);
     if (!from || !to) return;
     line.setAttribute("x1", String(from.x));
@@ -4884,6 +4928,11 @@ function renderIvrCanvas({ preview = false, menuId = "" } = {}) {
     fallbackIndex: entry.fallbackIndex,
     ...ivrCardPosition(ivrCardKey(entry.menuKey), focusedRecord ? 300 : 300 + entry.fallbackIndex * 560, focusedRecord ? 90 : 90 + (entry.fallbackIndex % 2) * 260)
   }));
+  const seenIds = new Set();
+  for (const item of [...visibleMenuEntries.flatMap((e) => e.menu.options || []), ...ensureIvrLooseOptions(focusedRecord?.menu || currentIvrWorkspaceMenu())]) {
+    if (seenIds.has(item.nodeId)) delete item.nodeId;
+    seenIds.add(ensureIvrOptionId(item));
+  }
   const optionCards = visibleMenuEntries
     .map((entry, index) => ({ menu: entry.menu, menuKey: entry.menuKey, menuPos: menuCards[index] }))
     .flatMap(({ menu, menuKey, menuPos }) =>
@@ -4913,7 +4962,16 @@ function renderIvrCanvas({ preview = false, menuId = "" } = {}) {
     ...ivrCardPosition(`option:${ensureIvrOptionId(item)}`, 420 + index * 40, 560 + index * 150)
   }));
   const allOptionCards = [...optionCards, ...looseOptionCards];
-  const targetCards = ivrTargetCards().map((target) => ({ ...target, ...ivrCardPosition(target.key, target.x, target.y) }));
+  const localMenuIds = new Set(visibleMenuEntries.map((e) => e.record.id));
+  const externalIds = new Set();
+  const addExternal = (type, value) => { if (type === "ivr" && value && !localMenuIds.has(value)) externalIds.add(value); };
+  allOptionCards.forEach(({ item }) => addExternal(item.destinationType, item.destination));
+  ensureIvrTimeConditions().forEach((c) => ["in","out"].forEach((b) => addExternal(c[b+"DestinationType"], c[b+"Destination"])));
+  const externalMenus = ivrMenuRecords().filter((r) => !localMenuIds.has(r.id) &&
+    (externalIds.has(r.id) || Object.hasOwn(layout, "menu:" + r.id))).map((r, i) => ({
+      key: "menu:" + r.id, type: "ivr", value: r.id, title: r.menu.name || r.id, subtitle: "Destino em outra URA", icon: "workflow", x: 920, y: 160 + i * 160
+    }));
+  const targetCards = [...ivrTargetCards(), ...externalMenus].map((target) => ({ ...target, ...ivrCardPosition(target.key, target.x, target.y) }));
   const entryHidden = focusedRecord && focusedRecord.id !== "main" ? true : Boolean(ivr.hideEntryNode);
   const entryCard = { key: "entry:main", ...entryPos };
   const allCards = [...(entryHidden ? [] : [entryCard]), ...menuCards, ...allOptionCards, ...targetCards];
@@ -5018,14 +5076,12 @@ function renderIvr() {
     renderIvrManager();
     return;
   }
-  const menus = ensureIvrMenus();
-  const looseOptions = ensureIvrLooseOptions();
   const editingRecord = ivrEditingRecord();
   const viewportKey = editingRecord?.id || currentIvrViewportKey();
   const capturedViewport = state.activeTab === "ivr" ? saveIvrViewport(captureIvrViewport(), viewportKey) : null;
   const viewport = selectedIvrViewport(viewportKey, capturedViewport);
-  const summaryOptions = [state.config.ivr, ...menus].flatMap((menu) => menu.options || []).concat(looseOptions);
   const linkText =
+    state.ivrLinkSource?.type === "time-condition" ? `Escolha o destino para chamadas ${state.ivrLinkSource.branch === "in" ? "dentro" : "fora"} do horário.` :
     state.ivrLinkSource?.type === "menu-option"
       ? "Escolha um card de opcao para ligar a este menu."
       : state.ivrLinkSource?.type === "option-target"
@@ -5072,7 +5128,7 @@ function renderIvr() {
               <details class="context-group" name="ivr-context-menu">
                 <summary><i data-lucide="list-plus"></i><span>Opcoes</span></summary>
                 <div class="context-group-body">
-                  ${Array.from({ length: 9 }, (_, index) => `<button data-create-ivr-card="option" data-digit="${index + 1}"><span>${index + 1}</span>Opcao ${index + 1}</button>`).join("")}
+                  ${[..."1234567890*#"].map((digit) => `<button data-create-ivr-card="option" data-digit="${digit}"><span>${digit}</span>Tecla ${digit}</button>`).join("")}
                 </div>
               </details>
             </div>`
@@ -6348,39 +6404,25 @@ function collectConfig() {
   const shouldCollectIvrFlow = Boolean($(".ivr-flow-canvas", activeRoot));
   if (shouldCollectIvrFlow) {
     syncIvrCanvasPositions(activeRoot);
-    const oldMenuIds = (cfg.ivr.menus || []).map((menu) => menu.id);
+    const workspace = currentIvrWorkspaceMenu();
     const renderedMenuKeys = new Set();
-    $all("[data-ivr-menu]", activeRoot).forEach((node) => {
+    $all(".ivr-flow-node[data-ivr-menu]", activeRoot).forEach((node) => {
       const menuKey = node.dataset.ivrMenu;
       renderedMenuKeys.add(menuKey);
       const menu = menuKey === "main" ? cfg.ivr : cfg.ivr.menus?.[Number(menuKey)];
       if (!menu) return;
-      const previousCardKey = node.dataset.ivrCardKey;
 
       $all("[data-ivr-menu-field]", node).forEach((input) => {
         const key = input.dataset.ivrMenuField;
+        if (key === "id") return;
         menu[key] = key === "allowDirectDial" ? input.value === "true" : input.type === "number" ? Number(input.value) : input.value;
       });
-      if (menuKey !== "main") {
-        menu.id = String(menu.id || `menu-${Number(menuKey) + 1}`)
-          .trim()
-          .replace(/\s+/g, "-")
-          .replace(/[^a-zA-Z0-9_-]/g, "")
-          .toLowerCase();
-      }
-      const nextCardKey = menuKey === "main" ? "menu:main" : `menu:${menu.id}`;
-      const layout = ensureIvrFlowLayout();
-      if (previousCardKey && previousCardKey !== nextCardKey && layout[previousCardKey] && !layout[nextCardKey]) {
-        layout[nextCardKey] = { ...layout[previousCardKey] };
-      }
-
     });
 
     renderedMenuKeys.forEach((menuKey) => {
       const menu = menuKey === "main" ? cfg.ivr : cfg.ivr.menus?.[Number(menuKey)];
       if (menu) menu.options = [];
     });
-    const workspace = currentIvrWorkspaceMenu();
     workspace.looseOptions = [];
     $all("[data-ivr-option][data-ivr-card-key]", activeRoot).forEach((row) => {
       const optionData = {
@@ -6404,30 +6446,30 @@ function collectConfig() {
     });
 
     $all("[data-time-condition-id]", activeRoot).forEach((node) => {
-      const condition = ensureIvrTimeConditions().find((item) => item.id === node.dataset.timeConditionId);
+      const condition = ensureIvrTimeConditions(workspace).find((item) => item.id === node.dataset.timeConditionId);
       if (!condition) return;
       $all("[data-time-field]", node).forEach((input) => {
         condition[input.dataset.timeField] = input.value;
       });
-      const inDestination = $("[data-time-destination='in']", node);
-      const outDestination = $("[data-time-destination='out']", node);
-      if (inDestination) {
-        condition.inDestinationType = $("[data-ivr-destination-type]", inDestination)?.value || "";
-        condition.inDestination = $("[data-ivr-destination-value]", inDestination)?.value || "";
-        condition.inDestinationCardKey = $("[data-ivr-destination-card-key]", inDestination)?.value || "";
+      const prior = ivrTimeWindows(condition);
+      const windows = $all("[data-time-window]", node).map((row, index) => {
+        const window = { ...prior[index] };
+        for (const field of $all("[data-window-field]", row)) window[field.dataset.windowField] = field.value;
+        return window;
+      });
+      if (windows.length) {
+        for (const key of ["start","end","weekdays"]) condition[key] = windows[0][key];
+        if (condition.windows?.length || windows.length > 1) condition.windows = windows;
       }
-      if (outDestination) {
-        condition.outDestinationType = $("[data-ivr-destination-type]", outDestination)?.value || "";
-        condition.outDestination = $("[data-ivr-destination-value]", outDestination)?.value || "";
-        condition.outDestinationCardKey = $("[data-ivr-destination-card-key]", outDestination)?.value || "";
+      for (const branch of ["in", "out"]) {
+        const row = $(`[data-time-destination='${branch}']`, node);
+        if (!row) continue;
+        condition[branch+"DestinationType"] = $("[data-ivr-destination-type]", row).value;
+        condition[branch+"Destination"] = $("[data-ivr-destination-value]", row).value;
+        condition[branch+"DestinationCardKey"] = $("[data-ivr-destination-card-key]", row)?.value || "";
       }
     });
 
-    (cfg.ivr.menus || []).forEach((menu, index) => {
-      const oldId = oldMenuIds[index];
-      if (!oldId || oldId === menu.id) return;
-      replaceIvrMenuReferences(oldId, menu.id);
-    });
   }
 
   $all("[data-ivr-index]", activeRoot).forEach((row) => {
@@ -7907,7 +7949,7 @@ document.addEventListener("click", async (event) => {
 
     if (event.target.closest("#addExtensionBtn")) {
       collectConfig();
-      const next = String(Math.max(...state.config.extensions.map((ext) => Number(ext.number) || 200)) + 1);
+      const next = String(Math.max(200, ...state.config.extensions.map((ext) => Number(ext.number) || 0)) + 1);
       state.config.extensions.push({
         number: next,
         name: "Novo ramal",
@@ -7997,7 +8039,8 @@ document.addEventListener("click", async (event) => {
       rememberIvrViewport();
       collectConfig();
       const menus = ensureIvrMenus();
-      const next = menus.length + 1;
+      let next = menus.length + 1;
+      while (menus.some((m) => m.id === `menu-${next}`)) next++;
       menus.push({
         ...createIvrRootMenu(),
         id: `menu-${next}`,
@@ -8120,6 +8163,7 @@ document.addEventListener("click", async (event) => {
         const id = `menu-${Date.now().toString(36)}`;
         menus.push({ ...createIvrRootMenu(), id, name: `Novo menu ${next}`, parentMenuId: state.ivrEditingMenuId || "main" });
         setIvrCardPosition(`menu:${id}`, menuInfo.x, menuInfo.y);
+        connectIvrDestination("ivr", id);
       }
       if (action === "root") {
         const menu = createIvrRootMenu();
@@ -8137,17 +8181,10 @@ document.addEventListener("click", async (event) => {
         const condition = createIvrTimeCondition();
         ensureIvrTimeConditions().push(condition);
         setIvrCardPosition(`timeCondition:${condition.id}`, menuInfo.x, menuInfo.y);
-        if (state.ivrLinkSource?.type === "option-target") {
-          const found = findIvrOptionByNodeId(state.ivrLinkSource.nodeId);
-          if (found?.item) {
-            found.item.destinationType = "timeCondition";
-            found.item.destination = condition.id;
-            state.ivrLinkSource = null;
-          }
-        }
+        connectIvrDestination("timeCondition", condition.id);
       }
       if (action === "ramal") {
-        const next = String(Math.max(...state.config.extensions.map((ext) => Number(ext.number) || 200)) + 1);
+        const next = String(Math.max(200, ...state.config.extensions.map((ext) => Number(ext.number) || 0)) + 1);
         state.config.extensions.push({
           number: next,
           name: "Novo ramal",
@@ -8168,6 +8205,7 @@ document.addEventListener("click", async (event) => {
           costCenter: "Padrao"
         });
         setIvrCardPosition(`extension:${next}`, menuInfo.x, menuInfo.y);
+        connectIvrDestination("extension", next);
       }
       state.ivrContextMenu = null;
       renderIvr();
@@ -8181,40 +8219,21 @@ document.addEventListener("click", async (event) => {
       const menuInfo = state.ivrContextMenu || { x: 320, y: 160, menuKey: "main" };
       const type = createIvrTargetButton.dataset.createIvrTargetType;
       const value = createIvrTargetButton.dataset.createIvrTargetValue;
-      const existingVisible = ivrTargetCards().some((target) => target.type === type && String(target.value) === String(value));
-      let result = revealIvrTargetCard(type, value, menuInfo.x, menuInfo.y);
-      if (existingVisible && type === "trunk") {
-        if (state.ivrLinkSource?.type === "option-target") {
-          const found = findIvrOptionByNodeId(state.ivrLinkSource.nodeId);
-          if (found?.item) {
-            found.item.destinationType = type;
-            found.item.destination = value;
-            found.item.destinationCardKey = ivrTargetCardByDestination(type, value);
-            state.ivrLinkSource = null;
-            result = "connected";
-          }
-        } else {
-          result = "positioned";
-        }
-      } else if (existingVisible && result === "positioned") {
-        const cardKey = createDuplicateIvrTargetCard(type, value, menuInfo.x, menuInfo.y);
-        if (state.ivrLinkSource?.type === "option-target") {
-          const found = findIvrOptionByNodeId(state.ivrLinkSource.nodeId);
-          if (found?.item) {
-            found.item.destinationType = type;
-            found.item.destination = value;
-            found.item.destinationCardKey = cardKey;
-            state.ivrLinkSource = null;
-            result = "connected";
-          }
-        } else {
-          result = "duplicated";
-        }
+      const baseKey = ivrTargetCardByDestination(type, value);
+      const exists = $all(".ivr-canvas-space [data-ivr-card-key]").some((el) => el.dataset.ivrCardKey === baseKey);
+      let key = baseKey;
+      if (exists && !state.ivrLinkSource && !["trunk", "timeCondition", "ivr"].includes(type)) {
+        key = createDuplicateIvrTargetCard(type, value, menuInfo.x, menuInfo.y);
+      } else if (!exists) {
+        const hidden = ensureHiddenTargetCards();
+        if (hidden.includes(key)) hidden.splice(hidden.indexOf(key), 1);
+        setIvrCardPosition(key, menuInfo.x, menuInfo.y);
       }
+      const connected = connectIvrDestination(type, value, key);
       state.ivrContextMenu = null;
       renderIvr();
       iconRefresh();
-      setMessage(result === "connected" ? "Destino ligado na URA." : "Card adicionado ao fluxograma da URA.", "ok");
+      setMessage(connected ? "Destino conectado." : "Card disponível no fluxograma.", "ok");
       return;
     }
 
@@ -8225,6 +8244,23 @@ document.addEventListener("click", async (event) => {
         type: "option-target",
         nodeId: startIvrLinkButton.dataset.startIvrLink
       };
+      renderIvr();
+      iconRefresh();
+      return;
+    }
+
+    const timeWindowAction = event.target.closest("[data-add-time-window], [data-remove-time-window]");
+    if (timeWindowAction) {
+      rememberIvrViewport();
+      collectConfig();
+      const id = timeWindowAction.closest("[data-time-condition-id]").dataset.timeConditionId;
+      const c = ensureIvrTimeConditions().find((item) => item.id === id);
+      if (!c) return;
+      const windows = ivrTimeWindows(c);
+      if (timeWindowAction.hasAttribute("data-add-time-window")) windows.push({ weekdays: "sat", start: "08:00", end: "12:00" });
+      else if (windows.length > 1) windows.splice(Number(timeWindowAction.dataset.removeTimeWindow), 1);
+      c.windows = windows;
+      for (const key of ["start","end","weekdays"]) c[key] = windows[0][key];
       renderIvr();
       iconRefresh();
       return;
@@ -8287,6 +8323,9 @@ document.addEventListener("click", async (event) => {
       const targetMenu = ivrMenuByKey(state.ivrLinkSource.menuKey);
       const found = findIvrOptionByNodeId(ivrOptionTargetButton.dataset.ivrOptionTarget);
       if (targetMenu && found) {
+        if ((targetMenu.options || []).some((o) => o !== found.item && o.digit && o.digit === found.item.digit)) {
+          return setMessage(`A tecla ${found.item.digit} já está em uso neste menu. Altere a tecla antes de conectar.`);
+        }
         const movedOption = removeIvrOptionFromCurrentSource(found);
         if (!movedOption) return;
         targetMenu.options = targetMenu.options || [];
@@ -8305,8 +8344,7 @@ document.addEventListener("click", async (event) => {
       const found = findIvrOptionByNodeId(removeIvrLinkButton.dataset.removeIvrLink);
       if (found?.item) {
         const hadDestination = Boolean(found.item.destination);
-        found.item.destinationType = "";
-        found.item.destination = "";
+        found.item.destinationType = found.item.destination = found.item.destinationCardKey = "";
         if (state.ivrLinkSource?.nodeId === found.item.nodeId) state.ivrLinkSource = null;
         renderIvr();
         iconRefresh();
@@ -8333,7 +8371,7 @@ document.addEventListener("click", async (event) => {
     if (removeTargetLinksButton) {
       rememberIvrViewport();
       collectConfig();
-      const removed = clearIvrDestinationLinks(removeTargetLinksButton.dataset.removeTargetLinks, removeTargetLinksButton.dataset.targetValue, currentIvrWorkspaceMenu());
+      const removed = clearIvrDestinationLinks(removeTargetLinksButton.dataset.removeTargetLinks, removeTargetLinksButton.dataset.targetValue, currentIvrWorkspaceMenu(), removeTargetLinksButton.dataset.targetCardKey);
       renderIvr();
       iconRefresh();
       setMessage(removed ? `${removed} link(s) removido(s) deste card sem apagar outros cards.` : "Este card nao tinha links ativos.", "ok");
@@ -8357,6 +8395,7 @@ document.addEventListener("click", async (event) => {
       const value = removeTargetCardButton.dataset.targetValue;
       const duplicateId = removeTargetCardButton.dataset.targetDuplicateId || "";
       if (duplicateId) {
+        clearIvrDestinationLinks(type, value, currentIvrWorkspaceMenu(), removeTargetCardButton.dataset.targetCardKey);
         const duplicateCards = ensureIvrDuplicateTargetCards();
         const duplicateIndex = duplicateCards.findIndex((item) => item.id === duplicateId);
         if (duplicateIndex >= 0) duplicateCards.splice(duplicateIndex, 1);
@@ -8373,43 +8412,21 @@ document.addEventListener("click", async (event) => {
         return;
       }
       const layout = ensureIvrFlowLayout();
-      delete layout[`${type}:${value}`];
+      delete layout[ivrTargetCardByDestination(type, value)];
       renderIvr();
       iconRefresh();
       setMessage(result.message, "ok");
       return;
     }
 
-    if (ivrTargetButton && state.ivrLinkSource?.type === "option-target") {
+    if (ivrTargetButton && state.ivrLinkSource) {
       rememberIvrViewport();
       collectConfig();
-      const source = state.ivrLinkSource;
-      const found = findIvrOptionByNodeId(source.nodeId);
-      if (found?.item) {
-        found.item.destinationType = ivrTargetButton.dataset.ivrTargetType;
-        found.item.destination = ivrTargetButton.dataset.ivrTargetValue;
-        found.item.destinationCardKey = ivrTargetButton.dataset.ivrTargetCardKey || "";
-        state.ivrLinkSource = null;
+      const { ivrTargetType, ivrTargetValue, ivrTargetCardKey } = ivrTargetButton.dataset;
+      if (connectIvrDestination(ivrTargetType, ivrTargetValue, ivrTargetCardKey)) {
         renderIvr();
         iconRefresh();
-        setMessage("Link do fluxograma atualizado.", "ok");
-      }
-      return;
-    }
-
-    if (ivrTargetButton && state.ivrLinkSource?.type === "time-condition") {
-      rememberIvrViewport();
-      collectConfig();
-      const condition = ensureIvrTimeConditions().find((item) => item.id === state.ivrLinkSource.conditionId);
-      if (condition) {
-        const prefix = state.ivrLinkSource.branch === "out" ? "out" : "in";
-        condition[`${prefix}DestinationType`] = ivrTargetButton.dataset.ivrTargetType;
-        condition[`${prefix}Destination`] = ivrTargetButton.dataset.ivrTargetValue;
-        condition[`${prefix}DestinationCardKey`] = ivrTargetButton.dataset.ivrTargetCardKey || "";
-        state.ivrLinkSource = null;
-        renderIvr();
-        iconRefresh();
-        setMessage("Horario ligado ao card escolhido.", "ok");
+        setMessage("Destino conectado.", "ok");
       }
       return;
     }
@@ -8421,7 +8438,8 @@ document.addEventListener("click", async (event) => {
       const menu = ivrMenuByKey(menuKey);
       if (menu) {
         menu.options = menu.options || [];
-        const nextDigit = String(menu.options.length + 1);
+        const nextDigit = [..."1234567890*#"].find((digit) => !menu.options.some((o) => String(o.digit) === digit));
+        if (!nextDigit) return setMessage("Todas as teclas deste menu já estão em uso.");
         const option = createIvrOption(nextDigit);
         const menuNode = addIvrOptionButton.closest(".ivr-flow-node");
         if (menuNode) {
@@ -8466,17 +8484,8 @@ document.addEventListener("click", async (event) => {
       const menus = ensureIvrMenus();
       const removed = menus.splice(Number(removeIvrMenuButton.dataset.removeIvrMenu), 1)[0];
       if (removed?.id) {
-        menus.forEach((menu) => {
-          if (menu.parentMenuId === removed.id) delete menu.parentMenuId;
-        });
-        [state.config.ivr, ...menus, { options: ensureIvrLooseOptions() }].forEach((menu) => {
-          (menu.options || []).forEach((item) => {
-            if (item.destinationType === "ivr" && item.destination === removed.id) {
-              item.destinationType = "";
-              item.destination = "";
-            }
-          });
-        });
+        replaceIvrMenuReferences(removed.id);
+        if (state.ivrEditingMenuId === removed.id) closeIvrBuilder();
       }
       renderIvr();
       iconRefresh();
@@ -9060,17 +9069,35 @@ document.addEventListener("change", async (event) => {
     return;
   }
 
-  const ivrTypeSelect = event.target.closest("[data-ivr-destination-type]");
-  if (ivrTypeSelect && state.config) {
+  if (event.target.matches('[data-ivr-menu-field="id"]')) {
+    const menu = ivrMenuByKey(event.target.closest(".ivr-flow-node").dataset.ivrMenu);
+    const old = menu.id;
+    const next = event.target.value.trim();
+    if (!next || !/^[a-zA-Z0-9_.-]+$/.test(next) || ivrMenuRecords().some((r) => r.menu !== menu && r.id.toLowerCase() === next.toLowerCase())) {
+      event.target.value = old;
+      return setMessage("Use um código único com letras, números, ponto, hífen ou sublinhado.", "error");
+    }
+    if (next === old) return;
     rememberIvrViewport();
-    const wrapper = ivrTypeSelect.parentElement;
-    const currentValue = $("[data-ivr-destination-value]", wrapper)?.value || "";
-    const menuNode = ivrTypeSelect.closest("[data-ivr-menu]");
-    const menuKey = menuNode?.dataset.ivrMenu || "";
-    const currentMenuId = menuKey === "main" ? "main" : state.config.ivr.menus?.[Number(menuKey)]?.id || "";
-    const timeNode = ivrTypeSelect.closest("[data-time-condition-id]");
-    wrapper.innerHTML = ivrTargetChoices(ivrTypeSelect.value, currentValue, currentMenuId, timeNode?.dataset.timeConditionId || "");
-    restoreIvrViewport();
+    collectConfig();
+    menu.id = next;
+    replaceIvrMenuReferences(old, next);
+    renderIvr();
+    iconRefresh();
+    return;
+  }
+  const timeDestination = event.target.closest("[data-time-destination]");
+  if (timeDestination && event.target.matches("select")) {
+    rememberIvrViewport();
+    if (event.target.matches("[data-ivr-destination-type]")) {
+      const conditionId = timeDestination.closest("[data-time-condition-id]").dataset.timeConditionId;
+      timeDestination.innerHTML = ivrTargetChoices(event.target.value, "", "", conditionId);
+    } else {
+      const key = $("[data-ivr-destination-card-key]", timeDestination);
+      if (key) key.value = "";
+    }
+    collectConfig();
+    renderIvr();
     iconRefresh();
     return;
   }
@@ -9094,13 +9121,14 @@ document.addEventListener("change", async (event) => {
 
 window.addEventListener("popstate", () => {
   if (!state.user) return;
+  if (state.config) collectConfig();
   const nextTab = tabFromCurrentPath();
   if (nextTab === "ivr") {
     const editId = new URLSearchParams(window.location.search).get("edit");
     if (editId) openIvrBuilder(editId);
     else closeIvrBuilder();
   }
-  setActiveTab(nextTab, { collect: true, load: true }).catch((error) => setMessage(error.message || "Falha ao abrir pagina."));
+  setActiveTab(nextTab, { collect: false, load: true }).catch((error) => setMessage(error.message || "Falha ao abrir pagina."));
 });
 
 async function boot() {

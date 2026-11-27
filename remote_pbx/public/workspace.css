@@ -476,3 +476,10 @@ html[data-theme="dark"] .queue-wait-count { background: #48371c; color: #ffdf96;
   .recording-entry { grid-template-columns: minmax(0,1.2fr) minmax(0,1fr); }
   .recording-entry .recording-actions { grid-column: 1 / -1; grid-row: 3; justify-content: flex-start; }
 }
+
+.ivr-time-window { grid-column: 1 / -1; min-width: 0; display: grid; grid-template-columns: minmax(0,1.4fr) repeat(2,minmax(0,1fr)) auto; align-items: end; gap: 6px; }
+.ivr-time-window input, .ivr-time-window select { width: 100%; min-width: 0; }
+.ivr-link-layer .time-in-link { stroke: #168259; }
+.ivr-link-layer .time-out-link { stroke: #ae6900; stroke-dasharray: 9 5; }
+html[data-theme="dark"] .ivr-link-layer .time-in-link { stroke: #54d5a2; }
+html[data-theme="dark"] .ivr-link-layer .time-out-link { stroke: #f6c566; }

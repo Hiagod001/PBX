@@ -76,17 +76,50 @@ function validateConfig(config) {
 
   const menus = [config?.ivr, ...((config?.ivr?.menus || []))].filter(Boolean);
   const menuIds = menus.map((menu, index) => String(index === 0 ? menu.id || "main" : menu.id || "").trim());
-  unique(menuIds, "Identificador de URA");
+  unique(menuIds.map((id) => id.toLowerCase()), "Identificador de URA");
+  const conditions = menus.flatMap((menu) => menu.timeConditions || []);
+  unique(conditions.map((c) => String(c.id || "").toLowerCase()), "Identificador de horário");
+  const byCondition = new Map(conditions.map((c) => [c.id, c]));
+  const targets = {
+    extension: new Set([...extensionNumbers, "700"]), ivr: new Set(menuIds), queue: new Set(queueIds),
+    ringGroup: new Set((config?.ringGroups || []).map((g) => g.id)), trunk: new Set(trunkIds),
+    timeCondition: new Set(byCondition.keys())
+  };
+  function checkTarget(type, value, location) {
+    if (!value || type === "none" || type === "voicemail") return;
+    if (!targets[type || "extension"]?.has(String(value))) add(`${location}: destino não encontrado (${value}).`);
+  }
+  const visiting = new Set(), checked = new Set();
+  function visitCondition(id) {
+    if (visiting.has(id)) { add(`O horário ${id} forma um ciclo sem atendimento. Escolha outro destino.`); return; }
+    if (checked.has(id) || !byCondition.has(id)) return;
+    visiting.add(id);
+    const c = byCondition.get(id);
+    for (const b of ["in", "out"]) {
+      checkTarget(c[b+"DestinationType"], c[b+"Destination"], `Horário ${c.name || id}`);
+      if (c[b+"DestinationType"] === "timeCondition") visitCondition(c[b+"Destination"]);
+    }
+    visiting.delete(id);
+    checked.add(id);
+  }
+  for (const id of byCondition.keys()) visitCondition(id);
   menus.forEach((menu, index) => {
     const id = menuIds[index];
     if (!safeIdPattern.test(id)) add(`Identificador de URA invalido: ${id || index + 1}`);
     const digits = (menu.options || []).map((option) => String(option.digit || "").trim()).filter(Boolean);
     unique(digits, `Opcao da URA ${id}`);
+    for (const opt of menu.options || []) checkTarget(opt.destinationType, opt.destination, `URA ${id}, tecla ${opt.digit}`);
     digits.forEach((digit) => {
       if (!/^[0-9#*]$/.test(digit)) add(`Opcao invalida na URA ${id}: ${digit}`);
     });
     (menu.timeConditions || []).forEach((condition) => {
       if (!safeIdPattern.test(String(condition.id || ""))) add(`Identificador de horario invalido na URA ${id}`);
+      for (const window of condition.windows || []) {
+        const validTime = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+        if (!validTime.test(window.start) || !validTime.test(window.end)) {
+          add(`Informe o início e o fim de cada período em ${condition.name || condition.id}.`);
+        }
+      }
     });
   });
 

@@ -1,0 +1,3 @@
+FROM uai-pbx-web:20261127-recording-protocol
+COPY public/app.js public/index.html public/workspace.css /opt/pbx-sip-admin/public/
+COPY src/validation.js src/asterisk.js /opt/pbx-sip-admin/src/

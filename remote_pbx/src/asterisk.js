@@ -126,7 +126,7 @@ function renderInboundDispatch(lines, config, context, id, fallbackContext) {
   });
 }
 
-function renderIvrContext(lines, config, menu, contextId, { answer = false } = {}) {
+function renderIvrContext(lines, config, menu, contextId) {
   const ivrResponseTimeout = Math.min(Math.max(Number(menu.timeoutSeconds ?? config.ivr.timeoutSeconds) || 20, 5), 60);
   const ivrMaxAttempts = Math.min(Math.max(Number(menu.menuRepeat ?? config.ivr.menuRepeat) || 3, 1), 10);
   const timeoutAudio = menu.timeoutAudio === undefined ? config.ivr.timeoutAudio : menu.timeoutAudio;
@@ -141,7 +141,7 @@ function renderIvrContext(lines, config, menu, contextId, { answer = false } = {
     lines.push(" same => n,Hangup()");
     return;
   }
-  if (answer) lines.push(" same => n,Answer()");
+  lines.push(" same => n,Answer()");
   lines.push(" same => n,Set(IVR_ATTEMPT=0)");
   lines.push(` same => n,Set(IVR_MAX_ATTEMPTS=${ivrMaxAttempts})`);
   lines.push(` same => n,Set(TIMEOUT(response)=${ivrResponseTimeout})`);
@@ -162,7 +162,9 @@ function renderIvrContext(lines, config, menu, contextId, { answer = false } = {
   lines.push(` same => n,WaitExten(${ivrResponseTimeout})`);
   lines.push(" same => n,Goto(t,1)");
   if (menu.allowDirectDial ?? config.ivr.allowDirectDial) {
-    lines.push("include => internal");
+    for (const number of new Set(["700", ...config.extensions.map((ext) => clean(ext.number))])) {
+      lines.push(`exten => ${number},1,Goto(internal,${number},1)`);
+    }
   }
   (menu.options || []).filter((option) => clean(option.digit) && clean(option.destination)).forEach((option) => {
     lines.push(`exten => ${clean(option.digit)},1,NoOp(URA ${clean(option.label)})`);
@@ -755,7 +757,7 @@ function renderExtensions(config) {
   }
 
   const ivrMenus = [{ ...config.ivr, id: "main", options: config.ivr.options || [] }, ...(config.ivr.menus || [])];
-  renderIvrContext(lines, config, ivrMenus[0], "main", { answer: true });
+  renderIvrContext(lines, config, ivrMenus[0], "main");
   ivrMenus.slice(1).forEach((menu) => {
     renderIvrContext(lines, config, menu, menu.id);
   });
