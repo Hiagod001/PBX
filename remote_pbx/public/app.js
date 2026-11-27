@@ -3526,24 +3526,91 @@ function renderMonitorCompactSettings(queues = []) {
   `;
 }
 
+function renderWaitingCalls(calls) {
+  return calls.map((call) => {
+    const canCapture = (state.pbxStatus?.captureQueues || []).includes(call.queue);
+    return `<article class="mini-monitor-card waiting-call-card">
+      <div><strong>${escapeHtml(call.callerId || "Número privado")}</strong>
+        <span>${escapeHtml(call.queueName || call.queue)} · ${monitorNumber(call.position)}º na fila</span>
+        <span>Em espera há ${escapeHtml(call.wait || "0:00")}</span></div>
+      ${canCapture ? `<button type="button" class="secondary-btn compact" data-transfer-waiting="${escapeHtml(call.channel)}" data-queue="${escapeHtml(call.queue)}" ${call.channel ? "" : "disabled"}>Capturar ligação</button>` : ""}
+    </article>`;
+  }).join("");
+}
+
+const captureDialog = $("#captureDialog");
+const captureSearch = $("#captureSearch");
+const captureTargets = $("#captureTargets");
+let captureRequest = null;
+
+function refreshCaptureDialog(matchNumber = false) {
+  if (!captureDialog.open || !captureRequest) return;
+  const { queue, channel, busy } = captureRequest;
+  const waiting = state.pbxStatus?.waitingCalls?.some((call) => call.queue === queue && call.channel === channel);
+  const query = captureSearch.value.trim().toLocaleLowerCase("pt-BR");
+  const targets = (state.pbxStatus?.captureTargets || []).filter((ext) =>
+    `${ext.number} ${ext.name || ""}`.toLocaleLowerCase("pt-BR").includes(query));
+  const options = targets.map((ext) => `<option value="${escapeHtml(ext.number)}">${escapeHtml(ext.number)} · ${escapeHtml(ext.name || "Ramal")}</option>`).join("");
+  const previous = captureTargets.value;
+  if (options !== captureRequest.options) {
+    captureTargets.innerHTML = options;
+    captureRequest.options = options;
+    captureTargets.value = previous;
+  }
+  if (matchNumber && query && targets.some((ext) => ext.number === query)) captureTargets.value = query;
+  captureSearch.disabled = busy || !waiting;
+  captureTargets.disabled = busy || !waiting;
+  $("#captureSubmit").disabled = busy || !waiting || !captureTargets.value;
+  $("#captureCancel").disabled = busy;
+  $("#captureFeedback").textContent = busy ? "Solicitando encaminhamento…" :
+    !waiting ? "Esta chamada já saiu da fila." : captureRequest.error ||
+    (targets.length ? "" : query ? "Nenhum ramal disponível com esse nome ou número." : "Nenhum ramal disponível no momento.");
+}
+
+function openCaptureDialog(button) {
+  const channel = button.dataset.transferWaiting;
+  const queue = button.dataset.queue;
+  const call = state.pbxStatus?.waitingCalls?.find((item) => item.channel === channel && item.queue === queue);
+  if (!call) return setMessage("Esta chamada já saiu da fila.", "info");
+  captureRequest = { channel, queue, busy: false };
+  $("#captureCaller").textContent = `${call.callerId || "Número privado"} · ${call.queueName || queue}`;
+  captureSearch.value = "";
+  captureTargets.replaceChildren();
+  captureDialog.showModal();
+  refreshCaptureDialog();
+  captureSearch.focus();
+}
+
+captureSearch.addEventListener("input", () => { captureRequest.error = ""; refreshCaptureDialog(true); });
+captureTargets.addEventListener("change", () => { captureRequest.error = ""; refreshCaptureDialog(); });
+$("#captureCancel").addEventListener("click", () => captureDialog.close());
+captureDialog.addEventListener("cancel", (event) => { if (captureRequest?.busy) event.preventDefault(); });
+captureDialog.addEventListener("close", () => { captureRequest = null; });
+$("#captureForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!captureRequest || $("#captureSubmit").disabled) return;
+  const target = captureTargets.value;
+  const { channel, queue } = captureRequest;
+  captureRequest.busy = true;
+  refreshCaptureDialog();
+  try {
+    await api("/api/pbx/monitor/action", { method: "POST", body: JSON.stringify({ action: "transfer-waiting", channel, queue, target }) });
+    captureDialog.close();
+    setMessage(`Encaminhamento solicitado para o ramal ${target}.`, "ok");
+  } catch (error) {
+    captureRequest.error = error.message;
+    captureRequest.busy = false;
+    refreshCaptureDialog();
+  }
+  await loadPbxStatus({ background: true }).catch(() => {});
+});
+
 function renderCompactMonitor(queues = [], waitingCalls = [], totals = {}, lastReadLabel = "", trunkStatus = "", trunkTone = "warn", liveLabel = "") {
   const prefs = state.monitorCompact;
   const visibleQueues = visibleCompactQueues(queues);
   const searchValue = String(prefs.queueSearch || "");
   const compactPanels = commandCenterQueueCards(visibleQueues, "", searchValue);
-  const waitingRows = waitingCalls
-    .map(
-      (call) => `
-        <article class="mini-monitor-card waiting-call-card">
-          <div>
-            <strong>#${monitorNumber(call.position)} ${escapeHtml(call.callerId || "-")}</strong>
-            <span>${escapeHtml(call.queueName || call.queue || "-")}</span>
-            <span>${escapeHtml(call.wait || "-")}</span>
-          </div>
-          <button class="secondary-btn compact" data-transfer-waiting="${escapeHtml(call.channel || "")}" ${call.channel ? "" : "disabled"}><i data-lucide="send"></i>Transferir</button>
-        </article>`
-    )
-    .join("");
+  const waitingRows = renderWaitingCalls(waitingCalls);
 
   return `
     <div class="monitor-page compact-monitor-page command-center">
@@ -3892,19 +3959,7 @@ function renderStatus() {
     })
     .join("");
 
-  const waitingRows = waitingCalls
-    .map(
-      (call) => `
-        <article class="mini-monitor-card waiting-call-card">
-          <div>
-            <strong>#${monitorNumber(call.position)} ${escapeHtml(call.callerId || "-")}</strong>
-            <span>${escapeHtml(call.queueName || call.queue || "-")}</span>
-            <span>${escapeHtml(call.wait || "-")}</span>
-          </div>
-          <button class="secondary-btn compact" data-transfer-waiting="${escapeHtml(call.channel || "")}" ${call.channel ? "" : "disabled"}><i data-lucide="send"></i>Transferir</button>
-        </article>`
-    )
-    .join("");
+  const waitingRows = renderWaitingCalls(waitingCalls);
   const lastReadLabel = status?.checkedAt ? new Date(status.checkedAt).toLocaleString("pt-BR") : "ainda nao carregada";
   const liveLabel = "Ao Vivo";
 
@@ -6764,6 +6819,7 @@ async function loadPbxStatus({ announce = false, preserveDraft = false, backgrou
   }
 
   state.pbxStatus = response;
+  refreshCaptureDialog();
   if (announce) setMessage("Monitoramento atualizado.", "ok");
   const activeRoot = pages[state.activeTab];
   if (background) {
@@ -7684,26 +7740,7 @@ document.addEventListener("click", async (event) => {
     }
 
     if (transferWaitingButton) {
-      const channel = transferWaitingButton.dataset.transferWaiting || "";
-      const session = state.extensionCall.session;
-      if (session?.state !== window.SIP?.SessionState.Established) {
-        setMessage("Para conversar com o destino antes de transferir, atenda esta chamada no seu ramal e use Transferir no telefone.", "info");
-        return;
-      }
-      const ownCall = state.extensionStatus?.active?.some(item => item.channel === channel);
-      if (!ownCall) {
-        setMessage("Use Transferir no ramal que está atendendo esta chamada para conversar com o destino.", "info");
-        return;
-      }
-      const choices = [
-        ...(state.config.extensions || []).map((ext) => `${ext.number} ${ext.name || ""}`.trim()),
-        ...(state.config.queues || []).map((queue, index) => `${queue.id} ${queueLabel(queue, index)}`.trim())
-      ].join("\n");
-      const target = window.prompt(`Transferir para qual ramal ou fila?\n${choices}`, "");
-      if (!target) return;
-      const cleanTarget = target.trim().split(/\s+/)[0];
-      state.extensionCall.transferTarget = cleanTarget;
-      await startAssistedTransfer();
+      openCaptureDialog(transferWaitingButton);
       return;
     }
 

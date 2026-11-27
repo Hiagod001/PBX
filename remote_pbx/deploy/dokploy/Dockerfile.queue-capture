@@ -1,0 +1,5 @@
+FROM uai-pbx-web:20261127-sip-networks
+WORKDIR /opt/pbx-sip-admin
+COPY server.js ./
+COPY src/asterisk.js src/queue-capture.js ./src/
+COPY public/app.js public/index.html public/workspace.css ./public/

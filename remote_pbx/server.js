@@ -1604,7 +1604,7 @@ function parseQueueOutput(output) {
         const waitText = (meta.match(/wait:\s*([^,)]*)/i) || [])[1] || "";
         current.waiting.push({
           position: Number(callerMatch[1]) || current.waiting.length + 1,
-          callerId: callerMatch[2].trim(),
+          channel: callerMatch[2].trim(),
           queue: current.id,
           wait: waitText,
           waitSeconds: parseQueueSeconds(waitText)
@@ -1872,6 +1872,8 @@ async function readPbxStatusFresh(config) {
       state,
       registered,
       paused: Boolean(activePause),
+      captureReady: endpoint.registered && !activePause && !channel && endpointStatus.key === "available"
+        && !queueStats.some((q) => q.agents.some((a) => String(a.number) === String(extension.number) && a.pauseName)),
       pauseReason: activePause?.reason || "",
       pauseSeconds: activePause?.pauseSeconds || 0,
       pauseDurationLabel: activePause?.pauseDurationLabel || "",
@@ -2041,14 +2043,11 @@ async function readPbxStatusFresh(config) {
       serviceLevelSeconds: Number(parsed.serviceLevelSeconds) || queueConfig.timeout || 0,
       counts,
       agents,
-      waiting: (parsed.waiting || []).map((call, index) => {
-        const channels = waitingChannelsByQueue.get(queueConfig.id) || [];
-        const channel =
-          channels.find((item) => String(item.callerId || "") && String(call.callerId || "").includes(String(item.callerId || ""))) ||
-          channels[index] ||
-          null;
+      waiting: (parsed.waiting || []).map((call) => {
+        const channel = (waitingChannelsByQueue.get(queueConfig.id) || []).find((item) => item.channel === call.channel);
         return {
           ...call,
+          callerId: channel?.callerId || "",
           channel: channel?.channel || "",
           duration: channel?.duration || 0
         };
@@ -4466,6 +4465,13 @@ app.get("/api/pbx/reports/pauses", requireAuth, async (req, res) => {
   res.json({ ...result, filters });
 });
 
+const { requestQueueCapture } = require("./src/queue-capture");
+
+function captureQueueAllowed(req, config, queue) {
+  return userCanInterveneLiveCalls(req) && (userRole(req) === "admin" ||
+    (queue?.members || []).some((number) => userCanMonitorExtension(req, config, number)));
+}
+
 app.post("/api/pbx/monitor/action", requireAuth, requireSupervisor, async (req, res) => {
   const config = await getConfig();
   const action = String(req.body?.action || "");
@@ -4485,25 +4491,28 @@ app.post("/api/pbx/monitor/action", requireAuth, requireSupervisor, async (req, 
   try {
     if (action === "transfer-waiting") {
       if (!userCanInterveneLiveCalls(req)) return res.status(403).json({ error: "Sem permissao para intervir em chamadas" });
-      const extension = (config.extensions || []).find((item) => String(item.number) === target);
-      const queue = (config.queues || []).find((item) => String(item.id) === target || String(item.number) === target);
-      const dialTarget = extension?.number || queue?.number || "";
-      if (!channel || !dialTarget) return res.status(400).json({ error: "Informe canal e ramal/fila de destino validos" });
-      const status = await readPbxStatus(config);
-      const channelEntry = (status.activeChannels || []).find((item) => item.channel === channel);
-      const owners = channelEntry ? activeChannelExtensionCandidates(channelEntry, extensionNumbers(config)) : [];
-      const inScope = userRole(req) === "admin" || owners.some((number) => userCanMonitorExtension(req, config, number));
-      if (!inScope) return res.status(403).json({ error: "Canal fora do escopo permitido para este supervisor" });
-      const output = await runAsteriskControl("redirect", "00", { channel, target: dialTarget });
+      const queue = (config.queues || []).find((item) => item.id === req.body.queue);
+      if (!queue || !channel || !(config.extensions || []).some((e) => e.number === target)) {
+        return res.status(400).json({ error: "Selecione uma chamada em espera e um ramal válido." });
+      }
+      if (!captureQueueAllowed(req, config, queue) || !userCanMonitorExtension(req, config, target)) {
+        return res.status(403).json({ error: "Você precisa de permissão para encaminhar esta chamada ao ramal." });
+      }
+      const status = await readPbxStatus(config, { fresh: true });
+      if (!status.waitingCalls.some((call) => call.channel === channel && call.queue === queue.id)) {
+        return res.status(409).json({ error: "Esta chamada já saiu da fila." });
+      }
+      if (!status.extensions.some((e) => e.number === target && e.captureReady)) {
+        return res.status(409).json({ error: "Esse ramal deixou de estar disponível. Escolha outro." });
+      }
+      const result = await requestQueueCapture(queue.id, channel, target).catch(() => "unavailable");
+      if (result === "gone") return res.status(409).json({ error: "Esta chamada já foi capturada ou saiu da fila." });
+      if (result !== "requested") return res.status(503).json({ error: "Não foi possível confirmar o encaminhamento. Atualize o monitor antes de tentar novamente." });
       await writeSystemAuditEvent(req, "monitor-transfer-waiting", {
-        label: "Transferiu chamada em espera",
-        summary: `Canal ${channel} transferido para ${dialTarget}`,
-        channel,
-        target: dialTarget,
-        output,
-        after: { channel, target: dialTarget }
+        label: "Encaminhou chamada em espera", summary: `Fila ${queue.name || queue.id} → ramal ${target}`,
+        channel, target, after: { queue: queue.id, channel, target }
       });
-      return res.json({ ok: true, output });
+      return res.json({ ok: true });
     }
 
     if (action === "hangup-channel") {
@@ -4716,7 +4725,13 @@ app.get("/api/inbound-calls", requireAuth, async (req, res) => {
 app.get("/api/pbx-status", requireAuth, async (req, res) => {
   const config = await getConfig();
   const status = await readPbxStatus(config);
-  res.json(pbxStatusForScope(status, config, userReportScope(req, config)));
+  const scoped = pbxStatusForScope(status, config, userReportScope(req, config));
+  const intervene = userCanInterveneLiveCalls(req);
+  res.json({ ...scoped,
+    captureQueues: intervene ? config.queues.filter((q) => captureQueueAllowed(req, config, q)).map((q) => q.id) : [],
+    captureTargets: intervene ? scoped.extensions.filter((e) => e.captureReady && userCanMonitorExtension(req, config, e.number))
+      .map(({ number, name }) => ({ number, name })) : []
+  });
 });
 
 app.get("/api/registration-logs", requireAuth, requireAdmin, async (_req, res) => {

@@ -231,3 +231,9 @@ systemctl enable --now pbx-sip-wss.path pbx-sip-wss.service
 ```
 
 O arquivo `/etc/dokploy/traefik/dynamic/pbx-sip-networks.yml` contém apenas as redes e a definição do roteador. O contêiner web não precisa de acesso de escrita às configurações do Traefik.
+
+### Captura de chamadas em espera
+
+No host Dokploy, execute `bash install-queue-capture.sh` a partir deste diretório durante a instalação. O script cria a conta local do Asterisk e habilita o socket privado usado pelo painel. O serviço recebe apenas a fila, o canal em espera e o ramal de destino. O dialplan gerado por esta versão precisa estar aplicado para que o ramal toque e a chamada retorne à fila se ele não atender.
+
+Para conferir o serviço no host, use `systemctl status pbx-queue-capture.socket`. Para conferir o destino no Asterisk, use `dialplan show 723@pbx-capture-target`, substituindo 723 pelo ramal cadastrado.

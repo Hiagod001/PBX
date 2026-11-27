@@ -90,6 +90,17 @@ function queueDialNumber(queue, index = 0) {
   return clean(queue.number || queue.extension || (600 + index));
 }
 
+// A native queue withdrawal returns on the original caller channel. If the
+// chosen agent does not answer, resume the same queue with its original options.
+function appendCapturableQueue(lines, queue, label, whatsapp = false) {
+  lines.push(` same => n(${label}),Set(QUEUE_WITHDRAW_INFO=)`);
+  lines.push(` same => n,Queue(${clean(queue.id)},tT,,,${queueMaxWait(queue)}${whatsapp ? ",,,wa-agent-connected" : ""})`);
+  lines.push(` same => n,GotoIf($["\${QUEUESTATUS}"!="WITHDRAW"]?${label}done)`);
+  lines.push(` same => n,ExecIf($[\${DIALPLAN_EXISTS(pbx-capture-target,\${FILTER(0-9,\${QUEUE_WITHDRAW_INFO})},1)}]?Gosub(pbx-capture-target,\${FILTER(0-9,\${QUEUE_WITHDRAW_INFO})},1(${whatsapp ? "U(wa-agent-connected)" : ""})))`);
+  lines.push(` same => n,Goto(${label})`);
+  lines.push(` same => n(${label}done),NoOp(Queue completed)`);
+}
+
 function queueMaxWait(queue) {
   return Math.min(Math.max(Number(queue.maxWait) || 300, 1), 86400);
 }
@@ -285,7 +296,7 @@ function renderDialerContext(lines, config) {
   lines.push(" same => n,Hangup()");
   (config.queues || []).forEach((queue, index) => {
     lines.push(` same => n(waq${index}),Set(CDR(queue)=${clean(queue.id)})`);
-    lines.push(` same => n,Queue(${clean(queue.id)},tT,,,${queueMaxWait(queue)},,,wa-agent-connected)`);
+    appendCapturableQueue(lines, queue, `waWait${index}`, true);
     lines.push(" same => n,Hangup()");
   });
   lines.push("", "[wa-agent-connected]");
@@ -786,8 +797,26 @@ function renderExtensions(config) {
     lines.push("", `[queue-${clean(queue.id)}]`);
     lines.push(`exten => s,1,NoOp(Fila ${clean(queue.name || queue.id)})`);
     lines.push(` same => n,Set(CDR(queue)=${clean(queue.id)})`);
-    lines.push(` same => n,Queue(${clean(queue.id)},tT,,,${queueMaxWait(queue)})`);
+    appendCapturableQueue(lines, queue, "captureWait");
     lines.push(` same => n,${finalDestinationDialplan(queue)}`);
+    lines.push(" same => n,Return()");
+  });
+
+  lines.push("", "[pbx-capture-target]");
+  config.extensions.forEach(({ number }) => {
+    const target = clean(number);
+    lines.push(`exten => ${target},1,Set(GROUP(pbx-capture)=${target})`);
+    lines.push(` same => n,GotoIf($[\${GROUP_COUNT(${target}@pbx-capture)}>1]?done)`);
+    for (const id of [target, browserEndpoint(target)]) {
+      lines.push(` same => n,GotoIf(\${REGEX("^(INUSE|BUSY|RINGING|RINGINUSE|ONHOLD)$" \${DEVICE_STATE(PJSIP/${id})})}?done)`);
+    }
+    lines.push(` same => n,Set(CAPTURE_PRIMARY=\${PJSIP_DIAL_CONTACTS(${target})})`);
+    lines.push(` same => n,Set(CAPTURE_WEB=\${PJSIP_DIAL_CONTACTS(${browserEndpoint(target)})})`);
+    lines.push(' same => n,Set(CAPTURE_CONTACTS=${CAPTURE_PRIMARY}${IF($["${CAPTURE_PRIMARY}"!="" & "${CAPTURE_WEB}"!=""]?&:)}${CAPTURE_WEB})');
+    lines.push(' same => n,GotoIf($["${CAPTURE_CONTACTS}"=""]?done)');
+    lines.push(" same => n,Dial(${CAPTURE_CONTACTS},20,tT${ARG1})");
+    lines.push(' same => n,ExecIf($["${DIALSTATUS}"="ANSWER"]?Hangup())');
+    lines.push(" same => n(done),Set(GROUP(pbx-capture)=)");
     lines.push(" same => n,Return()");
   });
 

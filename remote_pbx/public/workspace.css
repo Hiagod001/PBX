@@ -321,3 +321,15 @@ html:not([data-theme="dark"]) .command-queue-card .compact-agent-row.paused .pau
 .webphone-audio-settings label { display: grid; gap: 6px; min-width: 0; font-size: 12px; color: var(--muted); }
 .webphone-audio-settings .secondary-btn { grid-column: 1 / -1; justify-self: end; }
 @media(max-width:620px) { .webphone-audio-settings { grid-template-columns: minmax(0, 1fr); } }
+
+#captureDialog { width: min(28rem, calc(100vw - 2rem)); max-height: 90vh; padding: 0; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 20px 60px #0004; }
+#captureDialog::backdrop { background: #10101499; }
+#captureForm { display: grid; gap: 14px; padding: 22px; }
+#captureForm h2, #captureForm p { margin: 0; }
+#captureForm label { display: grid; gap: 6px; }
+#captureForm select { height: auto; padding: 4px; }
+#captureForm option { padding: 6px 8px; }
+#captureCaller, #captureFeedback { color: var(--muted); }
+#captureFeedback:empty { display: none; }
+#captureForm footer { display: flex; gap: 8px; justify-content: flex-end; }
+.waiting-call-card { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
