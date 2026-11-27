@@ -3449,9 +3449,9 @@ function agentPauseSummary(agent = {}, tone = "") {
   return `${duration} - ${reason}`;
 }
 
-function compactQueueHeader(queue = {}) {
-  return `${monitorNumber(queue.completed)} | ${monitorNumber(queue.abandoned)}`;
-}
+const queueBoardStates = {
+  available: "Disponível", ringing: "Tocando", busy: "Em ligação", paused: "Em pausa", unavailable: "Offline"
+};
 
 const monitorSettings = $("#monitorSettings");
 let monitorSettingsSection = "queues";
@@ -3662,7 +3662,7 @@ function renderCompactMonitor(queues = [], waitingCalls = [], totals = {}, lastR
       <section class="panel command-monitor-panel">
         <header class="command-monitor-header">
           <div>
-            <h3>Monitor de Filas</h3>
+            <h3>Filas de atendimento</h3>
             <span><i class="command-live-dot"></i> ${escapeHtml(liveLabel)}</span>
           </div>
           <div class="command-monitor-tools">
@@ -3670,25 +3670,21 @@ function renderCompactMonitor(queues = [], waitingCalls = [], totals = {}, lastR
               <i data-lucide="search"></i>
               <input data-compact-search type="search" placeholder="Buscar fila ou ramal..." value="${escapeHtml(searchValue)}" />
             </label>
-            <span class="badge ${trunkTone}">Tronco ${escapeHtml(trunkStatus)}</span>
+            <span class="badge ${trunkTone}">${trunkStatus === "Registered" ? "Tronco registrado" : `Tronco · ${escapeHtml(trunkStatus)}`}</span>
             <button id="monitorCompactSettingsBtn" class="secondary-btn compact" type="button"><i data-lucide="sliders-horizontal"></i>Personalizar</button>
             <button id="monitorViewToggleBtn" class="icon-btn" type="button" title="Abrir monitor completo"><i data-lucide="maximize-2"></i></button>
             <button id="refreshPbxStatusBtn" class="icon-btn" type="button" title="Atualizar agora"><i data-lucide="rotate-cw"></i></button>
           </div>
         </header>
-        <div class="compact-queue-grid command-queue-grid">
+        <div class="queue-board-key">
+          <div aria-label="Status dos ramais">${Object.entries(queueBoardStates).map(([tone, label]) =>
+            `<span><i aria-hidden="true" class="queue-presence ${tone}"></i>${label}</span>`).join("")}</div>
+          <small>Atualizado em ${escapeHtml(lastReadLabel)}</small>
+        </div>
+        <div class="queue-board">
           ${compactPanels || `<div class="command-empty"><i data-lucide="search-x"></i><strong>Nenhuma fila encontrada</strong><span>Revise a busca ou as filas visiveis.</span></div>`}
         </div>
-        <footer class="command-monitor-footer">
-          <div class="command-legend">
-            <strong>Legenda:</strong>
-            <span><i class="agent-state-dot available"></i>Disponivel</span>
-            <span><i class="agent-state-dot paused"></i>Em pausa</span>
-            <span><i class="agent-state-dot unavailable"></i>Inativo</span>
-            <span><i class="agent-state-dot busy"></i>Em ligacao</span>
-          </div>
-          <span>Atualizado em ${escapeHtml(lastReadLabel)}</span>
-        </footer>
+
       </section>
       <section class="panel monitor-waiting monitor-waiting-final">
         <div class="panel-header">
@@ -4023,70 +4019,58 @@ function renderFlow() {
 }
 
 function commandCenterQueueCards(queues = [], extensionFilter = "", searchValue = "") {
-  const fields = state.monitorCompact.fields || {};
-  const statuses = state.monitorCompact.statuses || {};
-  const search = String(searchValue || "").trim().toLowerCase();
-  const columnCount = 2 + ["calls", "duration", "number", "pause", "idle", "online"].filter((key) => fields[key] !== false).length;
-  return queues
-    .map((queue, queueIndex) => {
-      const queueText = `${queue.name || ""} ${queue.id || queue.number || ""}`.toLowerCase();
-      const queueMatchesSearch = !search || queueText.includes(search);
-      const agents = (queue.agents || []).filter((agent) => {
-        const tone = monitorStatusTone(agent.statusTone || agent.status);
-        if (statuses[tone] === false) return false;
-        if (extensionFilter && String(agent.number || "") !== String(extensionFilter)) return false;
-        if (queueMatchesSearch) return true;
-        return `${agent.name || ""} ${agent.number || ""}`.toLowerCase().includes(search);
-      });
-      if ((extensionFilter || search) && !agents.length && !queueMatchesSearch) return "";
-      const headers = [
-        fields.calls === false ? "" : "<th>F/R</th>",
-        fields.duration === false ? "" : "<th>Dura.</th>",
-        fields.number === false ? "" : "<th>Numero</th>",
-        fields.pause === false ? "" : "<th>Pausa</th>",
-        fields.idle === false ? "" : "<th>Ocioso</th>",
-        fields.online === false ? "" : "<th>Online</th>",
-        '<th class="compact-monitor-action">Acao</th>'
-      ].join("");
-      const rows = agents
-        .map((agent) => {
-          const tone = monitorStatusTone(agent.statusTone || agent.status);
-          const pauseSummary = agentPauseSummary(agent, tone);
-          const pauseTime = tone === "paused" ? agent.pauseDurationLabel || (Number(agent.pauseSeconds) ? formatSeconds(agent.pauseSeconds) : "0s") : "-";
-          const canMonitorCall = Boolean(agent.channel) || ["busy", "ringing"].includes(tone);
-          return `
-            <tr class="compact-agent-row ${tone}">
-              <td class="compact-agent-name agent-presence-cell ${tone}">
-                <strong>${escapeHtml(agent.name || agent.number || "-")}</strong>
-                <span>${escapeHtml(agent.number || "-")}</span>
-                ${pauseSummary ? `<small class="compact-agent-pause">${escapeHtml(pauseSummary)}</small>` : ""}
-              </td>
-              ${fields.calls === false ? "" : `<td title="Feitas/recebidas hoje">${compactAgentCallPair(agent)}</td>`}
-              ${fields.duration === false ? "" : `<td class="call-duration">${escapeHtml(agent.duration || "-")}</td>`}
-              ${fields.number === false ? "" : `<td>${escapeHtml(agent.currentNumber || "-")}</td>`}
-              ${fields.pause === false ? "" : `<td class="pause-value">${escapeHtml(pauseTime)}</td>`}
-              ${fields.idle === false ? "" : `<td class="idle-value">${escapeHtml(agent.idleTime || "-")}</td>`}
-              ${fields.online === false ? "" : `<td>${escapeHtml(agent.onlineDurationLabel || agent.loginTime || "-")}</td>`}
-              <td class="compact-monitor-action"><button class="icon-btn compact" data-monitor-spy="${escapeHtml(agent.number || "")}" ${canMonitorCall ? "" : "disabled"} type="button" title="Monitorar chamada"><i data-lucide="headphones"></i></button></td>
-            </tr>`;
-        })
-        .join("");
-      return `
-        <section class="compact-queue-card command-queue-card">
-          <header>
-            <div>
-              <h3>${escapeHtml(queue.name || queue.id || `Fila ${queueIndex + 1}`)}</h3>
-              <span>Fila ${escapeHtml(queue.id || queue.number || "-")}</span>
-            </div>
-            <strong title="Atendidas | Perdidas">${compactQueueHeader(queue)}</strong>
-          </header>
-          <table class="compact-monitor-table">
-            <thead><tr><th>Nome / ramal</th>${headers}</tr></thead>
-            <tbody>${rows || `<tr><td colspan="${columnCount}" class="empty-table-cell">Sem agentes nesta visualizacao.</td></tr>`}</tbody>
-          </table>
-        </section>`;
-    })
-    .join("");
+  const prefs = state.monitorCompact;
+  const search = queueSearchKey(searchValue);
+  const numbers = new Map((state.config?.queues || []).map((q) => [String(q.id), q.number]));
+  const columns = [
+    ["calls", "F/R", "Chamadas feitas / recebidas", compactAgentCallPair],
+    ["duration", "Duração", "Duração da chamada", (a) => a.duration],
+    ["number", "Número", "Número em ligação", (a) => a.currentNumber],
+    ["pause", "Pausa", "Tempo em pausa", (a, tone) => tone === "paused" && (a.pauseDurationLabel || formatSeconds(Number(a.pauseSeconds) || 0))],
+    ["idle", "Ocioso", "Tempo ocioso", (a) => a.idleTime],
+    ["online", "Online", "Tempo online", (a) => a.onlineDurationLabel || a.loginTime]
+  ].filter(([key]) => prefs.fields?.[key] !== false);
+  const headings = columns.map(([, label, description]) =>
+    `<th scope="col" title="${description}">${label}</th>`).join("");
+
+  return queues.map((queue, index) => {
+    const name = queue.name || queue.id || `Fila ${index + 1}`;
+    const number = queue.number || numbers.get(String(queue.id)) || queue.id;
+    const queueMatches = queueSearchKey([name, number, queue.id].join(" ")).includes(search);
+    const agents = (queue.agents || []).filter((agent) =>
+      prefs.statuses?.[monitorStatusTone(agent.statusTone || agent.status)] !== false &&
+      (!extensionFilter || String(agent.number) === String(extensionFilter)) &&
+      (queueMatches || queueSearchKey([agent.name, agent.number].join(" ")).includes(search))
+    );
+    if (!agents.length && (!queueMatches || extensionFilter)) return "";
+
+    const rows = agents.map((agent) => {
+      const tone = monitorStatusTone(agent.statusTone || agent.status);
+      const label = queueBoardStates[tone];
+      const pause = agentPauseSummary(agent, tone);
+      const canMonitor = Boolean(agent.channel) || ["busy", "ringing"].includes(tone);
+      const cells = columns.map(([, , , read]) => {
+        const value = read(agent, tone);
+        return value && value !== "-" ? `<td>${escapeHtml(value)}</td>` : '<td class="queue-no-value">–</td>';
+      }).join("");
+      return `<tr class="queue-agent ${tone}">
+        <td class="queue-person"><div><i class="queue-presence ${tone}" aria-hidden="true"></i>
+          <span class="queue-agent-label">${escapeHtml(agent.name || agent.number || "Ramal")}<small>${label}</small></span><b>${escapeHtml(agent.number || "")}</b></div>
+          ${pause ? `<small class="queue-pause-note">${escapeHtml(pause)}</small>` : ""}</td>
+        ${cells}<td class="queue-listen"><button class="icon-btn compact" data-monitor-spy="${escapeHtml(agent.number || "")}"
+          ${canMonitor ? "" : "disabled"} type="button" aria-label="Monitorar chamada do ramal ${escapeHtml(agent.number || "")}" title="Monitorar chamada"><i data-lucide="headphones"></i></button></td>
+      </tr>`;
+    }).join("");
+    return `<section class="queue-tile">
+      <header><div class="queue-title"><h4>${escapeHtml(name)}</h4>
+        ${number && String(name) !== String(number) ? `<small>Fila ${escapeHtml(number)}</small>` : ""}</div>
+        <div class="queue-totals">${Number(queue.callsWaiting) > 0 ? `<span class="queue-wait-count"><b>${monitorNumber(queue.callsWaiting)}</b> em espera</span>` : ""}<span><b>${monitorNumber(queue.completed)}</b> Atendidas</span><span><b>${monitorNumber(queue.abandoned)}</b> Perdidas</span></div>
+      </header>
+      ${rows ? `<div class="queue-table-scroll"><table aria-label="Ramais da fila ${escapeHtml(name)}"><thead><tr>
+        <th scope="col">Atendente / ramal</th>${headings}<th scope="col" aria-label="Monitorar chamada"></th></tr></thead>
+        <tbody>${rows}</tbody></table></div>` : '<p class="queue-empty">Nenhum ramal nesta visualização.</p>'}
+    </section>`;
+  }).join("");
 }
 
 function renderOverview() {

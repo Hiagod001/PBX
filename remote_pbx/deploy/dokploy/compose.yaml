@@ -37,7 +37,7 @@ services:
       timeout: 5s
       retries: 4
   web:
-    image: uai-pbx-web:20261127-monitor-settings
+    image: uai-pbx-web:20261127-queue-board
     pull_policy: never
     restart: unless-stopped
     init: true

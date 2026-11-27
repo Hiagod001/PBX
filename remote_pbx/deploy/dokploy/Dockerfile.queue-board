@@ -1,0 +1,2 @@
+FROM uai-pbx-web:20261127-monitor-settings
+COPY public/app.js public/index.html public/workspace.css /opt/pbx-sip-admin/public/
