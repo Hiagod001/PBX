@@ -35,14 +35,14 @@ function saveSidebarCollapsed(collapsed) {
 const MONITOR_COMPACT_STORAGE_KEY = "pbx-monitor-compact";
 const compactMonitorFieldOptions = [
   ["calls", "Feitas/recebidas"],
-  ["duration", "Duracao atual"],
-  ["number", "Numero em ligacao"],
+  ["duration", "Duração atual"],
+  ["number", "Número em ligação"],
   ["pause", "Pausa"],
   ["idle", "Tempo ocioso"],
   ["online", "Tempo online"]
 ];
 const compactMonitorStatusOptions = [
-  ["available", "Disponivel"],
+  ["available", "Disponível"],
   ["ringing", "Tocando"],
   ["busy", "Ocupado"],
   ["paused", "Pausa"],
@@ -3453,78 +3453,109 @@ function compactQueueHeader(queue = {}) {
   return `${monitorNumber(queue.completed)} | ${monitorNumber(queue.abandoned)}`;
 }
 
-function renderMonitorCompactSettings(queues = []) {
-  if (!state.monitorCompact.settingsOpen) return "";
-  const prefs = state.monitorCompact;
-  const search = String(prefs.queueSearch || "").trim().toLowerCase();
-  const hidden = new Set((prefs.hiddenQueues || []).map(String));
-  const queueOptions = queues
-    .map((queue, index) => ({ queue, index, id: queueCompactId(queue, index), label: `${queue.name || queue.id || "Fila"} (${queue.id || "-"})` }))
-    .filter((item) => !search || item.label.toLowerCase().includes(search))
-    .map(
-      ({ id, label }) => `
-        <label class="compact-option-row">
-          <span>${escapeHtml(label)}</span>
-          <input type="checkbox" data-compact-queue="${escapeHtml(id)}" ${hidden.has(id) ? "" : "checked"} />
-        </label>`
-    )
-    .join("");
-  const fieldOptions = compactMonitorFieldOptions
-    .map(
-      ([key, label]) => `
-        <label class="compact-option-row">
-          <span>${escapeHtml(label)}</span>
-          <input type="checkbox" data-compact-field="${escapeHtml(key)}" ${prefs.fields?.[key] === false ? "" : "checked"} />
-        </label>`
-    )
-    .join("");
-  const statusOptions = compactMonitorStatusOptions
-    .map(
-      ([key, label]) => `
-        <label class="compact-option-row">
-          <span>${escapeHtml(label)}</span>
-          <input type="checkbox" data-compact-status="${escapeHtml(key)}" ${prefs.statuses?.[key] === false ? "" : "checked"} />
-        </label>`
-    )
-    .join("");
+const monitorSettings = $("#monitorSettings");
+let monitorSettingsSection = "queues";
+let monitorSettingsOpener = "";
 
-  return `
-    <div class="modal-backdrop" data-monitor-compact-close></div>
-    <section class="modal-card monitor-compact-settings" role="dialog" aria-modal="true" aria-label="Opcoes do monitor compacto">
-      <header>
-        <div>
-          <p class="eyebrow">Monitor compacto</p>
-          <h3>Campos e filas visiveis</h3>
-          <p class="hint">Preferencia salva apenas neste navegador.</p>
-        </div>
-        <button class="icon-btn" data-monitor-compact-close type="button" title="Fechar"><i data-lucide="x"></i></button>
-      </header>
-      <div class="compact-settings-grid">
-        <section>
-          <div class="compact-settings-title">
-            <h3>Filas</h3>
-            <span>
-              <button class="text-btn" data-compact-select-queues="all" type="button">Todas</button>
-              <button class="text-btn" data-compact-select-queues="none" type="button">Nenhuma</button>
-            </span>
-          </div>
-          <input data-compact-search type="search" placeholder="Buscar filas" value="${escapeHtml(prefs.queueSearch || "")}" />
-          <div class="compact-option-list">${queueOptions || `<p class="hint">Nenhuma fila encontrada.</p>`}</div>
-        </section>
-        <section>
-          <div class="compact-settings-title"><h3>Campos</h3></div>
-          <div class="compact-option-list">${fieldOptions}</div>
-          <div class="compact-settings-title second"><h3>Status</h3></div>
-          <div class="compact-option-list">${statusOptions}</div>
-        </section>
-      </div>
-      <div class="modal-actions">
-        <button class="secondary-btn" data-compact-reset type="button"><i data-lucide="rotate-ccw"></i>Restaurar</button>
-        <button class="primary-btn" data-monitor-compact-close type="button">Concluir</button>
-      </div>
-    </section>
-  `;
+function monitorSettingsQueues() {
+  return state.pbxStatus?.queues?.length ? state.pbxStatus.queues : state.config?.queues || [];
 }
+
+function queueSearchKey(value) {
+  return String(value).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR").trim();
+}
+
+function filterMonitorChoices() {
+  const query = queueSearchKey($("#msSearch").value);
+  const cards = $all("#msOptions .ms-choice");
+  for (const card of cards) card.hidden = !card.dataset.search.includes(query);
+  const matches = cards.filter((card) => !card.hidden);
+  const count = cards.filter((card) => card.querySelector("input").checked).length;
+  $("#msCount").textContent = `${count} de ${cards.length} ${cards.length === 1 ? "fila visível" : "filas visíveis"}`;
+  $("#msEmpty").hidden = matches.length > 0;
+  $("#msEmpty").textContent = query ? "Nenhuma fila encontrada para essa busca." : "Nenhuma fila cadastrada.";
+  for (const button of $all("[data-ms-select]")) {
+    const select = button.dataset.msSelect === "all";
+    button.textContent = query ? (select ? "Marcar resultados" : "Desmarcar resultados") : (select ? "Marcar todas" : "Desmarcar todas");
+    button.disabled = !matches.some((card) => card.querySelector("input").checked !== select);
+  }
+}
+
+function renderMonitorChoices() {
+  const section = monitorSettingsSection;
+  const queues = section === "queues";
+  const prefs = state.monitorCompact;
+  const hidden = new Set(prefs.hiddenQueues);
+  const configured = new Map((state.config?.queues || []).map((q) => [String(q.id), q]));
+  const choices = queues ? monitorSettingsQueues().map((q, index) => {
+    const id = queueCompactId(q, index);
+    const number = String(q.number || configured.get(id)?.number || id);
+    return { key: id, name: q.name || id, detail: "Fila " + number, checked: !hidden.has(id) };
+  }) : (section === "fields" ? compactMonitorFieldOptions : compactMonitorStatusOptions)
+    .map(([key, name]) => ({ key, name, checked: prefs[section][key] !== false }));
+
+  for (const button of $all("[data-ms-section]")) button.setAttribute("aria-pressed", String(button.dataset.msSection === section));
+  $("#msQueueTools").hidden = !queues;
+  $("#msEmpty").hidden = true;
+  const options = $("#msOptions");
+  options.setAttribute("aria-label", queues ? "Filas visíveis" : section === "fields" ? "Colunas visíveis" : "Status visíveis");
+  options.innerHTML = choices.map(({ key, name, detail, checked }, index) => `
+    <div class="ms-choice" data-search="${escapeHtml(queueSearchKey([name, detail, key].join(" ")))}">
+      <input id="msChoice${index}" type="checkbox" value="${escapeHtml(key)}" ${checked ? "checked" : ""}>
+      <label for="msChoice${index}">${section === "statuses" ? `<span class="ms-dot ${key}" aria-hidden="true"></span>` : ""}
+        <span class="ms-copy"><span>${escapeHtml(name)}</span>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}</span>
+      </label>
+    </div>`).join("");
+  options.scrollTop = 0;
+  if (queues) filterMonitorChoices();
+}
+
+function saveMonitorChoices(inputs, checked) {
+  const prefs = state.monitorCompact;
+  const hidden = new Set(prefs.hiddenQueues);
+  for (const input of inputs) {
+    input.checked = checked;
+    if (monitorSettingsSection === "queues") {
+      if (checked) hidden.delete(input.value);
+      else hidden.add(input.value);
+    } else {
+      prefs[monitorSettingsSection][input.value] = checked;
+    }
+  }
+  if (monitorSettingsSection === "queues") {
+    prefs.hiddenQueues = [...hidden];
+    filterMonitorChoices();
+  }
+  saveMonitorCompactSettings();
+}
+
+$("#msSearch").addEventListener("input", filterMonitorChoices);
+$("#msOptions").addEventListener("change", (event) => {
+  if (event.target.matches('input[type="checkbox"]')) saveMonitorChoices([event.target], event.target.checked);
+});
+monitorSettings.addEventListener("click", (event) => {
+  if (event.target.closest("[data-ms-close]")) return monitorSettings.close();
+  const tab = event.target.closest("[data-ms-section]");
+  if (tab) {
+    monitorSettingsSection = tab.dataset.msSection;
+    renderMonitorChoices();
+  }
+  const bulk = event.target.closest("[data-ms-select]");
+  if (bulk) saveMonitorChoices($all("#msOptions .ms-choice:not([hidden]) input"), bulk.dataset.msSelect === "all");
+  if (event.target.closest("#msReset")) {
+    const { view, queueSearch } = state.monitorCompact;
+    state.monitorCompact = { ...defaultMonitorCompactSettings(), view, queueSearch };
+    $("#msSearch").value = "";
+    saveMonitorCompactSettings();
+    renderMonitorChoices();
+  }
+});
+monitorSettings.addEventListener("close", () => {
+  if (!state.user || !state.config) return;
+  renderMonitorPreferencesSurface();
+  iconRefresh();
+  document.getElementById(monitorSettingsOpener)?.focus({ preventScroll: true });
+});
 
 function renderWaitingCalls(calls) {
   return calls.map((call) => {
@@ -3640,7 +3671,7 @@ function renderCompactMonitor(queues = [], waitingCalls = [], totals = {}, lastR
               <input data-compact-search type="search" placeholder="Buscar fila ou ramal..." value="${escapeHtml(searchValue)}" />
             </label>
             <span class="badge ${trunkTone}">Tronco ${escapeHtml(trunkStatus)}</span>
-            <button id="monitorCompactSettingsBtn" class="secondary-btn compact" type="button"><i data-lucide="columns-3"></i>Colunas</button>
+            <button id="monitorCompactSettingsBtn" class="secondary-btn compact" type="button"><i data-lucide="sliders-horizontal"></i>Personalizar</button>
             <button id="monitorViewToggleBtn" class="icon-btn" type="button" title="Abrir monitor completo"><i data-lucide="maximize-2"></i></button>
             <button id="refreshPbxStatusBtn" class="icon-btn" type="button" title="Atualizar agora"><i data-lucide="rotate-cw"></i></button>
           </div>
@@ -3667,7 +3698,6 @@ function renderCompactMonitor(queues = [], waitingCalls = [], totals = {}, lastR
         <div class="mini-monitor-list waiting-call-list">${waitingRows || `<p class="hint">Nenhuma chamada aguardando atendimento.</p>`}</div>
       </section>
     </div>
-    ${state.activeTab === "status" ? renderMonitorCompactSettings(queues) : ""}
   `;
 }
 
@@ -3736,42 +3766,7 @@ function renderMonitorSpyPortal() {
   iconRefresh();
 }
 
-function captureCompactSettingsViewport() {
-  if (!state.monitorCompact?.settingsOpen) return null;
-  const modal = $(".monitor-compact-settings");
-  if (!modal) return null;
-  const active = document.activeElement;
-  return {
-    modalScrollTop: modal.scrollTop,
-    listScrollTops: $all(".monitor-compact-settings .compact-option-list").map((list) => list.scrollTop),
-    searchFocused: active?.matches?.("[data-compact-search]") || false,
-    searchSelectionStart: active?.selectionStart ?? null,
-    searchSelectionEnd: active?.selectionEnd ?? null
-  };
-}
-
-function restoreCompactSettingsViewport(snapshot) {
-  if (!snapshot || !state.monitorCompact?.settingsOpen) return;
-  requestAnimationFrame(() => {
-    const modal = $(".monitor-compact-settings");
-    if (!modal) return;
-    modal.scrollTop = snapshot.modalScrollTop || 0;
-    $all(".monitor-compact-settings .compact-option-list").forEach((list, index) => {
-      list.scrollTop = snapshot.listScrollTops?.[index] || 0;
-    });
-    if (snapshot.searchFocused) {
-      const search = $("[data-compact-search]");
-      if (!search) return;
-      search.focus();
-      if (snapshot.searchSelectionStart !== null) {
-        search.setSelectionRange(snapshot.searchSelectionStart, snapshot.searchSelectionEnd ?? snapshot.searchSelectionStart);
-      }
-    }
-  });
-}
-
 function renderStatus() {
-  const compactSettingsViewport = captureCompactSettingsViewport();
   const status = state.pbxStatus;
   const trunkStatus = status?.trunk?.registration?.status || "Nao verificado";
   const trunkTone = statusTone(trunkStatus === "Registered", trunkStatus);
@@ -3965,7 +3960,6 @@ function renderStatus() {
 
   if (state.monitorCompact.view === "compact") {
     monitorStatusContent.innerHTML = renderCompactMonitor(queues, waitingCalls, totals, lastReadLabel, trunkStatus, trunkTone, liveLabel);
-    restoreCompactSettingsViewport(compactSettingsViewport);
     return;
   }
 
@@ -3981,7 +3975,7 @@ function renderStatus() {
           <span class="live-pill"><span></span>${escapeHtml(liveLabel)}</span>
           <span class="badge ${trunkTone}">Tronco ${escapeHtml(trunkStatus)}</span>
           <button id="monitorViewToggleBtn" class="secondary-btn" type="button"><i data-lucide="table-2"></i>Compacto</button>
-          <button id="monitorCompactSettingsBtn" class="icon-btn" type="button" title="Opcoes do compacto"><i data-lucide="settings"></i></button>
+          <button id="monitorCompactSettingsBtn" class="icon-btn" type="button" title="Personalizar monitor" aria-label="Personalizar monitor"><i data-lucide="settings"></i></button>
           <button id="refreshPbxStatusBtn" class="secondary-btn"><i data-lucide="rotate-cw"></i>Agora</button>
         </div>
       </section>
@@ -4021,9 +4015,7 @@ function renderStatus() {
         <div class="mini-monitor-list waiting-call-list">${waitingRows || `<p class="hint">Nenhuma chamada aguardando atendimento.</p>`}</div>
       </section>
     </div>
-    ${state.activeTab === "status" ? renderMonitorCompactSettings(queues) : ""}
   `;
-  restoreCompactSettingsViewport(compactSettingsViewport);
 }
 
 function renderFlow() {
@@ -8742,38 +8734,14 @@ document.addEventListener("click", async (event) => {
       return;
     }
 
-    if (event.target.closest("#monitorCompactSettingsBtn, #overviewColumnsBtn")) {
-      state.monitorCompact.settingsOpen = true;
-      renderMonitorPreferencesSurface();
-      iconRefresh();
-      return;
-    }
-
-    if (event.target.closest("[data-monitor-compact-close]")) {
-      state.monitorCompact.settingsOpen = false;
-      renderMonitorPreferencesSurface();
-      iconRefresh();
-      return;
-    }
-
-    const compactSelectQueues = event.target.closest("[data-compact-select-queues]");
-    if (compactSelectQueues) {
-      const queues = state.pbxStatus?.queues || state.config?.queues || [];
-      state.monitorCompact.hiddenQueues =
-        compactSelectQueues.dataset.compactSelectQueues === "none"
-          ? queues.map((queue, index) => queueCompactId(queue, index))
-          : [];
-      saveMonitorCompactSettings();
-      renderMonitorPreferencesSurface();
-      iconRefresh();
-      return;
-    }
-
-    if (event.target.closest("[data-compact-reset]")) {
-      state.monitorCompact = { ...defaultMonitorCompactSettings(), view: state.monitorCompact.view, settingsOpen: true };
-      saveMonitorCompactSettings();
-      renderMonitorPreferencesSurface();
-      iconRefresh();
+    const settingsButton = event.target.closest("#monitorCompactSettingsBtn, #overviewColumnsBtn");
+    if (settingsButton) {
+      monitorSettingsOpener = settingsButton.id;
+      monitorSettingsSection = "queues";
+      $("#msSearch").value = "";
+      renderMonitorChoices();
+      monitorSettings.showModal();
+      $("#msSearch").focus();
       return;
     }
 
@@ -9115,39 +9083,6 @@ document.addEventListener("change", async (event) => {
   if (event.target.closest("#overviewExtensionFilter")) {
     state.overview.extension = $("#overviewExtensionFilter")?.value || "";
     renderOverview();
-    iconRefresh();
-    return;
-  }
-
-  const compactField = event.target.closest("[data-compact-field]");
-  if (compactField) {
-    state.monitorCompact.fields = state.monitorCompact.fields || {};
-    state.monitorCompact.fields[compactField.dataset.compactField] = compactField.checked;
-    saveMonitorCompactSettings();
-    renderMonitorPreferencesSurface();
-    iconRefresh();
-    return;
-  }
-
-  const compactStatus = event.target.closest("[data-compact-status]");
-  if (compactStatus) {
-    state.monitorCompact.statuses = state.monitorCompact.statuses || {};
-    state.monitorCompact.statuses[compactStatus.dataset.compactStatus] = compactStatus.checked;
-    saveMonitorCompactSettings();
-    renderMonitorPreferencesSurface();
-    iconRefresh();
-    return;
-  }
-
-  const compactQueue = event.target.closest("[data-compact-queue]");
-  if (compactQueue) {
-    const id = String(compactQueue.dataset.compactQueue || "");
-    const hidden = new Set((state.monitorCompact.hiddenQueues || []).map(String));
-    if (compactQueue.checked) hidden.delete(id);
-    else hidden.add(id);
-    state.monitorCompact.hiddenQueues = [...hidden];
-    saveMonitorCompactSettings();
-    renderMonitorPreferencesSurface();
     iconRefresh();
     return;
   }

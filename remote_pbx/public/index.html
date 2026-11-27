@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>UAI PBX | Central de Operacoes</title>
     <link rel="stylesheet" href="/styles.css?v=20260828-overview-width-2" />
-    <link rel="stylesheet" href="/workspace.css?v=20261127-queue-capture" />
+    <link rel="stylesheet" href="/workspace.css?v=20261127-monitor-settings" />
     <script src="/vendor/lucide.js?v=1.34.0" defer></script>
     <script src="/vendor/sip.js?v=20260528-local" defer></script>
   </head>
@@ -192,6 +192,30 @@
       </section>
     </main>
 
+    <dialog id="monitorSettings" aria-labelledby="monitorSettingsTitle">
+      <header class="ms-header">
+        <span class="ms-icon"><i data-lucide="sliders-horizontal"></i></span>
+        <div><h2 id="monitorSettingsTitle">Personalizar monitor</h2><p>Escolha o que aparece no seu painel de filas.</p></div>
+        <button type="button" class="icon-btn" data-ms-close aria-label="Fechar"><i data-lucide="x"></i></button>
+      </header>
+      <nav class="ms-sections" aria-label="Opções de exibição">
+        <button type="button" data-ms-section="queues" aria-pressed="true"><i data-lucide="layers"></i>Filas</button>
+        <button type="button" data-ms-section="fields" aria-pressed="false"><i data-lucide="columns-3"></i>Colunas</button>
+        <button type="button" data-ms-section="statuses" aria-pressed="false"><i data-lucide="activity"></i>Status</button>
+      </nav>
+      <section class="ms-body">
+        <div id="msQueueTools">
+          <div class="ms-search"><i data-lucide="search"></i><input type="search" id="msSearch" aria-label="Buscar fila por nome ou número" placeholder="Buscar fila por nome ou número" autocomplete="off"></div>
+          <div class="ms-toolbar"><span id="msCount" role="status"></span><div>
+            <button type="button" data-ms-select="all">Marcar todas</button><button type="button" data-ms-select="none">Desmarcar todas</button>
+          </div></div>
+        </div>
+        <div id="msOptions" role="group" aria-label="Filas visíveis"></div>
+        <p id="msEmpty" hidden>Nenhuma fila encontrada.</p>
+      </section>
+      <footer class="ms-footer"><button type="button" class="secondary-btn" id="msReset"><i data-lucide="rotate-ccw"></i>Restaurar padrão</button>
+        <button type="button" class="primary-btn" data-ms-close>Concluir</button></footer>
+    </dialog>
     <dialog id="captureDialog" aria-labelledby="captureTitle">
       <form id="captureForm">
         <h2 id="captureTitle">Capturar ligação</h2>
@@ -210,6 +234,6 @@
     <script src="/assisted-transfer.js?v=20260914-assisted-1"></script>
     <script src="/trunk-policy.js?v=20261126-trunk-directions-2"></script>
     <script src="/sip-recovery.js?v=20261126-reconnect-1"></script>
-    <script src="/app.js?v=20261127-queue-capture"></script>
+    <script src="/app.js?v=20261127-monitor-settings"></script>
   </body>
 </html>
