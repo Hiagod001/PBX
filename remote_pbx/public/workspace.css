@@ -559,3 +559,9 @@ html[data-theme="dark"] .ivr-link-layer .time-out-link { stroke: #f6c566; }
 .user-editor .user-scope-choice { display: flex; gap: 8px; align-items: center; padding: 5px 0; }
 .user-editor .user-scope-choice input { width: 16px; min-height: 16px; height: 16px; }
 #agentPauseForm [hidden] { display: none; }
+
+.agenda-search { display: grid; grid-template-columns: minmax(0, 28rem) auto; justify-content: start; align-items: end; gap: 6px 8px; }
+.agenda-search label { grid-column: 1 / -1; }
+.agenda-table { overflow-x: auto; }
+.agenda-table table { width: 100%; border-collapse: collapse; }
+.agenda-table th, .agenda-table td { padding: .6rem .8rem; border-bottom: 1px solid var(--line); text-align: left; }

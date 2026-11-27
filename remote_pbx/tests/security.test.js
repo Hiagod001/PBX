@@ -48,9 +48,8 @@ test("management UI exposes only the assigned operator menus", () => {
   const source = fs.readFileSync(require("node:path").join(__dirname, "../public/app.js"), "utf8");
   const start = source.indexOf("function canAccessTab(");
   const end = source.indexOf("function firstAllowedTab", start);
-  const declaration = source.match(/const adminOnlyTabs = new Set\([^;]+;/)[0];
   const context = { state: { user: { username: "operator", role: "user", permissions: { menus: { dialer: true, queues: true, audios: true } } } }, menuPermissions: Object.fromEntries(["dialer", "queues", "audios", "users", "security", "status", "reports"].map(x => [x, x])) };
-  vm.runInNewContext(declaration + source.slice(start, end), context);
+  vm.runInNewContext(source.slice(start, end), context);
   for (const menu of ["dialer", "queues", "audios"]) assert.equal(context.canAccessTab(menu), true);
   for (const menu of ["users", "security", "status", "reports"]) assert.equal(context.canAccessTab(menu), false);
   assert.equal(source.includes('data-user-field="extension"'), false);

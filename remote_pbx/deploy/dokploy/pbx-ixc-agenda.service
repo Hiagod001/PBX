@@ -1,0 +1,11 @@
+[Unit]
+Description=Atualize a agenda do PBX pelo IXC
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/dokploy/pbx-validation/source/scripts/sync-ixc-contacts.py
+ExecStopPost=/usr/bin/rm -f /etc/dokploy/pbx-validation/data/app/ixc-refresh.request
+TimeoutStartSec=15min
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/etc/dokploy/pbx-validation/data/app
+PrivateTmp=true

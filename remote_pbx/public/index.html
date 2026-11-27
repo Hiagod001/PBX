@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>UAI PBX | Central de Operacoes</title>
     <link rel="stylesheet" href="/styles.css?v=20260828-overview-width-2" />
-    <link rel="stylesheet" href="/workspace.css?v=20261127-menus-visiveis" />
+    <link rel="stylesheet" href="/workspace.css?v=20261127-agenda" />
     <script src="/vendor/lucide.js?v=1.34.0" defer></script>
     <script src="/vendor/sip.js?v=20260528-local" defer></script>
   </head>
@@ -109,6 +109,7 @@
           <button data-tab="dialer" data-label="Discador" title="Discador"><i data-lucide="phone-call"></i><span>Discador</span></button>
           <button data-tab="audios" data-label="Gravações" title="Gravações"><i data-lucide="mic-2"></i><span>Gravações</span></button>
           <button data-tab="reports" data-label="Relatorios" title="Relatorios"><i data-lucide="file-chart-column"></i><span>Relatorios</span></button>
+          <button data-tab="agenda" data-label="Agenda" title="Agenda"><i data-lucide="contact"></i><span>Agenda</span></button>
           <button data-tab="queues" data-label="Filas e paineis" title="Filas e paineis"><i data-lucide="layout-panel-top"></i><span>Filas e paineis</span></button>
           <span class="nav-group">Telefonia</span>
           <button data-tab="trunk" data-label="Troncos SIP" title="Troncos SIP"><i data-lucide="radio-tower"></i><span>Troncos</span></button>
@@ -185,6 +186,7 @@
         <div id="tab-ivrAudios" class="tab-page"></div>
         <div id="tab-queues" class="tab-page"></div>
         <div id="tab-security" class="tab-page"></div>
+        <div id="tab-agenda" class="tab-page"></div>
         <div id="tab-logs" class="tab-page"></div>
         <div id="tab-reports" class="tab-page"></div>
         <div id="tab-audit" class="tab-page"></div>
@@ -245,6 +247,7 @@
     <script src="/assisted-transfer.js?v=20260914-assisted-1"></script>
     <script src="/trunk-policy.js?v=20261126-trunk-directions-2"></script>
     <script src="/sip-recovery.js?v=20261126-reconnect-1"></script>
-    <script src="/app.js?v=20261127-menus-visiveis"></script>
+    <script src="/access-policy.js?v=20261127-agenda"></script>
+    <script src="/app.js?v=20261127-agenda"></script>
   </body>
 </html>

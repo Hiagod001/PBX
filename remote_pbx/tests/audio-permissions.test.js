@@ -47,7 +47,7 @@ test('report access alone does not grant recording playback or download',async()
 test('frontend permissions distinguish both pages and recording navigation never requests IVR audio',async()=>{
  const context={state:{user:user({audios:true}),config:{}},loadRecordingLibrary:async()=>calls.push('recordings'),loadIvrAudios:async()=>calls.push('ivr'),renderAudios(){},renderIvrAudios(){},iconRefresh(){}};
  const calls=[];
- const declarations=frontend.match(/const menuPermissions = \{[\s\S]*?\n\};/)[0]+frontend.match(/const adminOnlyTabs = new Set\([^;]+;/)[0];
+ const declarations=frontend.match(/const menuPermissions = \{[\s\S]*?\n\};/)[0];
  vm.runInNewContext(declarations+frontend.slice(frontend.indexOf('function canAccessTab('),frontend.indexOf('function firstAllowedTab('))+frontend.slice(frontend.indexOf('async function fetchTabData('),frontend.indexOf('async function setActiveTab(')),context);
  assert.equal(context.canAccessTab('audios'),true);assert.equal(context.canAccessTab('ivrAudios'),false);
  await context.fetchTabData('audios');assert.deepEqual(calls,['recordings']);
@@ -69,7 +69,7 @@ test('sidebar hides empty groups and restores each heading when an authorized it
 });
 
 test('ending or restricting a session clears cached audio pages',()=>{
- const context={state:{user:null,ivrAudios:[{url:'/private'}],recordingLibrary:{calls:[{id:'old'}]}},pages:{audios:{innerHTML:'old'},ivrAudios:{innerHTML:'old'}},canAccessTab:()=>false};
+ const context={state:{user:null,ivrAudios:[{url:'/private'}],recordingLibrary:{calls:[{id:'old'}]}},pages:{agenda:{replaceChildren(){}},audios:{innerHTML:'old'},ivrAudios:{innerHTML:'old'}},canAccessTab:()=>false};
  vm.runInNewContext(frontend.slice(frontend.indexOf('function clearRestrictedAudioViews('),frontend.indexOf('function updateNavigationGroups(')),context);
  context.clearRestrictedAudioViews();
  assert.equal(context.state.ivrAudios.length,0);assert.equal(context.state.recordingLibrary.calls.length,0);assert.equal(context.pages.audios.innerHTML,'');assert.equal(context.pages.ivrAudios.innerHTML,'');

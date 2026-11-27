@@ -1,0 +1,4 @@
+FROM uai-pbx-web:20261127-menus-visiveis
+COPY server.js /opt/pbx-sip-admin/
+COPY src/agenda.js /opt/pbx-sip-admin/src/
+COPY public/access-policy.js public/app.js public/index.html public/workspace.css /opt/pbx-sip-admin/public/

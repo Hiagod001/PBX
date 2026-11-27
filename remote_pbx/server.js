@@ -1,3 +1,4 @@
+const accessPolicy = require("./public/access-policy");
 require("dotenv").config();
 require("express-async-errors");
 
@@ -62,7 +63,7 @@ const pauseReasons = new Set(["Cafezinho", "Almoço", "Treinamento", "Atendiment
 const spaRoutes = new Set([
   "/", "/resume", "/resumo", "/overview", "/reports", "/relatorios", "/monitor", "/status",
   "/trunk", "/troncos", "/extensions", "/ramais", "/routes", "/rotas", "/routing", "/ura", "/ivr",
-  "/dialer", "/discador", "/audios", "/audios-ura", "/queues", "/filas", "/logs", "/security", "/seguranca",
+  "/agenda", "/dialer", "/discador", "/audios", "/audios-ura", "/queues", "/filas", "/logs", "/security", "/seguranca",
   "/audit", "/auditoria", "/users", "/usuarios"
 ]);
 let protocolCounterLock = Promise.resolve();
@@ -498,7 +499,7 @@ function authFingerprint(user) {
   const value = {
     username: user?.username || "",
     passwordHash: user?.passwordHash || "",
-    role: user?.role || "user",
+    role: user?.role || (user?.username === "admin" ? "admin" : "user"),
     extension: user?.extension || "",
     departments: user?.departments || [],
     allowedExtensions: user?.allowedExtensions || [],
@@ -551,20 +552,23 @@ function requireAdmin(req, res, next) {
   if (userRole(req) === "admin") return next();
   const requestPath = String(req.path || "");
   const menu = requestPath.startsWith("/api/dialer/") ? "dialer"
-    : requestPath.startsWith("/api/ivr-audios") ? "ivrAudios" : null;
+    : requestPath.startsWith("/api/ivr-audios") ? "ivrAudios" : ({
+      "/api/users": "users", "/api/audit": "audit", "/api/trunks/registrations": "trunk",
+      "/api/registration-logs": "logs", "/api/outbound-diagnostics": "logs"
+    })[requestPath];
   if (menu && hasMenuAccess(req, menu)) return next();
   if (req.method === "PATCH" && req.path === "/api/config/apply" && canEditConfigSections(req, req.body?.sections)) return next();
   return res.status(403).json({ error: "Acao restrita a administradores" });
 }
 
 function hasMenuAccess(req, menu) {
-  return userRole(req) === "admin" || req.session?.user?.permissions?.menus?.[menu] === true;
+  return userRole(req) === "admin" || req.session?.user?.permissions?.menus?.[accessPolicy.menuKey(menu)] === true;
 }
 
 function canEditConfigSections(req, sections) {
   if (!sections || typeof sections !== "object" || Array.isArray(sections)) return false;
   const keys = Object.keys(sections);
-  return keys.length > 0 && keys.every((key) => ["queues", "ringGroups"].includes(key)) && hasMenuAccess(req, "queues");
+  return keys.length > 0 && keys.every(key => accessPolicy.sectionAllowed(key, tab => hasMenuAccess(req, tab)));
 }
 
 function requireSupervisor(req, res, next) {
@@ -613,15 +617,45 @@ function publicExtension(extension) {
 function configForUser(config, req) {
   if (userRole(req) === "admin") return config;
   const redacted = JSON.parse(JSON.stringify(config || {}));
-  if (redacted.trunk) redacted.trunk.sipPassword = "";
+  if (!hasMenuAccess(req, "trunk") && redacted.trunk) redacted.trunk.sipPassword = "";
   (redacted.trunks || []).forEach((trunk) => {
-    trunk.sipPassword = "";
+    if (!hasMenuAccess(req, "trunk")) trunk.sipPassword = "";
   });
   (redacted.extensions || []).forEach((extension) => {
-    extension.secret = "";
+    if (!hasMenuAccess(req, "extensions")) extension.secret = "";
   });
   if (redacted.voicemail) redacted.voicemail.defaultPin = "";
   return redacted;
+}
+
+// Routing may change an extension's call permissions. The IVR editor may connect an
+// existing trunk to an inbound destination. Keep all other fields owned by their menu.
+function delegatedSections(req, previous, sections) {
+  if (userRole(req) === "admin") return sections;
+  const result = { ...sections };
+  const visible = configForUser(previous, req);
+  const denied = () => { throw Object.assign(new Error("A alteração inclui campos de outro menu."), { status: 403 }); };
+  function patchRow(row, before, stored, fields) {
+    if (!row || !before || !stored) denied();
+    const next = { ...stored };
+    for (const key of new Set([...Object.keys(row), ...Object.keys(before)])) {
+      if (fields.includes(key)) next[key] = row[key];
+      else if (JSON.stringify(row[key]) !== JSON.stringify(before[key])) denied();
+    }
+    return next;
+  }
+  for (const [section, owner, fields] of [
+    ["extensions", "extensions", ["permissions"]],
+    ["trunk", "trunk", ["inboundDestinationType", "inboundDestination"]],
+    ["trunks", "trunk", ["inboundDestinationType", "inboundDestination"]]
+  ]) {
+    if (!Object.hasOwn(result, section) || hasMenuAccess(req, owner)) continue;
+    if (Array.isArray(previous[section])) {
+      if (!Array.isArray(result[section]) || result[section].length !== previous[section].length) denied();
+      result[section] = result[section].map((row, i) => patchRow(row, visible[section][i], previous[section][i], fields));
+    } else result[section] = patchRow(result[section], visible[section], previous[section], fields);
+  }
+  return result;
 }
 
 function configRevision(config) {
@@ -4218,18 +4252,51 @@ app.post("/api/change-password", requireAuth, async (req, res) => {
   res.json({ user: req.session.user });
 });
 
+function canManageAccount(req, account) {
+  if (userRole(req) === "admin") return true;
+  const actor = req.session.user;
+  if (!["user", "supervisor"].includes(account.role) || account.username === actor.username || account.username === "admin") return false;
+  const rights = account.permissions || {};
+  if (Object.entries(rights.menus || {}).some(([key, enabled]) => enabled === true && actor.permissions?.menus?.[key] !== true)) return false;
+  if (rights.interveneCalls === true && !userCanInterveneLiveCalls(req)) return false;
+  if ((rights.managePauses ?? rights.interveneCalls) === true && !userCanManagePauses(req)) return false;
+  if (!actor.allowedExtensions?.length && !actor.departments?.length) return true;
+  if (!rights.menus?.status) return true;
+  return Boolean(account.allowedExtensions?.length || account.departments?.length)
+    && (account.allowedExtensions || []).every(n => actor.allowedExtensions?.includes(n))
+    && (account.departments || []).every(d => actor.departments?.includes(d));
+}
+
+const agenda = require("./src/agenda");
+app.get("/api/agenda", requireAuth, (req, res) => {
+  if (!hasMenuAccess(req, "agenda")) return res.status(403).json({ error: "Sem acesso à Agenda." });
+  res.set("Cache-Control", "private, no-store");
+  try {
+    const status = agenda.refreshStatus();
+    const list = status.updatedAt ? agenda.listContacts(req.query) : { contacts: [], page: 1, pages: 1, total: 0 };
+    res.json({ ...list, ...status });
+  } catch {
+    res.status(503).json({ error: "Não foi possível abrir a agenda. Tente novamente." });
+  }
+});
+app.post("/api/agenda/refresh", requireAuth, requireAdmin, async (req, res) => {
+  const status = agenda.requestRefresh();
+  await writeSystemAuditEvent(req, "agenda-refresh", { label: "Solicitou atualização da agenda IXC" });
+  res.status(202).json(status);
+});
+
 app.get("/api/users", requireAuth, requireAdmin, async (req, res) => {
   const users = await getUsers();
-  res.json({ users: (users.users || []).map(publicUser) });
+  res.json({ users: (users.users || []).filter(u => canManageAccount(req, u)).map(publicUser) });
 });
 
 app.put("/api/users", requireAuth, requireAdmin, async (req, res) => {
   const current = await getUsers();
   const incoming = req.body?.users;
-  if (!Array.isArray(incoming) || !incoming.length) return res.status(400).json({ error: "Informe as contas que deseja salvar." });
+  if (!Array.isArray(incoming) || (!incoming.length && userRole(req) === "admin")) return res.status(400).json({ error: "Informe as contas que deseja salvar." });
   const names = new Set();
   const currentByUsername = new Map((current.users || []).map((user) => [user.username, user]));
-  const nextUsers = [];
+  const nextUsers = current.users.filter(u => !canManageAccount(req, u));
   const config = await getConfig();
 
   for (const item of incoming) {
@@ -4252,6 +4319,9 @@ app.put("/api/users", requireAuth, requireAdmin, async (req, res) => {
       createdAt: existing.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
+    if ((currentByUsername.has(username) && !canManageAccount(req, existing)) || !canManageAccount(req, next)) {
+      return res.status(403).json({ error: "Só é possível gerenciar contas e permissões dentro do seu próprio acesso." });
+    }
     const grants = next.permissions;
     const monitorChanged = ["interveneCalls", "managePauses"].some(key =>
       (grants[key] ?? (key === "managePauses" && grants.interveneCalls)) !==
@@ -4296,7 +4366,7 @@ app.put("/api/users", requireAuth, requireAdmin, async (req, res) => {
     changes: auditDiff({ users: publicBeforeUsers }, { users: publicAfterUsers }, ["users"]),
     details: `Usuarios: ${nextUsers.map((user) => user.username).join(", ")}`
   });
-  res.json({ users: nextUsers.map(publicUser) });
+  res.json({ users: nextUsers.filter(u => canManageAccount(req, u)).map(publicUser) });
 });
 
 app.get("/api/audit", requireAuth, requireAdmin, async (req, res) => {
@@ -4453,8 +4523,8 @@ app.patch("/api/config/apply", requireAuth, requireAdmin, async (req, res) => {
     const previous = await getConfig();
     const expectedRevision = String(req.body?._revision || "");
     const expectedSections = req.body?._sectionRevisions || {};
-    const { config: incoming, keys } = mergeConfigSections(previous, req.body?.sections);
-    if (!keys.length) return { config: withConfigRevision(previous), copied: false, reloaded: false, unchanged: true, durationMs: 0 };
+    const { config: incoming, keys } = mergeConfigSections(previous, delegatedSections(req, previous, req.body?.sections));
+    if (!keys.length) return { config: withConfigRevision(configForUser(previous, req), previous), copied: false, reloaded: false, unchanged: true, durationMs: 0 };
     assertSectionRevisions(previous, keys, expectedRevision, expectedSections);
     validateConfig(incoming);
     return saveAndApplyConfig(req, previous, incoming);

@@ -246,6 +246,7 @@ const pages = {
   ivrAudios: document.querySelector("#tab-ivrAudios"),
   queues: document.querySelector("#tab-queues"),
   security: document.querySelector("#tab-security"),
+  agenda: document.querySelector("#tab-agenda"),
   logs: document.querySelector("#tab-logs"),
   reports: document.querySelector("#tab-reports"),
   audit: document.querySelector("#tab-audit"),
@@ -255,6 +256,7 @@ const monitorStatusContent = document.querySelector("#monitorStatusContent");
 const monitorSpyPortal = document.querySelector("#monitorSpyPortal");
 
 const titleByTab = {
+  agenda: "Agenda",
   overview: "Visão Geral",
   status: "Monitor de Filas",
   trunk: "Troncos",
@@ -285,12 +287,14 @@ const subtitleByTab = {
   queues: "Equipes, estrategias e distribuicao de chamadas",
   security: "Protecao e politicas do ambiente",
   logs: "Saude, conectividade e eventos do PBX",
+  agenda: "Contatos dos clientes ativos do IXC",
   reports: "Indicadores e historico operacional",
   audit: "Rastreabilidade das alteracoes",
   users: "Acessos e permissoes administrativas"
 };
 
 const menuPermissions = {
+  agenda: "agenda",
   overview: "overview",
   reports: "reports",
   status: "status",
@@ -308,9 +312,10 @@ const menuPermissions = {
   users: "users"
 };
 
-const adminOnlyTabs = new Set(["trunk", "extensions", "routing", "ivr", "logs", "security", "audit", "users"]);
+for (const tab of Object.keys(menuPermissions)) menuPermissions[tab] = PbxAccess.menuKey(tab);
 
 const tabRoutes = {
+  agenda: "/agenda",
   overview: "/resume",
   reports: "/reports",
   status: "/monitor",
@@ -330,6 +335,7 @@ const tabRoutes = {
 
 const routeTabs = {
   "/": "overview",
+  "/agenda": "agenda",
   "/resume": "overview",
   "/resumo": "overview",
   "/overview": "overview",
@@ -1865,6 +1871,7 @@ function clearRestrictedAudioViews() {
     state.ivrAudios = [];
     if (pages.ivrAudios) pages.ivrAudios.innerHTML = "";
   }
+  if (!state.user || !canAccessTab("agenda")) pages.agenda.replaceChildren();
   if (!state.user || !canAccessTab("audios")) {
     state.recordingLibrary.requestId = (state.recordingLibrary.requestId || 0) + 1;
     state.recordingLibrary.calls = [];
@@ -1887,7 +1894,6 @@ function updateNavigationGroups(root = $("#navTabs")) {
 function canAccessTab(tab) {
   if (!state.user) return true;
   if ((state.user.role || "") === "admin" || state.user.username === "admin") return true;
-  if (adminOnlyTabs.has(tab)) return false;
   const key = menuPermissions[tab];
   return !key || state.user.permissions?.menus?.[key] === true;
 }
@@ -1947,6 +1953,7 @@ async function fetchTabData(tab = state.activeTab) {
   if (tab === "overview") await Promise.all([loadPbxStatus(), loadOverviewData(state.overview.date)]);
   if (tab === "reports") await Promise.all([loadPbxStatus(), loadReports()]);
   if (["status", "security"].includes(tab)) await loadPbxStatus();
+  if (tab === "agenda") await openAgenda();
   if (tab === "users") await loadUsers();
   if (tab === "audit") await loadAudit();
   if (tab === "dialer") await loadDialerCampaigns();
@@ -3371,8 +3378,7 @@ async function unpauseExtensionQueue() {
 
 function updateTopbarActions() {
   const editableTabs = ["trunk", "extensions", "routing", "ivr", "queues", "security"];
-  const isAdmin = state.user?.role === "admin" || state.user?.username === "admin";
-  $("#saveBtn")?.classList.toggle("hidden", !(isAdmin || state.activeTab === "queues" && canAccessTab("queues")) || !editableTabs.includes(state.activeTab));
+  $("#saveBtn")?.classList.toggle("hidden", !canAccessTab(state.activeTab) || !editableTabs.includes(state.activeTab));
 }
 
 async function loadConfig() {
@@ -6343,10 +6349,10 @@ function syncUserMonitorControls(card) {
 }
 
 function renderUsers() {
-  const users = state.users.length ? state.users : [state.user].filter(Boolean);
+  const users = state.users;
   const index = state.editingUserIndex;
   const editing = Number.isInteger(index) && users[index];
-  const menusFor = (role) => Object.keys(menuPermissions).filter(tab => role === "admin" || !adminOnlyTabs.has(tab));
+  const menusFor = () => Object.keys(menuPermissions).filter(canAccessTab);
   const countMenus = (user) => menusFor(user.role).filter(tab => user.role === "admin" || user.permissions?.menus?.[menuPermissions[tab]]).length;
   const remove = (user, i) => `<button class="icon-btn danger" type="button" data-remove-user="${i}" ${user.username === "admin" ? "disabled" : ""} aria-label="Remover usuário" title="Remover usuário"><i data-lucide="trash-2"></i></button>`;
   if (!editing) {
@@ -6370,8 +6376,6 @@ function renderUsers() {
       ${helpIcon("Permite acessar o menu " + titleByTab[tab] + ".")}
     </li>`;
   }).join("");
-  const reservedMenus = admin ? "" : `<div class="user-menu-reserved"><h4><i data-lucide="lock-keyhole" aria-hidden="true"></i>Exclusivos do administrador</h4>
-    <ul class="user-menu-grid">${[...adminOnlyTabs].map(tab => `<li class="user-menu-readonly">${escapeHtml(titleByTab[tab])}</li>`).join("")}</ul></div>`;
   const ext = state.config?.extensions || [];
   const numbers = editing.allowedExtensions || [];
   const departments = editing.departments || [];
@@ -6380,12 +6384,12 @@ function renderUsers() {
     <div class="panel-header entity-editor-header"><div><p class="eyebrow">Usuários e permissões</p><h3>${escapeHtml(editing.username || "Novo usuário")}</h3></div>
     <div class="compact-card-actions"><button class="secondary-btn" data-cancel-user-edit type="button"><i data-lucide="arrow-left"></i>Voltar para lista</button><button id="saveUsersBtn" class="primary-btn" type="button"><i data-lucide="save"></i>Salvar usuário</button>${remove(editing,index)}</div></div>
     <section class="user-access-block"><h3>Conta</h3><div class="user-identity-fields"><label>Usuário<input data-user-field="username" required value="${escapeHtml(editing.username || "")}" ${editing.username === "admin" ? "readonly" : ""}></label>
-    <label>Perfil<select data-user-field="role" ${editing.username === "admin" ? "disabled" : ""}>${Object.entries(userRoleLabels).map(([value,label])=>option(value, editing.role || "user", label)).join("")}</select></label>
+    <label>Perfil<select data-user-field="role" ${editing.username === "admin" ? "disabled" : ""}>${Object.entries(userRoleLabels).filter(([role]) => role !== "admin" || state.user.role === "admin").map(([value,label])=>option(value, editing.role || "user", label)).join("")}</select></label>
     <label>Senha<input data-user-field="password" type="password" autocomplete="new-password" placeholder="${state.editingUserNew ? "Crie uma senha de acesso" : "Manter a senha atual"}"></label></div>
     <label class="user-setting-option"><input type="checkbox" data-user-field="mustChangePassword" ${editing.mustChangePassword ? "checked" : ""}><span>Exigir troca de senha no próximo acesso</span></label></section>
     <section class="user-access-block"><div class="user-access-heading"><h3>Menus liberados</h3>
     ${admin ? '<span class="badge ok">Acesso total</span>' : `<div class="user-access-actions"><span data-user-menu-count>${countMenus(editing)} de ${menus.length} menus</span><button class="secondary-btn compact" data-user-toggle-menus="${index}" type="button"><span data-user-toggle-label>${countMenus(editing) === menus.length ? "Limpar" : "Selecionar todos"}</span></button></div>`}</div>
-    <ul class="user-menu-grid" aria-label="${admin ? "Menus do administrador" : "Menus disponíveis para este perfil"}">${menuOptions}</ul>${reservedMenus}</section>
+    <ul class="user-menu-grid" aria-label="${admin ? "Menus do administrador" : "Menus disponíveis para este perfil"}">${menuOptions}</ul></section>
     ${admin ? "" : `<section class="user-access-block"><h3>Supervisão no Monitor de Filas</h3><p class="microcopy" data-monitor-hint></p>
     <fieldset data-monitor-grants><div class="user-monitor-options"><label class="user-setting-option"><input type="checkbox" data-user-permission="managePauses" ${(perms.managePauses ?? perms.interveneCalls) === true ? "checked" : ""}><span>Pausar e retomar atendentes</span></label>
     <label class="user-setting-option"><input type="checkbox" data-user-permission="interveneCalls" ${perms.interveneCalls === true ? "checked" : ""}><span>Intervir nas chamadas</span></label></div>
@@ -6639,7 +6643,7 @@ async function saveConfig(scope = "") {
   const sections = Object.fromEntries(
     CONFIG_SECTION_KEYS
       .filter((key) => !scopeKeys[scope] || scopeKeys[scope].includes(key))
-      .filter((key) => state.user?.role === "admin" || canAccessTab("queues") && ["queues", "ringGroups"].includes(key))
+      .filter((key) => state.user?.role === "admin" || PbxAccess.sectionAllowed(key, canAccessTab))
       .filter((key) => JSON.stringify(state.config?.[key]) !== JSON.stringify(baseline?.[key]))
       .map((key) => [key, state.config[key]])
   );
@@ -6825,10 +6829,7 @@ async function loadReports(extra = {}) {
 }
 
 function collectUsersFromDom() {
-  const users = (state.users || []).map((user) => ({
-    ...user,
-    permissions: { ...(user.permissions || {}), menus: { ...(user.permissions?.menus || {}) } }
-  }));
+  const users = [...(state.users || [])];
   $all("[data-user-index]", pages.users).forEach((card) => {
     const index = Number(card.dataset.userIndex);
     if (!Number.isInteger(index)) return;
@@ -6853,6 +6854,50 @@ function collectUsersFromDom() {
     };
   });
   return users;
+}
+
+let agendaVersion = 0;
+let agendaTimer;
+async function openAgenda() {
+  const root = pages.agenda;
+  const isAdmin = state.user?.role === "admin";
+  root.innerHTML = `<section class="panel"><div class="panel-header"><h3>Agenda de clientes</h3>
+    ${isAdmin ? '<button type="button" class="secondary-btn" data-refresh-agenda><i data-lucide="refresh-cw"></i>Atualizar agenda</button>' : ""}</div>
+    <form class="agenda-search"><label for="agendaQuery">Nome, telefone ou CPF</label><input type="search" id="agendaQuery" maxlength="100"><button class="secondary-btn">Pesquisar</button></form>
+    <p class="microcopy" role="status" data-agenda-status>Carregando contatos…</p><div class="agenda-table"></div>
+    <div class="pagination"><button class="secondary-btn" data-agenda-prev disabled>Anterior</button><span data-agenda-page></span><button class="secondary-btn" data-agenda-next disabled>Próxima</button></div></section>`;
+  const form = root.querySelector("form");
+  const status = root.querySelector("[data-agenda-status]");
+  const refresh = root.querySelector("[data-refresh-agenda]");
+  const prev = root.querySelector("[data-agenda-prev]"), next = root.querySelector("[data-agenda-next]");
+  let page = 1, search = "";
+  const active = () => status.isConnected && state.activeTab === "agenda" && canAccessTab("agenda");
+  async function load() {
+    clearTimeout(agendaTimer);
+    const version = ++agendaVersion;
+    try {
+      const data = await api("/api/agenda?" + new URLSearchParams({ page, search }));
+      if (!active() || version !== agendaVersion) return;
+      page = data.page;
+      const time = data.updatedAt ? new Date(data.updatedAt).toLocaleString("pt-BR") : "";
+      status.textContent = [data.total.toLocaleString("pt-BR") + " contatos", data.refreshing ? "Atualizando pelo IXC…" : data.failed ? "Falha ao atualizar. A agenda anterior continua disponível." : time && "Atualizada em " + time].filter(Boolean).join(" · ");
+      root.querySelector(".agenda-table").innerHTML = data.contacts.length ? `<table><thead><tr><th>Cliente</th><th>Telefone</th><th>CPF</th></tr></thead><tbody>${data.contacts.map(c => `<tr><td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.phone.replace(/^(\d{2})(\d{4,5})(\d{4})$/, "($1) $2-$3"))}</td><td>${escapeHtml(c.cpf.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, "$1.$2.$3-$4") || "—")}</td></tr>`).join("")}</tbody></table>` : "<p>Nenhum contato encontrado.</p>";
+      root.querySelector("[data-agenda-page]").textContent = page + " de " + data.pages;
+      prev.disabled = page <= 1; next.disabled = page >= data.pages;
+      if (refresh) refresh.disabled = data.refreshing;
+      if (data.refreshing) agendaTimer = setTimeout(() => { if (active()) void load(); }, 3500);
+    } catch (error) { if (active() && version === agendaVersion) { status.textContent = error.message; if (refresh) refresh.disabled = false; } }
+  }
+  form.onsubmit = event => { event.preventDefault(); page = 1; search = form.querySelector("input").value; void load(); };
+  prev.onclick = () => { page--; void load(); };
+  next.onclick = () => { page++; void load(); };
+  if (refresh) refresh.onclick = async () => {
+    refresh.disabled = true;
+    try { await api("/api/agenda/refresh", { method: "POST" }); await load(); }
+    catch (error) { status.textContent = error.message; refresh.disabled = false; }
+  };
+  iconRefresh();
+  await load();
 }
 
 async function loadUsers() {
@@ -7986,7 +8031,7 @@ document.addEventListener("click", async (event) => {
         extension: "",
         allowedExtensions: [],
         departments: [],
-        permissions: { menus: { overview: true, reports: true } },
+        permissions: { menus: { overview: canAccessTab("overview"), reports: canAccessTab("reports") } },
         mustChangePassword: true
       });
       state.editingUserIndex = state.users.length - 1;

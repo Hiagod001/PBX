@@ -1,0 +1,6 @@
+[Unit]
+Description=Observe pedidos de atualização da agenda do PBX
+[Path]
+PathExists=/etc/dokploy/pbx-validation/data/app/ixc-refresh.request
+[Install]
+WantedBy=multi-user.target
