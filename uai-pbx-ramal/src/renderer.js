@@ -1323,6 +1323,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     const info = await window.pbxAPI.server();
     state.serverUrl = info.serverUrl;
     document.querySelector("#appVersion").textContent = info.version ? `Versão ${info.version}` : "";
+    document.querySelector("#releaseTestBadge").classList.toggle("hidden", info.version !== "1.0.14");
     await loadAudioDevices();
     if (info.extension) await showPhone(info.extension);
     else showLogin();

@@ -139,3 +139,10 @@ Para repetir, execute `scripts/verify-auto-update.cjs` no Windows com
 registro de instalação, perfil e servidor local próprios de QA. Remove os
 recursos ao passar; preserva os artefatos se o teste falhar. Não utiliza
 credenciais do PBX. As versões 0.0.1 e 0.0.2 pertencem somente ao laboratório.
+
+## Atualização de teste 1.0.14
+
+A versão 1.0.14 acrescenta somente um selo verde `Teste 1.0.14` no cabeçalho,
+visível antes e depois do login, para conferir o recebimento da atualização
+automática em outra estação. O selo é condicionado à versão 1.0.14 e fica
+oculto em versões seguintes. O funcionamento das chamadas permanece igual.
