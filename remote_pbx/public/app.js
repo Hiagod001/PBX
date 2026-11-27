@@ -255,7 +255,7 @@ const monitorStatusContent = document.querySelector("#monitorStatusContent");
 const monitorSpyPortal = document.querySelector("#monitorSpyPortal");
 
 const titleByTab = {
-  overview: "Visao Geral",
+  overview: "Visão Geral",
   status: "Monitor de Filas",
   trunk: "Troncos",
   extensions: "Ramais",
@@ -265,11 +265,11 @@ const titleByTab = {
   audios: "Gravações",
   ivrAudios: "Áudios da URA",
   queues: "Filas de atendimento",
-  security: "Seguranca",
+  security: "Segurança",
   logs: "Sistema",
-  reports: "Relatorios",
+  reports: "Relatórios",
   audit: "Auditoria",
-  users: "Usuarios"
+  users: "Usuários"
 };
 
 const subtitleByTab = {
@@ -307,24 +307,6 @@ const menuPermissions = {
   audit: "audit",
   users: "users"
 };
-
-const userMenuGroups = [
-  {
-    label: "Operação",
-    icon: "activity",
-    tabs: ["overview", "status", "reports", "audios", "queues", "extensions", "dialer"]
-  },
-  {
-    label: "Telefonia",
-    icon: "phone",
-    tabs: ["trunk", "routing", "ivr", "ivrAudios"]
-  },
-  {
-    label: "Administração",
-    icon: "shield-check",
-    tabs: ["logs", "security", "audit", "users"]
-  }
-];
 
 const adminOnlyTabs = new Set(["trunk", "extensions", "routing", "ivr", "logs", "security", "audit", "users"]);
 
@@ -6378,12 +6360,18 @@ function renderUsers() {
   }
   const admin = editing.role === "admin";
   const menus = menusFor(editing.role);
-  const groups = userMenuGroups.map(group => {
-    const tabs = group.tabs.filter(tab => menus.includes(tab));
-    if (!tabs.length) return "";
-    return `<section class="user-permission-group"><div class="user-permission-group-title"><i data-lucide="${group.icon}"></i><strong>${group.label}</strong></div>
-      <div class="user-permission-list">${tabs.map(tab => `<label class="user-permission-option"><input type="checkbox" data-user-menu="${menuPermissions[tab]}" ${editing.permissions?.menus?.[menuPermissions[tab]] ? "checked" : ""}><span>${escapeHtml(titleByTab[tab] || tab)}</span></label>`).join("")}</div></section>`;
+  const menuOptions = menus.map(tab => {
+    const key = menuPermissions[tab];
+    const title = escapeHtml(titleByTab[tab]);
+    if (admin) return `<li class="user-menu-readonly"><i data-lucide="check" aria-hidden="true"></i>${title}</li>`;
+    return `<li class="user-menu-choice">
+      <input id="user-menu-${key}" type="checkbox" data-user-menu="${key}" ${editing.permissions?.menus?.[key] ? "checked" : ""}>
+      <label for="user-menu-${key}">${title}</label>
+      ${helpIcon("Permite acessar o menu " + titleByTab[tab] + ".")}
+    </li>`;
   }).join("");
+  const reservedMenus = admin ? "" : `<div class="user-menu-reserved"><h4><i data-lucide="lock-keyhole" aria-hidden="true"></i>Exclusivos do administrador</h4>
+    <ul class="user-menu-grid">${[...adminOnlyTabs].map(tab => `<li class="user-menu-readonly">${escapeHtml(titleByTab[tab])}</li>`).join("")}</ul></div>`;
   const ext = state.config?.extensions || [];
   const numbers = editing.allowedExtensions || [];
   const departments = editing.departments || [];
@@ -6397,7 +6385,7 @@ function renderUsers() {
     <label class="user-setting-option"><input type="checkbox" data-user-field="mustChangePassword" ${editing.mustChangePassword ? "checked" : ""}><span>Exigir troca de senha no próximo acesso</span></label></section>
     <section class="user-access-block"><div class="user-access-heading"><h3>Menus liberados</h3>
     ${admin ? '<span class="badge ok">Acesso total</span>' : `<div class="user-access-actions"><span data-user-menu-count>${countMenus(editing)} de ${menus.length} menus</span><button class="secondary-btn compact" data-user-toggle-menus="${index}" type="button"><span data-user-toggle-label>${countMenus(editing) === menus.length ? "Limpar" : "Selecionar todos"}</span></button></div>`}</div>
-    ${admin ? '<p class="microcopy">O administrador tem acesso a todos os menus e pode supervisionar todos os ramais.</p>' : `<div class="user-permission-groups">${groups}</div>`}</section>
+    <ul class="user-menu-grid" aria-label="${admin ? "Menus do administrador" : "Menus disponíveis para este perfil"}">${menuOptions}</ul>${reservedMenus}</section>
     ${admin ? "" : `<section class="user-access-block"><h3>Supervisão no Monitor de Filas</h3><p class="microcopy" data-monitor-hint></p>
     <fieldset data-monitor-grants><div class="user-monitor-options"><label class="user-setting-option"><input type="checkbox" data-user-permission="managePauses" ${(perms.managePauses ?? perms.interveneCalls) === true ? "checked" : ""}><span>Pausar e retomar atendentes</span></label>
     <label class="user-setting-option"><input type="checkbox" data-user-permission="interveneCalls" ${perms.interveneCalls === true ? "checked" : ""}><span>Intervir nas chamadas</span></label></div>

@@ -509,8 +509,48 @@ html[data-theme="dark"] .ivr-link-layer .time-out-link { stroke: #f6c566; }
   border-radius: 8px;
 }
 .user-editor h3, .user-editor .microcopy { margin: 0; }
-.user-editor .user-permission-groups { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
-.user-editor .user-permission-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); }
+.user-editor .user-menu-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.user-editor .user-menu-choice,
+.user-editor .user-menu-readonly {
+  min-width: 0;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 12px;
+}
+.user-editor .user-menu-choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  background: var(--surface);
+}
+.user-menu-choice:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.user-editor .user-menu-choice input { width: 16px; height: 16px; min-height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.user-editor .user-menu-choice label {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  margin: 0;
+  padding: 4px 0;
+  font-size: .88rem;
+  line-height: 1.35;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.user-editor .user-menu-choice .help-icon { margin: 0; }
+.user-editor .user-menu-reserved { border-top: 1px solid var(--line); padding-top: 12px; }
+.user-editor .user-menu-reserved h4,
+.user-editor .user-menu-readonly { display: flex; align-items: center; gap: 8px; }
+.user-editor .user-menu-reserved h4 { margin: 0 0 8px; color: var(--muted); }
+.user-editor .user-menu-readonly { padding-block: 8px; font-size: .83rem; }
+.user-editor .user-menu-reserved h4 svg, .user-editor .user-menu-readonly svg { width: 16px; height: 16px; flex: none; }
 .user-editor fieldset { display: grid; gap: 12px; margin: 0; padding: 0; border: 0; min-width: 0; }
 .user-editor fieldset:disabled { opacity: .65; }
 .user-editor details { min-width: 0; border: 1px solid var(--line); border-radius: 6px; }
