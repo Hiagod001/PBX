@@ -5862,6 +5862,7 @@ function renderLogs() {
 
 function renderReports() {
   const reports = state.pbxReports;
+  if (reports.view === "idle") return renderIdleReport();
   const filters = reports.filters || {};
   const dashboard = reports.dashboard || {};
   const charts = reports.charts || {};
@@ -5870,16 +5871,16 @@ function renderReports() {
   const statCards = [
     ["Total de chamadas", dashboard.total || 0, "phone-call", "neutral"],
     ["Atendidas", dashboard.answered || 0, "phone-call", "success"],
-    ["Nao atendidas", dashboard.noAnswer || 0, "phone-missed", "warn"],
+    ["Não atendidas", dashboard.noAnswer || 0, "phone-missed", "warn"],
     ["Perdidas", dashboard.missed || 0, "phone-off", "danger"],
     ["Ocupadas", dashboard.busy || 0, "circle-slash", "warn"],
     ["Rejeitadas", dashboard.rejected || 0, "shield-x", "danger"],
     ["Entrada", dashboard.inbound || 0, "phone-incoming", "info"],
-    ["Saida", dashboard.outbound || 0, "phone-outgoing", "info"],
+    ["Saída", dashboard.outbound || 0, "phone-outgoing", "info"],
     ["Internas", dashboard.internal || 0, "repeat-2", "neutral"],
-    ["TME", formatSeconds(dashboard.averageAnswerTime || 0), "timer", "neutral"],
-    ["TMA", formatSeconds(dashboard.averageCallTime || 0), "clock-3", "neutral"],
-    ["Gravacoes", dashboard.recordings || 0, "mic", "success"]
+    ["Espera média", formatSeconds(dashboard.averageAnswerTime || 0), "timer", "neutral"],
+    ["Atendimento médio", formatSeconds(dashboard.averageCallTime || 0), "clock-3", "neutral"],
+    ["Gravações", dashboard.recordings || 0, "mic", "success"]
   ]
     .map(
       ([label, value, icon, tone]) => `
@@ -5888,11 +5889,10 @@ function renderReports() {
         <span>${escapeHtml(label)}</span>
         <strong>${escapeHtml(value)}</strong>
       </section>`
-    )
-    .join("");
+    );
 
   const optionFrom = (items, selected, emptyLabel) =>
-    `<option value="">${emptyLabel}</option>${items.map((item) => option(item, selected)).join("")}`;
+    `<option value="">${emptyLabel}</option>${items.map((item) => option(item, selected, ({inbound:"Entrada",outbound:"Saída",internal:"Interna",answered:"Atendida",no_answer:"Não atendida",busy:"Ocupada",failed:"Falhou",canceled:"Cancelada",rejected:"Rejeitada"})[item] || item)).join("")}`;
   const queueOptions = `<option value="">Todas</option>${(state.config.queues || []).map((queue, index) => option(queue.id || queue.number || queueLabel(queue, index), filters.queue || "", queueLabel(queue, index))).join("")}`;
   const activeFilterCount = Object.values(filters).filter((value) => String(value || "") !== "").length;
   const compactOpen = reports.compactOpen || {};
@@ -5999,9 +5999,9 @@ function renderReports() {
 
   pages.reports.innerHTML = `
     <div class="reports-shell">
+      ${reportNavigation(false)}
       <section class="reports-hero">
         <div>
-          <p class="eyebrow">Relatorios PBX</p>
           <h3>Relatório de chamadas</h3>
         </div>
         <div class="report-actions">
@@ -6015,16 +6015,16 @@ function renderReports() {
         <div class="panel-header">
           <div>
             <h3>Filtros</h3>
-            <p class="table-meta">${activeFilterCount ? `${activeFilterCount} filtro${activeFilterCount > 1 ? "s" : ""} ativo${activeFilterCount > 1 ? "s" : ""}` : "Busca rapida sem abrir os campos tecnicos."}</p>
+            <p class="table-meta">${activeFilterCount ? `${activeFilterCount} filtro${activeFilterCount > 1 ? "s" : ""} ativo${activeFilterCount > 1 ? "s" : ""}` : "Selecione o período ou pesquise uma chamada."}</p>
           </div>
-          <button id="toggleReportFiltersBtn" class="secondary-btn"><i data-lucide="${reports.filtersOpen ? "chevron-up" : "sliders-horizontal"}"></i>${reports.filtersOpen ? "Ocultar avancado" : "Filtro avancado"}</button>
+          <button id="toggleReportFiltersBtn" class="secondary-btn"><i data-lucide="${reports.filtersOpen ? "chevron-up" : "sliders-horizontal"}"></i>${reports.filtersOpen ? "Ocultar filtros" : "Mais filtros"}</button>
         </div>
         <div class="report-simple-filters">
           <label>Data inicial<input data-report-filter="dateStart" type="date" value="${escapeHtml(filters.dateStart || "")}" /></label>
           <label>Data final<input data-report-filter="dateEnd" type="date" value="${escapeHtml(filters.dateEnd || "")}" /></label>
           <label>Tipo<select data-report-filter="type">${optionFrom(["inbound", "outbound", "internal"], filters.type || "", "Todos")}</select></label>
           <label>Status<select data-report-filter="status">${optionFrom(["answered", "no_answer", "busy", "failed", "canceled", "rejected"], filters.status || "", "Todos")}</select></label>
-          <label>Gravacao<select data-report-filter="recording">${option("", filters.recording || "", "Todas")}${option("with", filters.recording || "", "Com gravacao")}${option("without", filters.recording || "", "Sem gravacao")}</select></label>
+          <label>Gravação<select data-report-filter="recording">${option("", filters.recording || "", "Todas")}${option("with", filters.recording || "", "Com gravação")}${option("without", filters.recording || "", "Sem gravação")}</select></label>
           <label class="search">Pesquisar<input data-report-filter="q" value="${escapeHtml(filters.q || "")}" placeholder="Protocolo, origem, destino, ramal..." /></label>
         </div>
         <div class="report-advanced-filters ${reports.filtersOpen ? "" : "hidden"}">
@@ -6054,7 +6054,8 @@ function renderReports() {
         </div>
       </section>
 
-      <section class="report-stat-grid">${statCards}</section>
+      <section class="report-stat-grid report-primary-stats">${statCards.slice(0,4).join("")}</section>
+      <details class="report-more-stats"><summary>Mais indicadores de chamadas</summary><div class="report-stat-grid">${statCards.slice(4).join("")}</div></details>
 
       <section class="panel report-collapsible ${compactOpen.presence ? "open" : ""}">
         <div class="panel-header">
@@ -6075,7 +6076,7 @@ function renderReports() {
       <section class="panel report-collapsible ${compactOpen.pauses ? "open" : ""}">
         <div class="panel-header">
           <div>
-            <h3>Relatorio de pausas por ramal</h3>
+            <h3>Pausas por ramal</h3>
             <p class="table-meta">Quantidade, motivos e tempo de pausa dentro do periodo filtrado.</p>
           </div>
           <button class="secondary-btn" data-toggle-report-section="pauses"><i data-lucide="${compactOpen.pauses ? "chevron-up" : "chevron-down"}"></i>${compactOpen.pauses ? "Recolher" : "Expandir"}</button>
@@ -6099,7 +6100,7 @@ function renderReports() {
       <div class="section-grid report-collapsible ${compactOpen.charts ? "open" : ""}">
         <section class="panel report-section-toggle">
           <div class="panel-header">
-            <h3>Graficos</h3>
+            <h3>Gráficos de chamadas</h3>
             <button class="secondary-btn" data-toggle-report-section="charts"><i data-lucide="${compactOpen.charts ? "chevron-up" : "chevron-down"}"></i>${compactOpen.charts ? "Recolher" : "Expandir"}</button>
           </div>
         </section>
@@ -6116,7 +6117,7 @@ function renderReports() {
       <section class="panel report-collapsible ${compactOpen.calls !== false ? "open" : ""}">
         <div class="panel-header report-table-header">
           <div>
-            <h3>Relatorio detalhado de chamadas</h3>
+            <h3>Histórico de chamadas</h3>
             <p class="table-meta">${reports.loading ? "Carregando..." : `${meta.total || 0} registros encontrados`}</p>
           </div>
           <div class="report-header-actions">
@@ -7455,6 +7456,13 @@ document.addEventListener("click", async (event) => {
   const previewButton = event.target.closest("[data-preview]");
   const removeExtension = event.target.closest("[data-remove-extension]");
   const removeIvr = event.target.closest("[data-remove-ivr]");
+  const reportView = event.target.closest("[data-report-view]");
+  if (reportView) {
+    state.pbxReports.view = reportView.dataset.reportView;
+    renderReports();
+    iconRefresh();
+    return;
+  }
   const reportPageButton = event.target.closest("[data-report-page]");
   const reportSortButton = event.target.closest("[data-report-sort]");
   const recordingViewButton = event.target.closest("[data-recording-view]");

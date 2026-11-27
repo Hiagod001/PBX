@@ -1,0 +1,6 @@
+FROM uai-pbx-web:20261127-disponibilidade3
+WORKDIR /opt/pbx-sip-admin
+COPY server.js ./
+COPY src/idle-report.js ./src/
+COPY public/app.js public/index.html public/workspace.css public/idle-report.js ./public/
+

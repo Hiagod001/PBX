@@ -19,6 +19,7 @@ const { staticCacheHeaders, privateApiHeaders } = require("./src/http-cache");
 const { buildReportPdf } = require("./src/report-pdf");
 const { historyStart, historyFilters, keepHistoryTime } = require("./src/call-history");
 const crmDialer = require("./src/crm-dialer");
+const idleReport = require("./src/idle-report");
 const { WhatsAppDialer, whatsappCallFile, whatsappNumber } = require("./src/whatsapp-dialer");
 const trunkPolicy = require("./public/trunk-policy");
 
@@ -1915,16 +1916,16 @@ async function readPbxStatusFresh(config) {
   const [endpointOutput, registrationOutput, queueOutput, channelOutput, logs, manualPauses, idleByExtension] = await Promise.all([
     runAsteriskRead("endpoints"),
     runAsteriskRead("registrations"),
-    runAsteriskRead("queues").catch(() => ""),
-    runAsteriskRead("channels").catch(() => ""),
+    runAsteriskRead("queues").catch(() => null),
+    runAsteriskRead("channels").catch(() => null),
     readRegistrationLogs(),
     readExtensionPauses(),
     monitorHistoricalStats(config)
   ]);
   const endpoints = parseEndpointOutput(endpointOutput);
   const registrations = parseRegistrationsOutput(registrationOutput);
-  const queueStats = parseQueueOutput(queueOutput);
-  const activeChannels = parseChannelOutput(channelOutput);
+  const queueStats = parseQueueOutput(queueOutput || "");
+  const activeChannels = parseChannelOutput(channelOutput || "");
   const byId = new Map(endpoints.map((endpoint) => [endpoint.id, endpoint]));
   const queueById = new Map(queueStats.map((queue) => [queue.id, queue]));
   const channelByExtension = new Map();
@@ -1957,7 +1958,8 @@ async function readPbxStatusFresh(config) {
   }, new Map());
 
   let deskBusy;
-  try { deskBusy = crmDialer.busyExtensions(); } catch { deskBusy = crmDialer.lastBusyExtensions(); }
+  let deskReliable = crmDialer.availabilityFresh();
+  try { deskBusy = crmDialer.busyExtensions(); } catch { deskReliable = false; deskBusy = crmDialer.lastBusyExtensions(); }
   const extensions = config.extensions.map((extension) => {
     const endpoint = mergedEndpointStatus(byId, extension.number);
     const pause = pauseRecordFor(manualPauses, extension.number, readAt);
@@ -2175,6 +2177,7 @@ async function readPbxStatusFresh(config) {
 
   return {
     checkedAt: new Date().toISOString(),
+    idleObservedAt: endpoints.length && deskReliable && queueOutput !== null && channelOutput !== null ? readAt : null,
     extensions,
     queues,
     waitingCalls: queues.flatMap((queue) => (queue.waiting || []).map((call) => ({ ...call, queueName: queue.name }))),
@@ -4653,6 +4656,18 @@ app.get("/api/pbx/reports/charts", requireAuth, async (req, res) => {
   res.json({ charts: buildChartData(calls), filters });
 });
 
+app.get("/api/pbx/reports/idle", requireAuth, async (req, res) => {
+  if (!hasMenuAccess(req, "reports")) return res.status(403).json({error:"Acesso restrito a Relatórios."});
+  const today = idleReport.dayOf(Date.now());
+  const {from = today, to = today, extension = ""} = req.query;
+  const validDay = day => typeof day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(day) &&
+    !isNaN(Date.parse(day)) && new Date(day).toISOString().slice(0,10) === day;
+  if (!validDay(from) || !validDay(to) || from > to) return res.status(400).json({error:"Confira as datas do período."});
+  const config = configForReportScope(await getConfig(), userReportScope(req));
+  const extensions = config.extensions.filter(e => !extension || String(e.number) === extension);
+  res.json(idleReport.getLedger().report(extensions, from, to));
+});
+
 app.get("/api/pbx/reports/presence", requireAuth, async (req, res) => {
   const config = await getConfig();
   const scope = userReportScope(req, config);
@@ -5292,7 +5307,10 @@ async function startServer() {
   const config = await getConfig();
   await generateAsteriskConfigs(config);
   await syncStoredQueuePauses();
-  if (process.env.PBX_MIGRATION_TEST !== "true") { startDialerEngine(); startCrmDelivery(); }
+  if (process.env.PBX_MIGRATION_TEST !== "true") {
+    startDialerEngine(); startCrmDelivery();
+    idleReport.start(async () => readPbxStatus(await getConfig()));
+  }
   if (process.env.PBX_MIGRATION_TEST !== "true") startMaintenanceJobs();
   return app.listen(port, host, () => {
     console.log(`PBX SIP Admin rodando em http://${host}:${port}`);
