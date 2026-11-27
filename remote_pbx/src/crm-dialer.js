@@ -64,4 +64,37 @@ function startWorker({acknowledge,markConnected}) {
   }
   void tick();
 }
-module.exports={request,callVars,startWorker,uuid};
+// AstDB is also read by Asterisk before it rings a device. Keep the last
+// confirmed holds across a CRM outage or a restart of the web process.
+let ast;
+function holds() {
+  const { DatabaseSync } = require("node:sqlite");
+  ast ||= new DatabaseSync("/var/lib/asterisk/astdb.sqlite3", { readOnly: true });
+  return ast.prepare("select key,value from astdb where key glob '/UAI_DESK/*' or key glob '/UAI_WRAP/*'").all();
+}
+function busyExtensions() {
+  return new Set(holds().map(row => row.key.split("/")[2]));
+}
+let syncedAt = 0;
+function startAvailability(control, invalidate) {
+  let warnedAt = 0;
+  async function sync() {
+    try {
+      const rows = holds();
+      const pending = rows.filter(r => r.key.startsWith("/UAI_WRAP/")).slice(0,128);
+      const desk = new Set(rows.filter(r => r.key.startsWith("/UAI_DESK/")).map(r => r.key.split("/")[2]));
+      const {busy, delivered} = await request("availability", {attempts: pending.map(r => r.value)});
+      if (!Array.isArray(busy) || !busy.every(n => /^\d{2,8}$/.test(n)) || !Array.isArray(delivered)) throw new Error("Resposta de disponibilidade inválida");
+      const next = new Set(busy);
+      for (const n of next) if (!desk.has(n)) await control("crm-busy",n);
+      for (const n of desk) if (!next.has(n)) await control("crm-free",n);
+      for (const row of pending) if (delivered.includes(row.value)) await control("crm-delivered",row.key.split("/")[2],{attempt:row.value});
+      if (pending.length || busy.length !== desk.size || busy.some(n=>!desk.has(n))) invalidate();
+      syncedAt = Date.now();
+    } catch (error) {
+      if (Date.now()-warnedAt>60000) {warnedAt=Date.now(); console.error("Disponibilidade do Campanhas:", error.message);}
+    } finally { setTimeout(sync,2500).unref(); }
+  }
+  void sync();
+}
+module.exports={request,callVars,startWorker,uuid,busyExtensions,startAvailability,availabilityFresh:()=>Date.now()-syncedAt<15000};

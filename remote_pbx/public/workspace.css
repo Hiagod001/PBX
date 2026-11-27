@@ -445,6 +445,17 @@ html[data-theme="dark"] .queue-person .queue-pause-note { color: #f6cf74; }
 .queue-empty { margin: 0; padding: 14px; color: var(--muted-strong); }
 @media (max-width: 640px) { .queue-board { padding-inline: 4px; } .queue-board-key { padding-inline: 6px; } }
 
+:is(.queue-agent, .queue-presence, .agent-row, .monitor-status-label).campanhas { --marker: #8845c5; --fill: #f4eafb; }
+html[data-theme="dark"] :is(.queue-agent, .queue-presence, .agent-row, .monitor-status-label).campanhas { --marker: #c685ff; --fill: #392448; }
+.queue-agent.campanhas .queue-agent-label small { color: #7638a3; }
+html[data-theme="dark"] .queue-agent.campanhas .queue-agent-label small { color: #e0b8ff; }
+#tab-status .agent-table .agent-row.campanhas > td, .monitor-status-label.campanhas { background: var(--fill); color: var(--ink); }
+#tab-status .agent-row.campanhas > td:first-child { box-shadow: inset 4px 0 var(--marker); }
+.ms-dot.campanhas { background: #8845c5; }
+#pauseLimitsDialog { max-width: min(29rem,94vw); }
+#pauseLimitsForm { display: grid; gap: .8rem; }
+#pauseLimitsForm label { display: grid; grid-template-columns: 1fr 6rem; align-items: center; }
+#pauseLimitsForm footer { display: flex; gap: .5rem; justify-content: flex-end; }
 .queue-agent.available .queue-agent-label small { color: #166448; }
 .queue-agent.ringing .queue-agent-label small { color: #245c98; }
 .queue-agent.busy .queue-agent-label small { color: #9e2a3c; }

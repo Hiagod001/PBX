@@ -37,15 +37,11 @@ services:
       timeout: 5s
       retries: 4
   web:
-    image: uai-pbx-web:20261127-discador-dtmf
+    image: uai-pbx-web:20261127-disponibilidade2
     pull_policy: build
     build:
-      context: .
-      dockerfile_inline: |
-        FROM uai-pbx-web:20261127-agenda AS patch
-        RUN sed '/Set(PJSIP_DTMF_MODE()=inband)/d' /opt/pbx-sip-admin/src/asterisk.js | tr -d '\r' > /tmp/asterisk.js && echo '0b7ffcb3286c55c415d73a34b98a5d4073dddef1d67bc4b34f7ec14abdb1bd40  /tmp/asterisk.js' | sha256sum -c -
-        FROM uai-pbx-web:20261127-agenda
-        COPY --from=patch /tmp/asterisk.js /opt/pbx-sip-admin/src/asterisk.js
+      context: /home/dokploy/pbx-validation/releases/disponibilidade2-20261127/pbx
+      dockerfile: Dockerfile
     restart: unless-stopped
     init: true
     env_file: [/etc/dokploy/pbx-validation/private/web.env]

@@ -1,0 +1,58 @@
+diff --git a/server/pbx.mjs b/server/pbx.mjs
+--- a/server/pbx.mjs
++++ b/server/pbx.mjs
+@@ -33,6 +33,32 @@
+     if (!row) throw fail(401,'Integração não autorizada');
+     return row.tenant_id;
+   }
++  router.post('/availability', async (req, res) => {
++    const tenant = await integration(req);
++    const pending = req.body?.attempts;
++    if (!Array.isArray(pending) || pending.length > 128 ||
++        pending.some(id => typeof id !== 'string' || !/^(?:wa|dlr)-[0-9a-f-]{12,50}$/.test(id))) {
++      throw fail(400, 'Tentativas inválidas');
++    }
++    // One snapshot covers the open desk and acknowledgement of delivered PBX events.
++    const [result] = await sql`
++      select array(
++        select c.extension from pbx_private.calls c join public.attendances a
++          on a.tenant_id=c.tenant_id and a.id=c.attendance_id
++          where c.tenant_id=${tenant} and a.finished_at is null
++        union
++        select b.extension from pbx_private.bindings b join auth.sessions s on s.id=b.session_id
++          where b.tenant_id=${tenant} and b.ended_at is null and s.expires_at>now() and (
++            exists(select 1 from public.attendances a where a.tenant_id=b.tenant_id
++              and a.user_id=b.user_id and a.finished_at is null)
++            or exists(select 1 from public.campaign_leads l where l.tenant_id=b.tenant_id
++              and l.locked_by=b.user_id and l.lock_expires_at>now()
++              and coalesce(l.worked_at,'-infinity'::timestamptz)<l.locked_at)
++          )
++      ) as busy, array(select attempt from pbx_private.calls where tenant_id=${tenant}
++        and attempt=any(string_to_array(${pending.join(',')},','))) as delivered`;
++    res.set('Cache-Control','no-store').json(result);
++  });
+   router.get('/mailings', async (req,res) => {
+     const tenant = await integration(req);
+     res.json(await sql`select id,name from public.campaigns where tenant_id=${tenant} and status='active' and deleted_at is null order by name,id`);
+diff --git a/src/routes/_authenticated/app/atender.tsx b/src/routes/_authenticated/app/atender.tsx
+--- a/src/routes/_authenticated/app/atender.tsx
++++ b/src/routes/_authenticated/app/atender.tsx
+@@ -117,6 +117,18 @@
+     const id = setInterval(tick, 1000);
+     return () => clearInterval(id);
+   }, [active]);
++
++  // Keep the mailing reservation alive while this manual attendance is on screen.
++  useEffect(() => {
++    if (!active || active.pbxAttendanceId || !userId) return;
++    const renew = async () => {
++      const expires = new Date(Date.now() + 20 * 60_000).toISOString();
++      await supabase.from("campaign_leads").update({ lock_expires_at: expires })
++        .eq("id", active.campaignLeadId).eq("locked_by", userId);
++    };
++    const timer = window.setInterval(() => { void renew(); }, 60_000);
++    return () => window.clearInterval(timer);
++  }, [active, userId]);
+
+   async function nextLead() {
+     if (!campaignId) {

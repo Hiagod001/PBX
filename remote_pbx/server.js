@@ -286,7 +286,8 @@ function allocateProtocolEvent(input) {
 }
 
 async function readExtensionPauses() {
-  return (await fs.readJson(extensionPausePath).catch(() => ({}))) || {};
+  try { return await fs.readJson(extensionPausePath); }
+  catch (error) { if (error.code !== "ENOENT") throw error; return {}; }
 }
 
 async function readExtensionPauseHistory() {
@@ -307,10 +308,24 @@ function normalizePauseReason(reason) {
   return pauseReasons.has(text) ? text : "Cafezinho";
 }
 
+const pauseLimitsFile = path.join(__dirname, "data", "pause-limits.json");
+async function readPauseLimits() {
+  try { return await fs.readJson(pauseLimitsFile); }
+  catch (error) { if (error.code !== "ENOENT") throw error; return {}; }
+}
+function pauseExpired(record, now = Date.now()) {
+  return Boolean(record?.deadline && Date.parse(record.deadline) <= now);
+}
+
 let pauseMutation = Promise.resolve();
 let monitorSpyOwner = null;
-function updateExtensionPause(number, paused, reason = "", { requireAvailable = false, expectedPauseId } = {}) {
+function updateExtensionPause(number, paused, reason = "", { requireAvailable = false, expectedPauseId, adminRelease = false } = {}) {
   const operation = pauseMutation.catch(() => {}).then(async () => {
+    const record = (await readExtensionPauses())[number];
+    if (record?.paused && paused) throw Object.assign(new Error("O ramal já está em pausa."), { status: 409 });
+    if (!paused && pauseExpired(record) && !adminRelease) {
+      throw Object.assign(new Error("Limite de pausa atingido. Peça a um administrador para liberar seu ramal."), { status: 409 });
+    }
     if (paused) {
       const config = await getConfig();
       const status = await readPbxStatus(config, { fresh: true });
@@ -329,8 +344,9 @@ function updateExtensionPause(number, paused, reason = "", { requireAvailable = 
         throw Object.assign(new Error("A pausa mudou. Atualize o monitor e confira o ramal."), { status: 409 });
       }
     }
+    const limit = paused ? Number((await readPauseLimits())[normalizePauseReason(reason)] || 0) : 0;
     const output = await runAsteriskControl(paused ? "queue-pause" : "queue-unpause", number, { reason });
-    const pause = await setExtensionPause(number, paused, reason);
+    const pause = await setExtensionPause(number, paused, reason, limit);
     pbxStatusCache = { revision: "", expiresAt: 0, value: null, pending: null };
     return { output, pause };
   });
@@ -338,7 +354,7 @@ function updateExtensionPause(number, paused, reason = "", { requireAvailable = 
   return operation;
 }
 
-async function setExtensionPause(number, paused, reason = "") {
+async function setExtensionPause(number, paused, reason = "", limit = 0) {
   const key = String(number || "").replace(/[^\d]/g, "");
   if (!key) return null;
   const pauses = await readExtensionPauses();
@@ -346,6 +362,7 @@ async function setExtensionPause(number, paused, reason = "") {
     pauses[key] = {
       pauseId: pauses[key]?.pauseId || `pause-${Date.now()}-${key}`,
       paused: true,
+      deadline: limit ? new Date(Date.now() + limit * 60000).toISOString() : null,
       reason: normalizePauseReason(reason),
       startedAt: pauses[key]?.startedAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
@@ -367,7 +384,8 @@ async function setExtensionPause(number, paused, reason = "") {
     delete pauses[key];
   }
   await fs.ensureDir(path.dirname(extensionPausePath));
-  await fs.writeJson(extensionPausePath, pauses, { spaces: 2 });
+  await fs.writeJson(extensionPausePath + ".tmp", pauses, { spaces: 2 });
+  await fs.rename(extensionPausePath + ".tmp", extensionPausePath);
   return pauses[key] || null;
 }
 
@@ -394,6 +412,7 @@ function pauseRecordFor(pauses, number, now = Date.now()) {
     pauseId: record.pauseId || record.startedAt,
     reason: record.reason || "Pausa",
     startedAt: new Date(startedAt).toISOString(),
+    expired: pauseExpired(record, now),
     pauseSeconds,
     pauseDurationLabel: secondsToHuman(pauseSeconds)
   };
@@ -849,6 +868,7 @@ async function runAsteriskControl(action, extensionNumber, payload = {}) {
 
   const helper = process.env.ASTERISK_CONTROL_HELPER || "/opt/pbx-sip-admin/scripts/asterisk-control-root.sh";
   const args = [helper, action, extension];
+  if (action === "crm-delivered") args.push(payload.attempt);
   if (action === "crm-ack") args.push(payload.family,payload.attempt);
   if (action === "queue-pause") args.push(String(payload.reason || "Pausa"));
   if (action === "hangup") args.push(String(payload.channel || ""));
@@ -1351,15 +1371,22 @@ async function reconcileDialerCampaigns(config, campaigns) {
 async function dialerCapacity(config, campaign, campaigns) {
   const limit = Number(campaign.maxConcurrent || 1);
   const active = (campaign.numbers || []).filter((lead) => lead.status === "queued").length;
-  if (!campaign.perAgent) return Math.max(0, limit - active);
+  if (!crmDialer.availabilityFresh()) return 0;
   const status = await readPbxStatus(config).catch(() => null);
   if (!status) return 0;
   const queue = (status.queues || []).find((item) => item.id === campaign.destination);
   const members = campaign.destinationType === "extension" ? [campaign.destination] :
     (queue?.agents || []).filter((a) => a.registered && a.status === "available").map((a) => a.number);
-  const free = (status.extensions || []).filter((ext) => ext.captureReady && members.includes(ext.number)).length;
-  const reserved = campaigns.reduce((sum, c) => sum + (c.numbers || []).filter((lead) => lead.status === "queued").length, 0);
-  return Math.max(0, Math.min(limit - active, Math.ceil(free * campaign.perAgent) - reserved));
+  const held = crmDialer.busyExtensions();
+  const free = (status.extensions || []).filter((ext) => ext.captureReady && !held.has(ext.number) && members.includes(ext.number)).length;
+  if (!free) return 0;
+  const reserved = campaigns.reduce((sum, c) => {
+    const group = c.destinationType === "extension" ? [c.destination] :
+      (config.queues.find(q => q.id === c.destination)?.members || []);
+    if (!group.some(n => members.includes(n))) return sum;
+    return sum + (c.numbers || []).filter(lead => lead.status === "queued" && !lead.agentExtension).length;
+  }, 0);
+  return Math.max(0, Math.min(limit - active, Math.ceil(free * (campaign.perAgent || 1)) - reserved));
 }
 
 async function tickDialerCampaigns() {
@@ -1423,6 +1450,7 @@ async function tickDialerCampaigns() {
 }
 
 function startCrmDelivery() {
+  crmDialer.startAvailability(runAsteriskControl, () => { pbxStatusCache.expiresAt = 0; });
   crmDialer.startWorker({
     acknowledge: (family,attempt)=>runAsteriskControl("crm-ack","00",{family,attempt}),
     markConnected: event=>updateDialerCampaigns(async campaigns=>{
@@ -1927,6 +1955,8 @@ async function readPbxStatusFresh(config) {
     return acc;
   }, new Map());
 
+  let deskBusy;
+  try { deskBusy = crmDialer.busyExtensions(); } catch { deskBusy = new Set(); }
   const extensions = config.extensions.map((extension) => {
     const endpoint = mergedEndpointStatus(byId, extension.number);
     const pause = pauseRecordFor(manualPauses, extension.number, readAt);
@@ -1953,7 +1983,9 @@ async function readPbxStatusFresh(config) {
       state,
       registered,
       paused: Boolean(activePause),
-      captureReady: endpoint.registered && !activePause && !channel && endpointStatus.key === "available"
+      pauseExpired: Boolean(activePause?.expired),
+      crmBusy: deskBusy.has(extension.number),
+      captureReady: endpoint.registered && !deskBusy.has(extension.number) && !activePause && !channel && endpointStatus.key === "available"
         && !queueStats.some((q) => q.agents.some((a) => String(a.number) === String(extension.number) && a.pauseName)),
       pauseReason: activePause?.reason || "",
       pauseSeconds: activePause?.pauseSeconds || 0,
@@ -2011,7 +2043,7 @@ async function readPbxStatusFresh(config) {
       const endpointStatus = queueStatusFromText(channel?.state || endpoint.state || "Nao carregado");
       const activeManualPause = endpointRegistered ? manualPause : null;
       const channelStatus = activeChannelStatus(channel);
-      const status =
+      const status = deskBusy.has(member) ? { key: "campanhas", label: "Em atendimento no Campanhas", tone: "campanhas" } :
         !endpointRegistered
           ? { key: "unavailable", label: "Offline", tone: "unavailable" }
           : channelStatus
@@ -2064,6 +2096,7 @@ async function readPbxStatusFresh(config) {
         callsMadeToday: stats.callsMadeToday || 0,
         callsReceivedToday: stats.callsReceivedToday || 0,
         pauseName: activeManualPause?.reason || parsedAgent.pauseName || "",
+        pauseExpired: Boolean(manualPause?.expired),
         pauseReason: activeManualPause?.reason || "",
         pauseSeconds: activeManualPause?.pauseSeconds || Number(parsedAgent.pauseSeconds) || 0,
         pauseDurationLabel: activeManualPause?.pauseDurationLabel || parsedAgent.pauseDurationLabel || "",
@@ -4160,6 +4193,7 @@ app.post("/api/extensions/protocol", requireExtensionAuth, async (req, res) => {
 });
 
 app.post("/api/extensions/call", requireExtensionAuth, async (req, res) => {
+  if (crmDialer.busyExtensions().has(req.session.extension.number)) return res.status(409).json({ error: "Finalize o atendimento no Campanhas antes de ligar." });
   const requestedNumber = String(req.body?.number || "").trim();
   if (!/^\d{1,20}$/.test(requestedNumber)) return res.status(400).json({ error: requestedNumber ? "Use somente números, com no máximo 20 dígitos." : "Informe o número para ligar." });
   const config = await getConfig();
@@ -4377,6 +4411,23 @@ app.get("/api/audit", requireAuth, requireAdmin, async (req, res) => {
 app.get("/api/config", requireAuth, async (req, res) => {
   const config = await getConfig();
   res.json(withConfigRevision(configForUser(config, req), config));
+});
+
+app.get("/api/pause-limits", requireAuth, requireAdmin, async (req, res) => {
+  res.json({ limits: await readPauseLimits() });
+});
+app.put("/api/pause-limits", requireAuth, requireAdmin, async (req, res) => {
+  const limits = req.body?.limits;
+  if (!limits || typeof limits !== "object" || Array.isArray(limits) ||
+      Object.keys(limits).length !== pauseReasons.size ||
+      [...pauseReasons].some(reason => !Number.isInteger(limits[reason]) || limits[reason] < 0 || limits[reason] > 1440)) {
+    return res.status(400).json({ error: "Informe de 0 a 1440 minutos para cada motivo." });
+  }
+  const temp = pauseLimitsFile + "." + require("node:crypto").randomUUID();
+  await fs.writeJson(temp, limits);
+  await fs.rename(temp, pauseLimitsFile);
+  await writeSystemAuditEvent(req, "pause-limits", { summary: "Limites de pausa atualizados", after: limits });
+  res.json({ limits });
 });
 
 app.get("/api/monitor/sip", requireAuth, requireSupervisor, async (req, res) => {
@@ -4647,7 +4698,7 @@ app.post("/api/pbx/monitor/action", requireAuth, requireSupervisor, async (req, 
     const reason = req.body.reason;
     if (pausing && !pauseReasons.has(reason)) return res.status(400).json({ error: "Escolha um motivo de pausa." });
     try {
-      await updateExtensionPause(target, pausing, pausing ? reason : "", { requireAvailable: pausing,
+      await updateExtensionPause(target, pausing, pausing ? reason : "", { requireAvailable: pausing, adminRelease: userRole(req) === "admin",
         expectedPauseId: pausing ? undefined : String(req.body.pauseId || "") });
     } catch (error) {
       if (error.status === 409) return res.status(409).json({ error: error.message });
@@ -4905,7 +4956,7 @@ app.get("/api/pbx-status", requireAuth, async (req, res) => {
   const pauseScope = userCanManagePauses(req) ? scoped.extensions.filter(e => userCanMonitorExtension(req, config, e.number)) : [];
   res.json({ ...scoped,
     pauseTargets: pauseScope.filter(e => e.captureReady).map(e => String(e.number)),
-    resumeTargets: Object.fromEntries(pauseScope.filter(e => e.paused && e.pauseId).map(e => [e.number, e.pauseId])),
+    resumeTargets: Object.fromEntries(pauseScope.filter(e => e.paused && e.pauseId && (!e.pauseExpired || userRole(req) === "admin")).map(e => [e.number, e.pauseId])),
     captureQueues: intervene ? config.queues.filter((q) => captureQueueAllowed(req, config, q)).map((q) => q.id) : [],
     captureTargets: availableTargets
   });

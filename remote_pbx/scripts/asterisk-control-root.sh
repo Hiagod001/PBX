@@ -32,6 +32,19 @@ channel_belongs_to_extension() {
 }
 
 case "$ACTION" in
+  crm-busy|crm-free)
+    if [[ "$ACTION" == crm-busy ]]; then
+      /usr/sbin/asterisk -rx "database put UAI_DESK ${EXTENSION} 1"
+    else
+      /usr/sbin/asterisk -rx "database del UAI_DESK ${EXTENSION}"
+    fi
+    ;;
+  crm-delivered)
+    [[ "$VALUE" =~ ^(dlr|wa)-[0-9a-f-]{12,50}$ ]] || exit 2
+    if [[ "$(/usr/sbin/asterisk -rx "database get UAI_WRAP ${EXTENSION}")" == "Value: $VALUE" ]]; then
+      /usr/sbin/asterisk -rx "database del UAI_WRAP ${EXTENSION}"
+    fi
+    ;;
   crm-ack)
     [[ "$VALUE" =~ ^UAI_(CONNECT|END)$ && "$EXTRA" =~ ^(dlr|wa)-[0-9a-f-]{12,50}$ ]] || exit 2
     /usr/sbin/asterisk -rx "database del ${VALUE} ${EXTRA}"

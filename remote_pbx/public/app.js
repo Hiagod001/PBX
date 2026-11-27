@@ -45,6 +45,7 @@ const compactMonitorStatusOptions = [
   ["available", "Disponível"],
   ["ringing", "Tocando"],
   ["busy", "Ocupado"],
+  ["campanhas", "Em atendimento no Campanhas"],
   ["paused", "Pausa"],
   ["unavailable", "Offline"]
 ];
@@ -62,7 +63,7 @@ function defaultMonitorCompactSettings() {
     queueSearch: "",
     hiddenQueues: [],
     fields: { calls: true, duration: true, number: true, pause: true, idle: true, online: false },
-    statuses: { available: true, ringing: true, busy: true, paused: true, unavailable: true }
+    statuses: { campanhas: true, available: true, ringing: true, busy: true, paused: true, unavailable: true }
   };
 }
 
@@ -3419,6 +3420,7 @@ function statusTone(registered, stateText = "") {
 
 function monitorStatusTone(value = "") {
   const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "campanhas") return "campanhas";
   if (["available", "disponivel", "ok"].includes(normalized)) return "available";
   if (["paused", "pausado"].includes(normalized)) return "paused";
   if (["busy", "ligacao", "in use", "ocupado"].includes(normalized)) return "busy";
@@ -3431,7 +3433,7 @@ function monitorNumber(value) {
 }
 
 function uniqueMonitorAgentCounts(queues = []) {
-  const tonePriority = { unavailable: 0, available: 1, paused: 2, ringing: 3, busy: 4 };
+  const tonePriority = { unavailable: 0, available: 1, paused: 2, ringing: 3, busy: 4, campanhas: 5 };
   const agents = new Map();
 
   queues.forEach((queue, queueIndex) => {
@@ -3444,7 +3446,7 @@ function uniqueMonitorAgentCounts(queues = []) {
     });
   });
 
-  const counts = { available: 0, paused: 0, busy: 0, ringing: 0, unavailable: 0, agents: agents.size };
+  const counts = { available: 0, paused: 0, busy: 0, ringing: 0, unavailable: 0, campanhas: 0, agents: agents.size };
   agents.forEach((tone) => {
     counts[tone] += 1;
   });
@@ -3474,7 +3476,7 @@ function agentPauseSummary(agent = {}, tone = "") {
 }
 
 const queueBoardStates = {
-  available: "Disponível", ringing: "Tocando", busy: "Em ligação", paused: "Em pausa", unavailable: "Offline"
+  campanhas: "Em atendimento no Campanhas", available: "Disponível", ringing: "Tocando", busy: "Em ligação", paused: "Em pausa", unavailable: "Offline"
 };
 
 const monitorSettings = $("#monitorSettings");
@@ -3748,6 +3750,7 @@ function renderCompactMonitor(queues = [], waitingCalls = [], totals = {}, lastR
             <span><i class="command-live-dot"></i> ${escapeHtml(liveLabel)}</span>
           </div>
           <div class="command-monitor-tools">
+            ${state.user?.role === "admin" ? '<button class="secondary-btn compact" type="button" data-pause-policy>Limites de pausa</button>' : ""}
             <label class="command-search" title="Buscar fila ou ramal">
               <i data-lucide="search"></i>
               <input data-compact-search type="search" placeholder="Buscar fila ou ramal..." value="${escapeHtml(searchValue)}" />
@@ -3902,7 +3905,7 @@ function renderStatus() {
       talkTime: 0,
       productivity: 0,
       ...uniqueAgentCounts,
-      busy: uniqueAgentCounts.busy + uniqueAgentCounts.ringing
+      busy: uniqueAgentCounts.busy + uniqueAgentCounts.ringing + uniqueAgentCounts.campanhas
     }
   );
   const queueCount = Math.max(queues.length, 1);
@@ -3952,7 +3955,7 @@ function renderStatus() {
           const tone = monitorStatusTone(agent.statusTone || agent.status);
           const pauseReason = agent.pauseReason || agent.pauseName || "-";
           const pauseTime = tone === "paused" ? agent.pauseDurationLabel || "0s" : "-";
-          const pauseSummary = agentPauseSummary(agent, tone);
+          const pauseSummary = agent.pauseExpired ? "Limite atingido · aguarda administrador" : agentPauseSummary(agent, tone);
           const canControlCall = Boolean(agent.channel) || ["busy", "ringing"].includes(tone);
           const idleTitle = agent.lastInboundCallAt ? ` title="Ultima chamada de entrada: ${escapeHtml(formatDateTime(agent.lastInboundCallAt))}"` : "";
           return `
@@ -3993,7 +3996,7 @@ function renderStatus() {
             <div class="queue-summary">
               <span class="available">Disponivel: <strong>${monitorNumber(counts.available)}</strong></span>
               <span class="paused">Pausa: <strong>${monitorNumber(counts.paused)}</strong></span>
-              <span class="busy">Ocupado: <strong>${monitorNumber((counts.busy || 0) + (counts.ringing || 0))}</strong></span>
+              <span class="busy">Ocupado: <strong>${monitorNumber((counts.busy || 0) + (counts.ringing || 0) + (counts.campanhas || 0))}</strong></span>
               <span class="unavailable">Indisponivel: <strong>${monitorNumber(counts.unavailable)}</strong></span>
             </div>
           </div>
@@ -4004,7 +4007,7 @@ function renderStatus() {
             <div><span>TME</span><strong>${escapeHtml(queue.holdTimeLabel || "0s")}</strong></div>
             <div><span>TMA</span><strong>${escapeHtml(queue.talkTimeLabel || "0s")}</strong></div>
             <div><span>Produtividade</span><strong>${monitorNumber(queue.productivity)}%</strong></div>
-            <div><span>Geral</span><strong>${monitorNumber((counts.available || 0) + (counts.busy || 0) + (counts.ringing || 0))}/${monitorNumber(agents.length)}</strong></div>
+            <div><span>Geral</span><strong>${monitorNumber((counts.available || 0) + (counts.busy || 0) + (counts.ringing || 0) + (counts.campanhas || 0))}/${monitorNumber(agents.length)}</strong></div>
           </div>
           <div class="agent-table-wrap compact-table">
             <table class="agent-table">
@@ -4053,6 +4056,7 @@ function renderStatus() {
         <div class="monitor-toolbar">
           <span class="live-pill"><span></span>${escapeHtml(liveLabel)}</span>
           <span class="badge ${trunkTone}">Tronco ${escapeHtml(trunkStatus)}</span>
+          ${state.user?.role === "admin" ? '<button class="secondary-btn compact" type="button" data-pause-policy>Limites de pausa</button>' : ""}
           <button id="monitorViewToggleBtn" class="secondary-btn" type="button"><i data-lucide="table-2"></i>Compacto</button>
           <button id="monitorCompactSettingsBtn" class="icon-btn" type="button" title="Personalizar monitor" aria-label="Personalizar monitor"><i data-lucide="settings"></i></button>
           <button id="refreshPbxStatusBtn" class="secondary-btn"><i data-lucide="rotate-cw"></i>Agora</button>
@@ -4130,7 +4134,7 @@ function commandCenterQueueCards(queues = [], extensionFilter = "", searchValue 
     const rows = agents.map((agent) => {
       const tone = monitorStatusTone(agent.statusTone || agent.status);
       const label = queueBoardStates[tone];
-      const pause = agentPauseSummary(agent, tone);
+      const pause = agent.pauseExpired ? "Limite atingido · aguarda administrador" : agentPauseSummary(agent, tone);
       const canMonitor = Boolean(agent.channel) || ["busy", "ringing"].includes(tone);
       const cells = columns.map(([, , , read]) => {
         const value = read(agent, tone);
@@ -8857,6 +8861,20 @@ document.addEventListener("click", async (event) => {
       return;
     }
 
+    if (event.target.closest("[data-pause-policy]")) {
+      const {limits} = await api("/api/pause-limits");
+      for (const input of $all("#pauseLimitsForm [data-reason]")) input.value = limits[input.dataset.reason] || 0;
+      $("#pauseLimitsDialog").showModal();
+      return;
+    }
+    if (event.target.closest("[data-save-pause-limits]")) {
+      if (!$("#pauseLimitsForm").reportValidity()) return;
+      const limits = Object.fromEntries($all("#pauseLimitsForm [data-reason]").map(input => [input.dataset.reason,Number(input.value)]));
+      await api("/api/pause-limits",{method:"PUT",body:JSON.stringify({limits})});
+      $("#pauseLimitsDialog").close();
+      setMessage("Limites de pausa salvos.", "ok");
+      return;
+    }
     const settingsButton = event.target.closest("#monitorCompactSettingsBtn, #overviewColumnsBtn");
     if (settingsButton) {
       monitorSettingsOpener = settingsButton.id;

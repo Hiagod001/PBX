@@ -1,0 +1,6 @@
+FROM uai-pbx-web:20261127-discador-dtmf
+WORKDIR /opt/pbx-sip-admin
+COPY server.js ./
+COPY public/ ./public/
+COPY src/ ./src/
+COPY --chmod=0755 scripts/asterisk-control-root.sh ./scripts/

@@ -29,7 +29,7 @@ function destinationDialplan(type, destination) {
 
 function ivrDestinationDialplan(type, destination) {
   if (type === "extension" && clean(destination) === "700") return "Goto(internal,700,1)";
-  if (type === "extension") return `Dial(${extensionContactExpression(destination)},60,tT)`;
+  if (type === "extension") return `ExecIf($[!\${DB_EXISTS(UAI_DESK/${clean(destination)})} & !\${DB_EXISTS(UAI_WRAP/${clean(destination)})}]?Dial(${extensionContactExpression(destination)},60,tT))`;
   return destinationDialplan(type, destination);
 }
 
@@ -276,7 +276,8 @@ function renderDialerContext(lines, config) {
   lines.push(" same => n,Hangup()");
   lines.push(" same => n(queue),Gosub(queue-${DIALER_DESTINATION},s,1)");
   lines.push(" same => n,Hangup()");
-  lines.push(" same => n(extension),Dial(${PJSIP_DIAL_CONTACTS(${DIALER_DESTINATION})}&${PJSIP_DIAL_CONTACTS(web-${DIALER_DESTINATION})},60,tTU(pbx-agent-connected))");
+  lines.push(" same => n(extension),ExecIf($[${DB_EXISTS(UAI_DESK/${DIALER_DESTINATION})} | ${DB_EXISTS(UAI_WRAP/${DIALER_DESTINATION})}]?Hangup(17))");
+  lines.push(" same => n,Dial(${PJSIP_DIAL_CONTACTS(${DIALER_DESTINATION})}&${PJSIP_DIAL_CONTACTS(web-${DIALER_DESTINATION})},60,tTU(pbx-agent-connected))");
   lines.push(" same => n,Hangup()");
   lines.push("exten => i,1,Hangup()");
   lines.push("exten => t,1,Hangup()");
@@ -295,7 +296,8 @@ function renderDialerContext(lines, config) {
     lines.push(` same => n,GotoIf($["\${WA_DEST_TYPE}"="queue" & "\${WA_DESTINATION}"="${clean(queue.id)}"]?waq${index})`);
   });
   lines.push(" same => n,Hangup(21)");
-  lines.push(" same => n(extension),Dial(${PJSIP_DIAL_CONTACTS(${WA_DESTINATION})}&${PJSIP_DIAL_CONTACTS(web-${WA_DESTINATION})},60,tTU(wa-agent-connected))");
+  lines.push(" same => n(extension),ExecIf($[${DB_EXISTS(UAI_DESK/${WA_DESTINATION})} | ${DB_EXISTS(UAI_WRAP/${WA_DESTINATION})}]?Hangup(17))");
+  lines.push(" same => n,Dial(${PJSIP_DIAL_CONTACTS(${WA_DESTINATION})}&${PJSIP_DIAL_CONTACTS(web-${WA_DESTINATION})},60,tTU(wa-agent-connected))");
   lines.push(" same => n,Hangup()");
   (config.queues || []).forEach((queue, index) => {
     lines.push(` same => n(waq${index}),Set(CDR(queue)=${clean(queue.id)})`);
@@ -308,10 +310,14 @@ function renderDialerContext(lines, config) {
   lines.push(" same => n,Set(AGENT_DEVICE=${CHANNEL(endpoint)})");
   lines.push(" same => n,Set(AGENT_EXT=${FILTER(0-9,${AGENT_DEVICE})})");
   lines.push(' same => n,GotoIf($["${AGENT_EXT}"=""]?done)');
+  lines.push(' same => n,GotoIf($[${DB_EXISTS(UAI_DESK/${AGENT_EXT})} | ${DB_EXISTS(UAI_WRAP/${AGENT_EXT})}]?occupied)');
   lines.push(" same => n,Set(AGENT_RECORD=${EPOCH}|${AGENT_EXT}|${UAI_MAILING}|${UAI_LEAD}|${UAI_PHONE})");
+  lines.push(' same => n,ExecIf($["${UAI_MAILING}"!="" & "${UAI_LEAD}"!=""]?Set(DB(UAI_WRAP/${AGENT_EXT})=${UAI_ATTEMPT}))');
   lines.push(" same => n,Set(DB(UAI_CONNECT/${UAI_ATTEMPT})=${AGENT_RECORD})");
   lines.push(" same => n,Set(CHANNEL(hangup_handler_push)=pbx-agent-ended,s,1(${UAI_ATTEMPT},${AGENT_RECORD}))");
   lines.push(" same => n(done),Return()");
+  lines.push(" same => n(occupied),Set(GOSUB_RESULT=BUSY)");
+  lines.push(" same => n,Return()");
   lines.push("", "[pbx-agent-ended]");
   lines.push("exten => s,1,Set(DB(UAI_END/${ARG1})=${ARG2}|${EPOCH})");
   lines.push(" same => n,Return()");
@@ -648,6 +654,7 @@ function renderExtensions(config) {
     " same => n,Goto(ivr-main,s,1)",
     "",
     "exten => _20X,1,NoOp(Chamada interna para ${EXTEN})",
+    " same => n,ExecIf($[${DB_EXISTS(UAI_DESK/${EXTEN})} | ${DB_EXISTS(UAI_WRAP/${EXTEN})}]?Hangup(17))",
     " same => n,Set(CDR(direction)=internal)",
     " same => n,Gosub(record-call,s,1(${CALLERID(num)},${EXTEN}))",
     " same => n,Dial(${PJSIP_DIAL_CONTACTS(${EXTEN})}&${PJSIP_DIAL_CONTACTS(web-${EXTEN})},60,tT)",
@@ -656,6 +663,7 @@ function renderExtensions(config) {
 
   config.extensions.forEach((ext) => {
     lines.push(`exten => ${clean(ext.number)},1,NoOp(Chamada direta para ${clean(ext.number)})`);
+    lines.push(" same => n,ExecIf($[${DB_EXISTS(UAI_DESK/${EXTEN})} | ${DB_EXISTS(UAI_WRAP/${EXTEN})}]?Hangup(17))");
     lines.push(" same => n,Set(CDR(direction)=internal)");
     lines.push(` same => n,Gosub(record-call,s,1(\${CALLERID(num)},${clean(ext.number)}))`);
     lines.push(` same => n,Dial(${extensionContactExpression(ext.number)},60,tT)`);
@@ -676,6 +684,13 @@ function renderExtensions(config) {
 
   config.extensions.forEach((ext) => {
     lines.push(`[from-${clean(ext.number)}]`);
+    lines.push(`exten => ${ext.number},hint,PJSIP/${ext.number}`);
+    lines.push("exten => _X!,1,NoOp(Disponibilidade do atendente)");
+    const emergency = config.outbound?.emergencyEnabled ? (config.outbound.emergencyNumbers || []).map(clean) : [];
+    for (const n of emergency) lines.push(` same => n,GotoIf($["\${EXTEN}"="${n}"]?dispatch)`);
+    lines.push(` same => n,ExecIf($[\${DB_EXISTS(UAI_DESK/${clean(ext.number)})} | \${DB_EXISTS(UAI_WRAP/${clean(ext.number)})}]?Hangup(17))`);
+    lines.push(` same => n(dispatch),Goto(from-ready-${clean(ext.number)},\${EXTEN},1)`);
+    lines.push(`[from-ready-${clean(ext.number)}]`);
     lines.push("include => internal");
     lines.push(`include => outbound-${clean(ext.number)}`);
     lines.push("");
@@ -791,6 +806,7 @@ function renderExtensions(config) {
 
   lines.push("", "[queue-member]");
   lines.push("exten => _X!,1,NoOp(Membro de fila ${EXTEN} chamado por ${CALLERID(num)})");
+  lines.push(" same => n,ExecIf($[${DB_EXISTS(UAI_DESK/${EXTEN})} | ${DB_EXISTS(UAI_WRAP/${EXTEN})}]?Hangup(17))");
   lines.push(' same => n,GotoIf($["${DB(UAI_PAUSED/${EXTEN})}"="1"]?paused)');
   lines.push(' same => n,GotoIf($["${CALLERID(num)}"="${EXTEN}"]?self)');
   lines.push(' same => n,Set(AGENT_HOOK=${IF($["${UAI_ATTEMPT}"!=""]?U(pbx-agent-connected):)})');
@@ -802,7 +818,7 @@ function renderExtensions(config) {
   lines.push(" same => n,Hangup(21)");
 
   config.ringGroups.forEach((group) => {
-    const members = group.members.map((member) => extensionContactExpression(member)).join("&");
+    const members = group.members.map(member => `\${IF($[\${DB_EXISTS(UAI_DESK/${clean(member)})} | \${DB_EXISTS(UAI_WRAP/${clean(member)})}]?:${extensionContactExpression(member)})}`).join("&");
     const timeout = Math.min(Math.max(Number(group.timeout) || 25, 5), 300);
     lines.push("", `[ringgroup-${clean(group.id)}]`);
     lines.push("exten => s,1,NoOp(" + clean(group.name) + ")");
@@ -825,6 +841,7 @@ function renderExtensions(config) {
     const target = clean(number);
     lines.push(`exten => ${target},1,Set(GROUP(pbx-capture)=${target})`);
     lines.push(` same => n,GotoIf($[\${GROUP_COUNT(${target}@pbx-capture)}>1]?done)`);
+    lines.push(` same => n,GotoIf($[\${DB_EXISTS(UAI_DESK/${target})} | \${DB_EXISTS(UAI_WRAP/${target})}]?done)`);
     for (const id of [target, browserEndpoint(target)]) {
       lines.push(` same => n,GotoIf(\${REGEX("^(INUSE|BUSY|RINGING|RINGINUSE|ONHOLD)$" \${DEVICE_STATE(PJSIP/${id})})}?done)`);
     }

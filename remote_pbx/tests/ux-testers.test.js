@@ -11,6 +11,8 @@ test('pause guard rejects active calls before running Asterisk or changing histo
   let captureReady = false;
   const commands = [];
   const context = vm.createContext({
+    readExtensionPauses: async () => ({}), readPauseLimits: async () => ({}), normalizePauseReason: value => value,
+    pauseExpired: vm.runInNewContext('(' + source.slice(source.indexOf('function pauseExpired('), source.indexOf('let pauseMutation')).trim() + ')'),
     pauseMutation: Promise.resolve(), pbxStatusCache: {},
     getConfig: async () => ({}), readPbxStatus: async () => ({ extensions: [{ number: '777', captureReady }] }),
     channelsOwnedByExtension: () => active ? [{}] : [],
@@ -27,6 +29,13 @@ test('pause guard rejects active calls before running Asterisk or changing histo
   captureReady = true;
   await context.updateExtensionPause('777', true, 'Treinamento', { requireAvailable: true });
   assert.deepEqual(commands, ['queue-unpause', 'queue-pause']);
+  const deadline = new Date(Date.now()-60000).toISOString();
+  context.readExtensionPauses = async () => ({777:{paused:true, pauseId:'original', deadline}});
+  await assert.rejects(context.updateExtensionPause('777', false), /administrador/);
+  await assert.rejects(context.updateExtensionPause('777', false, '', {expectedPauseId:'original'}), /administrador/);
+  await assert.rejects(context.updateExtensionPause('777', true), /pausa/);
+  await context.updateExtensionPause('777', false, '', {expectedPauseId:'original', adminRelease:true});
+  assert.deepEqual(commands, ['queue-unpause', 'queue-pause', 'queue-unpause']);
 });
 
 test('dialer audio upload selects the new audio and preserves the rest of the form', async () => {

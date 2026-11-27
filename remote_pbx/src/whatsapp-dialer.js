@@ -166,7 +166,12 @@ class WhatsAppDialer {
     }
     campaigns = (await this.readCampaigns()).filter((c) => c.transport === "whatsapp");
     if (campaigns.some((c) => c.numbers.some((l) => l.status === "queued"))) return;
-    const candidate = campaigns.find((c) => c.status === "running" && (!c.nextDialAt || Date.parse(c.nextDialAt) <= Date.now()));
+    let candidate;
+    for (const campaign of campaigns) {
+      if (campaign.status !== "running" || Date.parse(campaign.nextDialAt) > Date.now()) continue;
+      if (!campaign.numbers.some(l => l.status === "pending") || !this.capacity ||
+          await this.capacity(config, campaign, campaigns)) { candidate = campaign; break; }
+    }
     if (!candidate) return;
     const lead = candidate.numbers.find((l) => l.status === "pending" && l.attempts < candidate.retryAttempts && (!l.nextAttemptAt || Date.parse(l.nextAttemptAt) <= Date.now()));
     if (!lead) {
@@ -182,7 +187,7 @@ class WhatsAppDialer {
     await this.updateCampaigns(async (all) => {
       const current = all.find((c) => c.id === candidate.id);
       if (current?.status !== "running" || all.some((c) => c.transport === "whatsapp" && c.numbers.some((l) => l.status === "queued"))) return all;
-      if (current.perAgent && (!this.capacity || !(await this.capacity(config, current, all)))) return all;
+      if (this.capacity ? !(await this.capacity(config, current, all)) : current.perAgent) return all;
       const target = current.numbers.find((l) => l.number === lead.number && l.status === "pending");
       if (!target) return all;
       const id = crypto.randomUUID();
