@@ -42,8 +42,8 @@ function whatsappOutcome(record, accepted = false) {
 }
 
 class WhatsAppDialer {
-  constructor({ configPath, readCampaigns, updateCampaigns, enqueue, finish, reports, reportForAttempt, acceptedAttempt }) {
-    Object.assign(this, { configPath, readCampaigns, updateCampaigns, enqueue, finish, reports, reportForAttempt, acceptedAttempt });
+  constructor({ configPath, readCampaigns, updateCampaigns, enqueue, finish, reports, reportForAttempt, acceptedAttempt, capacity }) {
+    Object.assign(this, { configPath, readCampaigns, updateCampaigns, enqueue, finish, reports, reportForAttempt, acceptedAttempt, capacity });
     this.lock = Promise.resolve();
     this.cachedStatus = { configured: false, connected: false, account: "", busy: false, maxConcurrent: 1, checkedAt: 0 };
     this.nextStatusAt = 0;
@@ -177,9 +177,10 @@ class WhatsAppDialer {
     if (!status.connected || status.busy) return;
     if (!((candidate.destinationType === "queue" ? config.queues : config.extensions) || []).some((d) => String(d.id || d.number) === candidate.destination)) return;
     let claimed;
-    await this.updateCampaigns((all) => {
+    await this.updateCampaigns(async (all) => {
       const current = all.find((c) => c.id === candidate.id);
       if (current?.status !== "running" || all.some((c) => c.transport === "whatsapp" && c.numbers.some((l) => l.status === "queued"))) return all;
+      if (current.perAgent && (!this.capacity || !(await this.capacity(config, current, all)))) return all;
       const target = current.numbers.find((l) => l.number === lead.number && l.status === "pending");
       if (!target) return all;
       const id = crypto.randomUUID();

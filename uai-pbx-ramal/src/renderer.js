@@ -262,12 +262,23 @@ function clearPendingCallTimeout() {
   }
 }
 
+function incomingContactLabel(contact, direction, number) {
+  const phone = String(number || "").replace(/\D/g, "").replace(/^55(?=\d{10,11}$)/, "").replace(/^0(?=\d{10,11}$)/, "");
+  if (direction !== "entrada" || !contact || contact.phone !== phone) return "";
+  if (contact.shared) return "IXC · Telefone compartilhado por mais de um cliente";
+  const cpf = String(contact.cpf || "").replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, "$1.$2.$3-$4");
+  return ["IXC", contact.name, cpf && "CPF " + cpf].filter(Boolean).join(" · ");
+}
+
 function renderActiveCallPanel() {
   renderStatusBadge();
   const active = Boolean(state.session || state.callPending);
   setActiveCallVisible(active);
   if (!active) return;
 
+  const contact = document.querySelector("#incomingContact");
+  contact.textContent = incomingContactLabel(state.ixcContact, state.currentDirection, state.currentNumber);
+  contact.hidden = !contact.textContent;
   activeCallKind.textContent = state.currentDirection === "entrada" ? "Chamada de entrada" : "Chamada de saida";
   activeCallNumber.textContent = normalizeCallerNumber(state.currentNumber) || cleanNumber(numberInput.value) || "-";
   activeCallStatus.textContent = state.callStatus || (state.session ? "Em chamada" : "Conectando");
@@ -986,6 +997,8 @@ async function refreshStatus() {
     const result = await window.pbxAPI.status({ includeHistory });
     if (state.extension !== extension) return;
     const status = result.status || {};
+    state.ixcContact = status.ixcContact || null;
+    renderActiveCallPanel();
     if (!pauseInFlight && revision === pauseRevision) {
       const pause = PhoneState.pauseFromStatus(status);
       pauseReason = pause.reason;

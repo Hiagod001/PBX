@@ -1,0 +1,4 @@
+FROM uai-pbx-web:20261127-ivr-links
+COPY public/app.js public/index.html /opt/pbx-sip-admin/public/
+COPY server.js /opt/pbx-sip-admin/
+COPY src/whatsapp-dialer.js src/ixc-contacts.js /opt/pbx-sip-admin/src/

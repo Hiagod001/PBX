@@ -929,6 +929,8 @@ function normalizeDialerCampaign(input = {}, previous = null, config = {}) {
     nextTrunkIndex: Number(previous?.nextTrunkIndex || 0),
     maxConcurrent: transport === "whatsapp" ? 1 : maxConcurrent,
     retryAttempts,
+    perAgent: [0.5, 1, 2].includes(Number(input.perAgent ?? previous?.perAgent)) ? Number(input.perAgent ?? previous?.perAgent) : 0,
+    ...(previous?.retrySource ? { retrySource: previous.retrySource } : {}),
     intervalSeconds,
     responseTimeout,
     status: previous?.status || "draft",
@@ -1139,6 +1141,7 @@ async function enqueueDialerCall(config, campaign, lead) {
 const whatsappDialer = new WhatsAppDialer({
   configPath: path.join(__dirname, "data", "whatsapp-gateway.json"),
   readCampaigns: readDialerCampaigns, updateCampaigns: updateDialerCampaigns,
+  capacity: dialerCapacity,
   enqueue: async (_config, campaign, lead, address) => {
     await fs.ensureDir(dialerOutgoingDir);
     const file = path.join(dialerOutgoingDir, `wa-${lead.waCallId}.call`);
@@ -1293,6 +1296,20 @@ async function reconcileDialerCampaigns(config, campaigns) {
   }
 }
 
+async function dialerCapacity(config, campaign, campaigns) {
+  const limit = Number(campaign.maxConcurrent || 1);
+  const active = (campaign.numbers || []).filter((lead) => lead.status === "queued").length;
+  if (!campaign.perAgent) return Math.max(0, limit - active);
+  const status = await readPbxStatus(config).catch(() => null);
+  if (!status) return 0;
+  const queue = (status.queues || []).find((item) => item.id === campaign.destination);
+  const members = campaign.destinationType === "extension" ? [campaign.destination] :
+    (queue?.agents || []).filter((a) => a.registered && a.status === "available").map((a) => a.number);
+  const free = (status.extensions || []).filter((ext) => ext.captureReady && members.includes(ext.number)).length;
+  const reserved = campaigns.reduce((sum, c) => sum + (c.numbers || []).filter((lead) => lead.status === "queued").length, 0);
+  return Math.max(0, Math.min(limit - active, Math.ceil(free * campaign.perAgent) - reserved));
+}
+
 async function tickDialerCampaigns() {
   if (!tickDialerCampaigns.running) return;
   const snapshot = await readDialerCampaigns();
@@ -1311,8 +1328,7 @@ async function tickDialerCampaigns() {
       if (campaign.transport === "whatsapp") continue;
       if (campaign.status !== "running") continue;
       if (campaign.nextDialAt && new Date(campaign.nextDialAt).getTime() > now) continue;
-      const active = (campaign.numbers || []).filter((lead) => lead.status === "queued").length;
-      const availableSlots = Math.max(0, Number(campaign.maxConcurrent || 1) - active);
+      const availableSlots = await dialerCapacity(config, campaign, campaigns);
       const batch = (campaign.numbers || [])
         .filter((lead) => lead.status === "pending" && Number(lead.attempts || 0) < Number(campaign.retryAttempts || 1) && (!lead.nextAttemptAt || Date.parse(lead.nextAttemptAt) <= now))
         .slice(0, availableSlots);
@@ -4040,6 +4056,7 @@ app.get("/api/extensions/status", requireExtensionAuth, async (req, res) => {
   const config = req.pbxConfig;
   const status = await readPbxStatus(config);
   const extensionStatus = extensionStatusFromPbx(status, req.session.extension.number);
+  extensionStatus.ixcContact = require("./src/ixc-contacts").contactForExtension(extensionStatus.extension);
   if (req.query.history !== "0") extensionStatus.recentCalls = await readRecentExtensionCalls(config, req.session.extension.number);
   res.json(extensionStatus);
 });
@@ -4940,6 +4957,24 @@ app.post("/api/dialer/campaigns/:id/pause", requireAuth, requireAdmin, async (re
     after: dialerAuditSnapshot(campaign)
   });
   res.json({ campaign: publicDialerCampaign(campaign), campaigns: (await readDialerCampaigns()).map(publicDialerCampaign) });
+});
+
+app.post("/api/dialer/campaigns/:id/retry", requireAuth, requireAdmin, async (req, res) => {
+  const config = await getConfig();
+  const campaigns = await updateDialerCampaigns(async (all) => {
+    const source = all.find((c) => c.id === req.params.id);
+    if (!source) throw Object.assign(new Error("Campanha não encontrada."), { status: 404 });
+    if (source.status === "running" || source.numbers.some((l) => l.status === "queued")) {
+      throw Object.assign(new Error("Pause a campanha e aguarde as ligações terminarem."), { status: 409 });
+    }
+    const retry = source.numbers.filter((l) => ["busy","failed","no_answer"].includes(l.status) && !isRecentUnconfirmedDialerLead(l));
+    if (!retry.length) throw Object.assign(new Error("Nenhum contato sem sucesso disponível para nova tentativa."), { status: 409 });
+    const key = source.id + ":" + crypto.createHash("sha256").update(JSON.stringify(retry.map((l) => [l.number,l.attemptId,l.lastAttemptAt]))).digest("hex");
+    if (all.some((c) => c.retrySource === key)) return all;
+    const draft = normalizeDialerCampaign({ ...source, id: dialerId(), name: "Nova tentativa · " + source.name, numbers: retry.map((l) => l.number) }, null, config);
+    return [...all, { ...draft, retrySource: key }];
+  });
+  res.json({ campaigns: campaigns.map(publicDialerCampaign) });
 });
 
 app.post("/api/dialer/campaigns/:id/reset", requireAuth, requireAdmin, async (req, res) => {

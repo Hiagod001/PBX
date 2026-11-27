@@ -2331,6 +2331,14 @@ async function loadExtensionDialPreview(number) {
   return preview;
 }
 
+function incomingContactLabel(contact, direction, number) {
+  const phone = String(number || "").replace(/\D/g, "").replace(/^55(?=\d{10,11}$)/, "").replace(/^0(?=\d{10,11}$)/, "");
+  if (direction !== "entrada" || !contact || contact.phone !== phone) return "";
+  if (contact.shared) return "IXC · Telefone compartilhado por mais de um cliente";
+  const cpf = String(contact.cpf || "").replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, "$1.$2.$3-$4");
+  return ["IXC", contact.name, cpf && "CPF " + cpf].filter(Boolean).join(" · ");
+}
+
 function renderExtensionPortal() {
   const activeElement = document.activeElement;
   const focusedInsidePhone =
@@ -2423,10 +2431,12 @@ function renderExtensionPortal() {
   const dialpad = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"]
     .map((digit) => `<button class="dial-key" type="button" data-dial-key="${digit}" ${callLocked}>${digit}</button>`)
     .join("");
+  const ixcLabel = incomingContactLabel(status.ixcContact, state.extensionCall.currentDirection, currentNumber);
   const activeCallStage = activeCall ? `
       <div class="active-call-stage">
         <span>${escapeHtml(state.extensionCall.currentDirection === "saida" ? "Chamada de saida" : state.extensionCall.incoming ? "Chamada de entrada" : "Chamada")}</span>
         <strong>${escapeHtml(currentNumber)}</strong>
+        ${ixcLabel ? `<small>${escapeHtml(ixcLabel)}</small>` : ""}
         ${state.extensionCall.currentProtocol ? `<em>Protocolo ${escapeHtml(state.extensionCall.currentProtocol)}</em>` : ""}
         <small>${escapeHtml(extensionStatusLabel())} - ${escapeHtml(callElapsed)}</small>
       <div class="active-call-actions">
@@ -5242,6 +5252,7 @@ function renderDialerCampaignRows() {
               <button class="icon-btn" type="button" data-dialer-report="${escapeHtml(campaign.id)}" title="Relatório da campanha"><i data-lucide="chart-column"></i></button>
               <button class="icon-btn" type="button" data-edit-dialer="${escapeHtml(campaign.id)}" title="Editar campanha"><i data-lucide="pencil"></i></button>
               <button class="icon-btn ${running ? "danger" : ""}" type="button" data-dialer-action="${running ? "pause" : "start"}" data-dialer-id="${escapeHtml(campaign.id)}" title="${running ? "Pausar" : "Iniciar"}"><i data-lucide="${running ? "pause" : "play"}"></i></button>
+              <button class="secondary-btn compact" type="button" data-dialer-action="retry" data-dialer-id="${escapeHtml(campaign.id)}" title="Criar um rascunho com os números que não atenderam, estavam ocupados ou falharam">Repetir sem sucesso</button>
               <button class="icon-btn" type="button" data-dialer-action="reset" data-dialer-id="${escapeHtml(campaign.id)}" title="Reiniciar lista"><i data-lucide="rotate-ccw"></i></button>
               <button class="icon-btn danger" type="button" data-delete-dialer="${escapeHtml(campaign.id)}" title="Excluir campanha"><i data-lucide="trash-2"></i></button>
             </div>
@@ -5292,6 +5303,7 @@ function renderDialer() {
         ${fieldBlock("Destino", "Fila ou ramal que recebe o cliente. No WhatsApp, o encaminhamento acontece assim que ele atende; na linha telefônica, depois de apertar a tecla.", `<div class="dual-select">${dialerDestinationSelect(destinationType, destination)}</div>`, "dialer-field-destination")}
         <fieldset class="dialer-trunk-picker"><legend class="field-title">Troncos da campanha ${helpIcon("Marque os troncos que fazem parte desta campanha. Com mais de um selecionado, o discador alterna entre eles.")}</legend><div class="dialer-trunk-options">${dialerTrunkOptions(editing?.trunkIds || [])}</div></fieldset>
         <div class="dialer-form-section-title"><span>Ritmo das ligações</span></div>
+        ${fieldBlock("Ritmo por atendente", "Ajusta a quantidade de ligações aos ramais livres no destino. Com todos ocupados, o discador aguarda.", `<select name="perAgent">${[[0,"Limite fixo"],[0.5,"1 ligação a cada 2 livres"],[1,"1 ligação por livre"],[2,"2 ligações por livre"]].map(([v,label]) => option(String(v),String(editing?.perAgent || 0),label)).join("")}</select>`, "dialer-field-metric")}
         ${fieldBlock("Chamadas por rodada", "Quantidade enviada ao Asterisk em cada disparo.", `<input name="maxConcurrent" type="number" min="1" max="10" value="${Number(editing?.maxConcurrent || 1)}" />`, "dialer-field-metric")}
         ${fieldBlock("Intervalo", "Segundos entre uma rodada e outra.", `<input name="intervalSeconds" type="number" min="3" max="3600" value="${Number(editing?.intervalSeconds || 8)}" />`, "dialer-field-metric")}
         ${fieldBlock("Tentativas", "Quantidade maxima de envio por numero.", `<input name="retryAttempts" type="number" min="1" max="5" value="${Number(editing?.retryAttempts || 1)}" />`, "dialer-field-metric")}
@@ -6927,7 +6939,7 @@ async function runDialerAction(id, action) {
   state.dialerCampaigns = response.campaigns || [];
   renderDialer();
   iconRefresh();
-  setMessage(action === "start" ? "Campanha iniciada." : action === "pause" ? "Campanha pausada." : "Lista reiniciada.", "ok");
+  setMessage(action === "start" ? "Campanha iniciada." : action === "pause" ? "Campanha pausada." : action === "retry" ? "Rascunho de novas tentativas disponível." : "Lista reiniciada.", "ok");
 }
 
 async function deleteDialerCampaign(id) {
@@ -6962,6 +6974,7 @@ async function openDialerCampaignReport(id) {
     <section class="modal-card dialer-report-modal" role="dialog" aria-modal="true" aria-label="Relatório da campanha">
       <header><div><p class="eyebrow">Relatório da campanha</p><h3>${escapeHtml(campaign.name)}</h3></div><button class="icon-btn" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header>
       <div class="dialer-report-content">
+        <p class="dialer-report-progress">Contato efetivo entre os resultados concluídos: ${stats.completed ? Math.round(100 * (stats.accepted + stats.answered) / stats.completed) + "%" : "aguardando resultados"} · Inclui quem atendeu e quem pediu atendimento.</p>
         <p class="dialer-report-progress">${Number(stats.total || 0)} números · ${Number(stats.pending || 0)} aguardando ligação · ${Number(stats.inProgress || 0)} ligando agora</p>
         <div class="dialer-report-summary">
           <span class="success"><strong>${Number(stats.accepted || 0)}</strong><b>${campaign.transport === "whatsapp" ? "Conversou com um atendente" : "Atendeu e pediu atendimento"}</b><small>${campaign.transport === "whatsapp" ? "O cliente e o atendente foram conectados." : "Apertou a tecla e foi encaminhado."}</small></span>
